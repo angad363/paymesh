@@ -1,0 +1,60 @@
+# Java build output
+target/
+build/
+out/
+*.class
+*.jar
+*.war
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Visual Studio Code
+.vscode/
+
+# Eclipse
+.classpath
+.project
+.settings/
+bin/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local application configuration
+application-local.yml
+application-local.properties
+
+# Test and coverage reports
+coverage/
+jacoco.exec
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+*~
+
+# Docker local overrides
+compose.override.yml
+docker-compose.override.yml
+
+# Terraform generated files
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+.terraform.lock.hcl
