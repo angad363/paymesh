@@ -67,4 +67,70 @@ class MerchantControllerTest {
             .andExpect(jsonPath("$.createdAt").exists())
             .andExpect(jsonPath("$.updatedAt").exists());
     }
+
+    @Test
+    void returnsConflictWhenEmailAlreadyExists() throws Exception {
+        String requestBody = """
+            {
+              "businessName": "Duplicate Merchant",
+              "email": "owner@duplicate.example",
+              "country": "IN",
+              "defaultCurrency": "INR"
+            }
+            """;
+
+        mockMvc.perform(
+                post("/api/v1/merchants")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(requestBody)
+            )
+            .andExpect(status().isCreated());
+
+        mockMvc.perform(
+                post("/api/v1/merchants")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(requestBody)
+            )
+            .andExpect(status().isConflict())
+            .andExpect(
+                jsonPath("$.code")
+                    .value("MERCHANT_EMAIL_ALREADY_EXISTS")
+            )
+            .andExpect(
+                jsonPath("$.message")
+                    .value(
+                        "A merchant already exists with email "
+                            + "owner@duplicate.example"
+                    )
+            );
+    }
+
+    @Test
+    void returnsBadRequestWhenRequestIsInvalid() throws Exception {
+        mockMvc.perform(
+                post("/api/v1/merchants")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""
+                        {
+                          "businessName": "   ",
+                          "email": "owner@invalid.example",
+                          "country": "IN",
+                          "defaultCurrency": "INR"
+                        }
+                        """)
+            )
+            .andExpect(status().isBadRequest())
+            .andExpect(
+                jsonPath("$.code")
+                    .value("VALIDATION_FAILED")
+            )
+            .andExpect(
+                jsonPath("$.message")
+                    .value("Request validation failed.")
+            )
+            .andExpect(
+                jsonPath("$.fieldErrors.businessName")
+                    .value("Business name is required.")
+            );
+    }
 }
