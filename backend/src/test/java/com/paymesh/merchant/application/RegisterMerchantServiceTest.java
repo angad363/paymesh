@@ -1,6 +1,7 @@
 package com.paymesh.merchant.application;
 
 import com.paymesh.merchant.domain.Merchant;
+import com.paymesh.merchant.domain.MerchantId;
 import com.paymesh.merchant.domain.MerchantStatus;
 import org.junit.jupiter.api.Test;
 
@@ -9,6 +10,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -79,6 +81,15 @@ class RegisterMerchantServiceTest {
         public Merchant save(Merchant merchant) {
             merchants.add(merchant);
             return merchant;
+        }
+
+        @Override
+        public Optional<Merchant> findByMerchantId(MerchantId merchantId) {
+            return merchants.stream()
+                .filter(merchant ->
+                    merchant.merchantId().equals(merchantId)
+                )
+                .findFirst();
         }
 
         List<Merchant> savedMerchants() {
