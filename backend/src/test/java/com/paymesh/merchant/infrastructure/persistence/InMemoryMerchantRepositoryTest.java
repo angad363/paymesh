@@ -5,18 +5,20 @@ import com.paymesh.merchant.domain.MerchantId;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.Optional;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class InMemoryMerchantRepositoryTest {
 
     @Test
     void savesMerchant() {
-        InMemoryMerchantRepository repository = new InMemoryMerchantRepository();
+        InMemoryMerchantRepository repository =
+            new InMemoryMerchantRepository();
 
         Merchant merchant = Merchant.register(
             MerchantId.generate(),
@@ -48,6 +50,7 @@ class InMemoryMerchantRepositoryTest {
         );
 
         repository.save(merchant);
+
         assertTrue(
             repository.existsByEmail(
                 "owner@freshbrew.example"
@@ -78,5 +81,43 @@ class InMemoryMerchantRepositoryTest {
         );
 
         assertEquals(0, repository.size());
+    }
+
+    @Test
+    void findsMerchantById() {
+        InMemoryMerchantRepository repository =
+            new InMemoryMerchantRepository();
+
+        Merchant merchant = Merchant.register(
+            MerchantId.generate(),
+            "FreshBrew Cafe",
+            "owner@freshbrew.example",
+            "IN",
+            "INR",
+            Instant.parse("2026-07-19T10:15:30Z")
+        );
+
+        repository.save(merchant);
+
+        Optional<Merchant> result =
+            repository.findByMerchantId(
+                merchant.merchantId()
+            );
+
+        assertTrue(result.isPresent());
+        assertSame(merchant, result.get());
+    }
+
+    @Test
+    void returnsEmptyWhenMerchantDoesNotExist() {
+        InMemoryMerchantRepository repository =
+            new InMemoryMerchantRepository();
+
+        MerchantId unknownId = MerchantId.generate();
+
+        Optional<Merchant> result =
+            repository.findByMerchantId(unknownId);
+
+        assertTrue(result.isEmpty());
     }
 }

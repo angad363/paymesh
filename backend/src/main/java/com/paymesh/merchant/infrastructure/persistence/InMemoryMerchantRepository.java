@@ -2,9 +2,11 @@ package com.paymesh.merchant.infrastructure.persistence;
 
 import com.paymesh.merchant.application.MerchantRepository;
 import com.paymesh.merchant.domain.Merchant;
+import com.paymesh.merchant.domain.MerchantId;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 public final class InMemoryMerchantRepository implements MerchantRepository {
 
@@ -26,6 +28,15 @@ public final class InMemoryMerchantRepository implements MerchantRepository {
         }
         merchants.add(merchant);
         return merchant;
+    }
+
+    @Override
+    public Optional<Merchant> findByMerchantId(MerchantId merchantId) {
+        return merchants.stream()
+            .filter(merchant ->
+                merchant.merchantId().equals(merchantId)
+            )
+            .findFirst();
     }
 
     int size() {

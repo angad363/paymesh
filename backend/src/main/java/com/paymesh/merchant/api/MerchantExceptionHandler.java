@@ -1,6 +1,7 @@
 package com.paymesh.merchant.api;
 
 import com.paymesh.merchant.application.MerchantEmailAlreadyExistsException;
+import com.paymesh.merchant.application.MerchantNotFoundException;
 import org.springframework.http.HttpStatus;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -34,8 +35,16 @@ public final class MerchantExceptionHandler {
                 fieldError.getDefaultMessage()
             );
         }
-
         return ApiErrorResponse.validation(fieldErrors);
+    }
+
+    @ExceptionHandler(MerchantNotFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    ApiErrorResponse handleMerchantNotFound(MerchantNotFoundException exception) {
+        return ApiErrorResponse.of(
+            "MERCHANT_NOT_FOUND",
+            exception.getMessage()
+        );
     }
 }
 
