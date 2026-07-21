@@ -2,6 +2,16 @@ spring:
   application:
     name: paymesh-backend
 
+  datasource:
+    url: jdbc:postgresql://localhost:5432/paymesh
+    username: paymesh_app
+    password: paymesh_dev_password
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+
 server:
   port: 8080
   shutdown: graceful
