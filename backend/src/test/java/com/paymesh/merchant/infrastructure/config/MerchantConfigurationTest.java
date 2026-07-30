@@ -2,7 +2,7 @@ package com.paymesh.merchant.infrastructure.config;
 
 import com.paymesh.merchant.application.MerchantRepository;
 import com.paymesh.merchant.application.RegisterMerchantService;
-import com.paymesh.merchant.infrastructure.persistence.InMemoryMerchantRepository;
+import com.paymesh.merchant.infrastructure.persistence.jpa.JpaMerchantRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -36,7 +36,7 @@ class MerchantConfigurationTest {
         assertNotNull(registerMerchantService);
 
         assertInstanceOf(
-            InMemoryMerchantRepository.class,
+            JpaMerchantRepository.class,
             merchantRepository
         );
     }

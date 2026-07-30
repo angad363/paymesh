@@ -1,7 +1,11 @@
 package com.paymesh.merchant.infrastructure.config;
 
 import com.paymesh.merchant.application.GetMerchantService;
-import com.paymesh.merchant.application.MerchantRepository;import com.paymesh.merchant.application.RegisterMerchantService;import com.paymesh.merchant.infrastructure.persistence.InMemoryMerchantRepository;import org.springframework.context.annotation.Bean;
+import com.paymesh.merchant.application.MerchantRepository;
+import com.paymesh.merchant.application.RegisterMerchantService;
+import com.paymesh.merchant.infrastructure.persistence.jpa.JpaMerchantRepository;
+import com.paymesh.merchant.infrastructure.persistence.jpa.SpringDataMerchantRepository;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import java.time.Clock;
@@ -15,8 +19,8 @@ public class MerchantConfiguration {
     }
 
     @Bean
-    MerchantRepository merchantRepository() {
-        return new InMemoryMerchantRepository();
+    MerchantRepository merchantRepository(SpringDataMerchantRepository springDataMerchantRepository) {
+        return new JpaMerchantRepository(springDataMerchantRepository);
     }
 
     @Bean
