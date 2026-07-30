@@ -18,6 +18,7 @@ import com.paymesh.identity.infrastructure.security.JwtAccessTokenService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -60,12 +61,23 @@ public class IdentityConfiguration {
     }
 
     @Bean
-    AccessTokenService accessTokenService(
+    JwtAccessTokenService accessTokenService(
         @Value("${paymesh.security.jwt.secret}") String jwtSecret,
         @Value("${paymesh.security.jwt.access-token-ttl}") Duration accessTokenTtl,
         Clock clock
     ) {
         return new JwtAccessTokenService(jwtSecret, accessTokenTtl, clock);
+    }
+
+    /**
+     * The filter chain verifies tokens with the very decoder that minted them, rather than a second
+     * one built from the same property. Two decoders would be two places for the key length check,
+     * the accepted algorithm and the clock skew to drift apart -- and a verifier that disagrees
+     * with the issuer fails open or closed at the worst possible moment.
+     */
+    @Bean
+    JwtDecoder jwtDecoder(JwtAccessTokenService accessTokenService) {
+        return accessTokenService.decoder();
     }
 
     @Bean

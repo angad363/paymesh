@@ -1,5 +1,6 @@
 package com.paymesh.merchant.api;
 
+import com.paymesh.shared.api.ApiErrorResponse;
 import com.paymesh.merchant.application.MerchantEmailAlreadyExistsException;
 import com.paymesh.merchant.application.MerchantNotFoundException;
 import org.springframework.http.HttpStatus;
