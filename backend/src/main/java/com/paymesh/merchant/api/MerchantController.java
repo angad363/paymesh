@@ -4,7 +4,7 @@ import com.paymesh.merchant.application.GetMerchantService;
 import com.paymesh.merchant.application.RegisterMerchantCommand;
 import com.paymesh.merchant.application.RegisterMerchantService;
 import com.paymesh.merchant.domain.Merchant;
-import com.paymesh.merchant.domain.MerchantId;
+import com.paymesh.shared.tenant.MerchantId;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
