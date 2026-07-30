@@ -1,4 +1,4 @@
-package com.paymesh.merchant.domain;
+package com.paymesh.shared.tenant;
 
 import java.util.UUID;
 
