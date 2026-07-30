@@ -183,6 +183,47 @@ class MerchantControllerTest {
     }
 
     @Test
+    void returnsBadRequestWhenCountryIsNotTwoLetters() throws Exception {
+        mockMvc.perform(
+                post("/api/v1/merchants")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""
+                        {
+                          "businessName": "Bad Country Co",
+                          "email": "owner@badcountry.example",
+                          "country": "USA",
+                          "defaultCurrency": "USD"
+                        }
+                        """)
+            )
+            .andExpect(status().isBadRequest())
+            .andExpect(
+                jsonPath("$.code")
+                    .value("INVALID_REQUEST")
+            )
+            .andExpect(
+                jsonPath("$.message")
+                    .value("Country must be of length 2")
+            );
+    }
+
+    @Test
+    void returnsBadRequestWhenMerchantIdIsMalformed() throws Exception {
+        mockMvc.perform(
+                get("/api/v1/merchants/{merchantId}", "not_a_merchant_id")
+            )
+            .andExpect(status().isBadRequest())
+            .andExpect(
+                jsonPath("$.code")
+                    .value("INVALID_REQUEST")
+            )
+            .andExpect(
+                jsonPath("$.message")
+                    .value("Merchant Identifier must start with mrc_")
+            );
+    }
+
+    @Test
     void returnsNotFoundWhenMerchantDoesNotExist() throws Exception {
         String unknownId =
             "mrc_550e8400-e29b-41d4-a716-446655440000";

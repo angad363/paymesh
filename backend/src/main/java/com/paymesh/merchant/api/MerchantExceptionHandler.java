@@ -12,7 +12,10 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-@RestControllerAdvice
+// Scoped to the merchant controller, per the per-feature advice convention. It also bounds
+// handleInvalidInput below: an IllegalArgumentException raised anywhere else in the app is a bug
+// and must keep surfacing as a 500 rather than being reported to the caller as their mistake.
+@RestControllerAdvice(assignableTypes = MerchantController.class)
 public final class MerchantExceptionHandler {
 
     @ExceptionHandler(MerchantEmailAlreadyExistsException.class)
@@ -36,6 +39,21 @@ public final class MerchantExceptionHandler {
             );
         }
         return ApiErrorResponse.validation(fieldErrors);
+    }
+
+    /**
+     * Domain invariants (MerchantId prefix/UUID, 2-letter country, 3-letter currency, ...) throw
+     * IllegalArgumentException, which Bean Validation cannot express and which would otherwise
+     * escape as a 500. Every one of them means the caller sent something unusable, so 400 with the
+     * standard error body. The message comes from the domain and names the offending rule.
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    ApiErrorResponse handleInvalidInput(IllegalArgumentException exception) {
+        return ApiErrorResponse.of(
+            "INVALID_REQUEST",
+            exception.getMessage()
+        );
     }
 
     @ExceptionHandler(MerchantNotFoundException.class)
