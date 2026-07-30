@@ -7,7 +7,7 @@ import com.paymesh.customer.domain.Customer;
 import com.paymesh.customer.domain.CustomerId;
 import com.paymesh.merchant.application.MerchantRepository;
 import com.paymesh.merchant.domain.Merchant;
-import com.paymesh.merchant.domain.MerchantId;
+import com.paymesh.shared.tenant.MerchantId;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;

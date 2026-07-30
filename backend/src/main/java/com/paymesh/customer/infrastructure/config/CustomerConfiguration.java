@@ -12,8 +12,8 @@ import java.time.Clock;
 
 /**
  * Explicit wiring for the customer capability (no component scanning of application/domain classes).
- * The Clock is injected, not declared: MerchantConfiguration already defines that bean, and a second
- * definition of the same name would fail startup with bean overriding disabled.
+ * The Clock is injected, not declared: SharedConfiguration owns it, because time is needed by every
+ * capability and belongs to none of them.
  */
 @Configuration
 public class CustomerConfiguration {

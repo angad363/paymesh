@@ -1,6 +1,6 @@
 package com.paymesh.customer.application;
 
-import com.paymesh.merchant.domain.MerchantId;
+import com.paymesh.shared.tenant.MerchantId;
 
 /**
  * The merchantId is a field of the command, not of any future request body: it comes from the

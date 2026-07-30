@@ -3,7 +3,7 @@ package com.paymesh.customer.infrastructure.persistence.jpa;
 import com.paymesh.customer.domain.Customer;
 import com.paymesh.customer.domain.CustomerId;
 import com.paymesh.customer.domain.CustomerStatus;
-import com.paymesh.merchant.domain.MerchantId;
+import com.paymesh.shared.tenant.MerchantId;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;

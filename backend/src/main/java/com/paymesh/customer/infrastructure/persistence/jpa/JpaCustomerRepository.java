@@ -4,7 +4,7 @@ import com.paymesh.customer.application.CustomerReferenceAlreadyExistsException;
 import com.paymesh.customer.application.CustomerRepository;
 import com.paymesh.customer.domain.Customer;
 import com.paymesh.customer.domain.CustomerId;
-import com.paymesh.merchant.domain.MerchantId;
+import com.paymesh.shared.tenant.MerchantId;
 import org.springframework.dao.DataIntegrityViolationException;
 
 import java.util.Optional;

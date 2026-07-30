@@ -2,7 +2,7 @@ package com.paymesh.customer.application;
 
 import com.paymesh.customer.domain.Customer;
 import com.paymesh.customer.domain.CustomerId;
-import com.paymesh.merchant.domain.MerchantId;
+import com.paymesh.shared.tenant.MerchantId;
 
 import java.util.Optional;
 

@@ -1,5 +1,7 @@
 package com.paymesh.merchant.domain;
 
+import com.paymesh.shared.tenant.MerchantId;
+
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;

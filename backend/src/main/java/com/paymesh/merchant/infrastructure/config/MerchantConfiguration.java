@@ -13,10 +13,6 @@ import java.time.Clock;
 @Configuration
 public class MerchantConfiguration {
 
-    @Bean
-    Clock clock() {
-        return Clock.systemUTC();
-    }
 
     @Bean
     MerchantRepository merchantRepository(SpringDataMerchantRepository springDataMerchantRepository) {

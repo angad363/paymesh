@@ -1,7 +1,7 @@
 package com.paymesh.merchant.infrastructure.persistence.jpa;
 
 import com.paymesh.merchant.domain.Merchant;
-import com.paymesh.merchant.domain.MerchantId;
+import com.paymesh.shared.tenant.MerchantId;
 import com.paymesh.merchant.domain.MerchantStatus;
 
 /**

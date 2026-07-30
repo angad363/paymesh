@@ -1,6 +1,6 @@
 package com.paymesh.customer.domain;
 
-import com.paymesh.merchant.domain.MerchantId;
+import com.paymesh.shared.tenant.MerchantId;
 
 import java.time.Instant;
 import java.util.Locale;

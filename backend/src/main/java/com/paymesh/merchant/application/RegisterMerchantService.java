@@ -1,7 +1,7 @@
 package com.paymesh.merchant.application;
 
 import com.paymesh.merchant.domain.Merchant;
-import com.paymesh.merchant.domain.MerchantId;
+import com.paymesh.shared.tenant.MerchantId;
 
 import java.time.Clock;
 import java.time.Instant;
