@@ -70,6 +70,39 @@ spring:
     # set true only for a deliberate one-time adoption of a pre-existing schema.
     baseline-on-migrate: false
 
+# --- PayMesh security (Identity and Access) ----------------------------------
+paymesh:
+  security:
+    jwt:
+      # HS256 signing key for access tokens. Must be at least 32 bytes; the app
+      # refuses to start otherwise, because a shorter key weakens every token it
+      # would go on to issue.
+      #
+      # THE VALUE BELOW IS DEV-ONLY AND PUBLIC. It is committed so a fresh clone
+      # boots and the tests run with no setup. In any deployed environment this is
+      # overridden from the environment / secret manager:
+      #     PAYMESH_SECURITY_JWT_SECRET=<32+ random bytes>
+      # (Spring maps that variable onto this property automatically.) Rotating it
+      # invalidates every outstanding access token, which is the intended effect
+      # of a compromise. Refresh tokens survive: they are random values in the
+      # database, not signed by this key.
+      secret: dev-only-insecure-jwt-signing-secret-change-me
+      # Short by design (SDD 8.6). An access token cannot be revoked before it
+      # expires -- nothing checks a denylist -- so its lifetime IS the revocation
+      # window. 15 minutes trades a little refresh traffic for that bound.
+      access-token-ttl: 15m
+      # Long-lived, because it is revocable: it is a row, and logout or detected
+      # reuse revokes it immediately. 30 days is how long a user stays signed in
+      # without touching the dashboard.
+      refresh-token-ttl: 30d
+    password:
+      # BCrypt cost factor: 2^10 rounds, Spring Security's default and the usual
+      # ~100ms-per-verification target on current hardware. Raising it slows every
+      # login (and every brute-force attempt) proportionally; the factor is stored
+      # inside each hash, so a change re-hashes on next login rather than
+      # invalidating existing passwords.
+      bcrypt-strength: 10
+
 # --- Web server --------------------------------------------------------------
 server:
   # HTTP port. Omit -> defaults to 8080 anyway; pinned for clarity.
