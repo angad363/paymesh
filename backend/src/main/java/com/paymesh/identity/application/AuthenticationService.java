@@ -154,7 +154,22 @@ public final class AuthenticationService {
             throw new InvalidRefreshTokenException();
         }
 
-        refreshTokenRepository.save(presented.revoke(now));
+        // Compare-and-swap, not read-then-write. Losing this race means another
+        // request spent the same token concurrently, which is the same evidence as a
+        // replay arriving a moment later: one presentation of a token that was
+        // already spent. Treated identically, because it is indistinguishable.
+        if (refreshTokenRepository.revokeIfLive(presented.tokenHash(), now) == 0) {
+            refreshTokenRepository.revokeFamily(presented.familyId(), now);
+
+            recordEvent(
+                SecurityEventType.REFRESH_TOKEN_REUSE_DETECTED,
+                presented.userId().value(),
+                ipAddress,
+                now
+            );
+
+            throw new InvalidRefreshTokenException();
+        }
 
         IssuedTokens tokens = issueSession(user, presented.familyId(), now);
 

@@ -12,6 +12,21 @@ public interface SpringDataRefreshTokenRepository
     extends JpaRepository<RefreshTokenJpaEntity, String> {
 
     /**
+     * Spends a single token, atomically. {@code revokedAt is null} in the WHERE
+     * clause is what makes rotation safe under concurrency: the database decides
+     * which of several racing callers actually spent the token, and the rest get 0.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("""
+        update RefreshTokenJpaEntity token
+           set token.revokedAt = :revokedAt
+         where token.tokenHash = :tokenHash
+           and token.revokedAt is null
+        """)
+    int revokeIfLive(@Param("tokenHash") String tokenHash, @Param("revokedAt") Instant revokedAt);
+
+    /**
      * Revokes a whole rotation family in one statement. A row-by-row loop would be
      * a race against whoever stole the token.
      *

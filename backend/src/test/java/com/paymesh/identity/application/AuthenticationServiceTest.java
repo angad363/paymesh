@@ -1,5 +1,6 @@
 package com.paymesh.identity.application;
 
+import com.paymesh.identity.domain.RefreshToken;
 import com.paymesh.identity.domain.SecurityEventType;
 import com.paymesh.identity.domain.User;
 import com.paymesh.identity.domain.UserId;
@@ -12,6 +13,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -306,7 +308,88 @@ class AuthenticationServiceTest {
         assertEquals(0, refreshTokens.liveTokens());
     }
 
+    /**
+     * Two requests present the same refresh token at the same moment. Both read it while
+     * it is still live, so neither sees the other's revocation. Only one can actually
+     * spend it, and the loser must be treated exactly like a replay: the evidence is
+     * identical, and letting it through would leave two live tokens in one family with no
+     * reuse ever detected -- which is the whole reason rotation exists.
+     *
+     * <p>RefreshToken is immutable, so the reference captured before the winning refresh
+     * IS the stale view a concurrent reader holds.
+     */
+    @Test
+    void treatsALostRotationRaceAsReuseAndRevokesTheFamily() {
+        givenRegisteredUser(UserStatus.ACTIVE);
+
+        IssuedTokens session = service.login(new LoginCommand(EMAIL, PASSWORD, IP));
+
+        RefreshToken staleView = refreshTokens
+            .findByTokenHash(RefreshToken.hash(session.refreshToken()))
+            .orElseThrow();
+
+        // The other request wins the race and spends the token first.
+        IssuedTokens winner = service.refresh(session.refreshToken(), IP);
+        assertEquals(1, refreshTokens.liveTokens());
+
+        assertThrows(
+            InvalidRefreshTokenException.class,
+            () -> serviceReading(staleView).refresh(session.refreshToken(), IP)
+        );
+
+        // The winner's live successor goes too: with one token proven to be in two hands,
+        // there is no way to tell which holder is legitimate.
+        assertEquals(0, refreshTokens.liveTokens());
+        assertTrue(securityEvents.types().contains(SecurityEventType.REFRESH_TOKEN_REUSE_DETECTED));
+        assertThrows(
+            InvalidRefreshTokenException.class,
+            () -> service.refresh(winner.refreshToken(), IP)
+        );
+    }
+
     // --- helpers -------------------------------------------------------------
+
+    /**
+     * A service whose reads return the given stale token, while every write still goes to
+     * the real fake -- so revokeIfLive keeps arbitrating truthfully, exactly as the SQL
+     * {@code and revoked_at is null} does.
+     */
+    private AuthenticationService serviceReading(RefreshToken staleView) {
+        RefreshTokenRepository staleReader = new RefreshTokenRepository() {
+
+            @Override
+            public RefreshToken save(RefreshToken refreshToken) {
+                return refreshTokens.save(refreshToken);
+            }
+
+            @Override
+            public Optional<RefreshToken> findByTokenHash(String tokenHash) {
+                return staleView.tokenHash().equals(tokenHash)
+                    ? Optional.of(staleView)
+                    : refreshTokens.findByTokenHash(tokenHash);
+            }
+
+            @Override
+            public int revokeIfLive(String tokenHash, Instant revokedAt) {
+                return refreshTokens.revokeIfLive(tokenHash, revokedAt);
+            }
+
+            @Override
+            public int revokeFamily(String familyId, Instant revokedAt) {
+                return refreshTokens.revokeFamily(familyId, revokedAt);
+            }
+        };
+
+        return new AuthenticationService(
+            users,
+            staleReader,
+            securityEvents,
+            passwordHasher,
+            new Fakes.AccessTokenServiceFake(),
+            REFRESH_TTL,
+            Clock.fixed(NOW, ZoneOffset.UTC)
+        );
+    }
 
     private AuthenticationService serviceAt(Instant instant) {
         return new AuthenticationService(

@@ -28,6 +28,11 @@ public final class JpaRefreshTokenRepository implements RefreshTokenRepository {
     }
 
     @Override
+    public int revokeIfLive(String tokenHash, Instant revokedAt) {
+        return refreshTokens.revokeIfLive(tokenHash, revokedAt);
+    }
+
+    @Override
     public int revokeFamily(String familyId, Instant revokedAt) {
         return refreshTokens.revokeFamily(familyId, revokedAt);
     }

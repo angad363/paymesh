@@ -77,6 +77,23 @@ final class Fakes {
             return Optional.ofNullable(byHash.get(tokenHash));
         }
 
+        /**
+         * Mirrors the SQL: revokes only if still live, and reports whether this call
+         * was the one that did it. Tests can force a lost race by pre-revoking.
+         */
+        @Override
+        public int revokeIfLive(String tokenHash, Instant revokedAt) {
+            RefreshToken token = byHash.get(tokenHash);
+
+            if (token == null || token.isRevoked()) {
+                return 0;
+            }
+
+            byHash.put(tokenHash, token.revoke(revokedAt));
+
+            return 1;
+        }
+
         @Override
         public int revokeFamily(String familyId, Instant revokedAt) {
             int revoked = 0;

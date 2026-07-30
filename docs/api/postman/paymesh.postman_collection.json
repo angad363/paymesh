@@ -1,12 +1,38 @@
 {
   "info": {
     "name": "PayMesh API",
-    "description": "PayMesh Payment-as-a-Service API. Updated as each capability lands.\n\nSet `baseUrl` (defaults to http://localhost:8080). `merchantId` is captured automatically by 'Register merchant'.\n\nCapabilities covered so far: Merchant.",
+    "description": "PayMesh Payment-as-a-Service API. Updated as each capability lands.\n\nSet `baseUrl` (defaults to http://localhost:8080). `merchantId` is captured automatically by 'Register merchant'.\n\nCapabilities covered so far: Identity & Auth, Merchant.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "baseUrl", "value": "http://localhost:8080" },
-    { "key": "merchantId", "value": "" }
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "merchantId",
+      "value": ""
+    },
+    {
+      "key": "authEmail",
+      "value": ""
+    },
+    {
+      "key": "accessToken",
+      "value": ""
+    },
+    {
+      "key": "refreshToken",
+      "value": ""
+    },
+    {
+      "key": "firstRefreshToken",
+      "value": ""
+    },
+    {
+      "key": "wrongPasswordBody",
+      "value": ""
+    }
   ],
   "item": [
     {
@@ -16,7 +42,16 @@
           "name": "Actuator health",
           "request": {
             "method": "GET",
-            "url": { "raw": "{{baseUrl}}/actuator/health", "host": ["{{baseUrl}}"], "path": ["actuator", "health"] }
+            "url": {
+              "raw": "{{baseUrl}}/actuator/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "health"
+              ]
+            }
           },
           "event": [
             {
@@ -34,6 +69,402 @@
       ]
     },
     {
+      "name": "Identity & Auth",
+      "description": "Registration, login, and rotating refresh tokens.\n\nRun the requests in order: each depends on tokens captured by the previous one. The reuse request deliberately revokes the whole family, so re-run from 'Register user' to get a working session again.",
+      "item": [
+        {
+          "name": "Register user",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "register"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{authEmail}}\",\n  \"password\": \"correct-horse-battery-staple\"\n}"
+            },
+            "description": "Generates a unique email per run so the unique constraint does not fail a repeat run."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('authEmail', 'owner+' + Date.now() + '@paymesh.example');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('opaque prefixed id', () => pm.expect(b.id).to.match(/^usr_[0-9a-f-]{36}$/));",
+                  "pm.test('starts active', () => pm.expect(b.status).to.eql('ACTIVE'));",
+                  "pm.test('never echoes a password', () => pm.expect(JSON.stringify(b)).to.not.include('correct-horse'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{authEmail}}\",\n  \"password\": \"correct-horse-battery-staple\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('bearer token type', () => pm.expect(b.tokenType).to.eql('Bearer'));",
+                  "pm.test('access token is a three-part JWT', () => pm.expect(b.accessToken.split('.')).to.have.lengthOf(3));",
+                  "pm.test('short-lived access token', () => pm.expect(b.expiresIn).to.eql(900));",
+                  "pm.test('refresh token is opaque, not a JWT', () => pm.expect(b.refreshToken.split('.')).to.have.lengthOf(1));",
+                  "pm.collectionVariables.set('accessToken', b.accessToken);",
+                  "pm.collectionVariables.set('refreshToken', b.refreshToken);",
+                  "pm.collectionVariables.set('firstRefreshToken', b.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login - wrong password (401)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{authEmail}}\",\n  \"password\": \"definitely-not-the-password\"\n}"
+            },
+            "description": "The body here must be byte-identical to the unknown-email response below: a difference would let an attacker enumerate registered addresses."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('INVALID_CREDENTIALS'));",
+                  "pm.collectionVariables.set('wrongPasswordBody', pm.response.text());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login - unknown email (401, identical body)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"nobody-here@paymesh.example\",\n  \"password\": \"definitely-not-the-password\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('response is indistinguishable from a wrong password', () => pm.expect(pm.response.text()).to.eql(pm.collectionVariables.get('wrongPasswordBody')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register - duplicate email (409)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "register"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{authEmail}}\",\n  \"password\": \"correct-horse-battery-staple\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('USER_EMAIL_ALREADY_EXISTS'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refresh token (rotates)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/token/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "token",
+                "refresh"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+            },
+            "description": "Spending a refresh token revokes it and mints a successor in the same family."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('a new refresh token was issued', () => pm.expect(b.refreshToken).to.not.eql(pm.collectionVariables.get('refreshToken')));",
+                  "pm.collectionVariables.set('refreshToken', b.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refresh - reuse a spent token (401, revokes the family)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/token/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "token",
+                "refresh"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{firstRefreshToken}}\"\n}"
+            },
+            "description": "Presenting an already-spent token means it leaked. There is no way to tell the thief from the victim, so the entire family is revoked and both are forced back through login. The next request proves the live successor died with it."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('INVALID_REFRESH_TOKEN'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refresh - successor is dead too (401)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/token/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "token",
+                "refresh"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+            },
+            "description": "This token was valid a moment ago. Reuse detection revoked the whole lineage."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('INVALID_REFRESH_TOKEN'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "logout"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+            },
+            "description": "Idempotent: an unknown or already-revoked token is a silent no-op, so logout cannot be used to probe whether a token is still live."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204 No Content', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "Merchant",
       "description": "Merchant registration and lookup. Persisted in PostgreSQL.",
       "item": [
@@ -41,12 +472,27 @@
           "name": "Register merchant",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"businessName\": \"  FreshBrew Cafe  \",\n  \"email\": \" Owner@FreshBrew.Example \",\n  \"country\": \"in\",\n  \"defaultCurrency\": \"inr\"\n}"
             },
-            "url": { "raw": "{{baseUrl}}/api/v1/merchants", "host": ["{{baseUrl}}"], "path": ["api", "v1", "merchants"] },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/merchants",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "merchants"
+              ]
+            },
             "description": "Input is deliberately untrimmed and mixed-case: the domain trims the business name, lowercases the email, and uppercases country and currency."
           },
           "event": [
@@ -89,8 +535,15 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/api/v1/merchants/{{merchantId}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "v1", "merchants", "{{merchantId}}"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "merchants",
+                "{{merchantId}}"
+              ]
             }
           },
           "event": [
@@ -110,12 +563,27 @@
           "name": "Register merchant - duplicate email (409)",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"businessName\": \"FreshBrew Again\",\n  \"email\": \"{{runEmail}}\",\n  \"country\": \"IN\",\n  \"defaultCurrency\": \"INR\"\n}"
             },
-            "url": { "raw": "{{baseUrl}}/api/v1/merchants", "host": ["{{baseUrl}}"], "path": ["api", "v1", "merchants"] },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/merchants",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "merchants"
+              ]
+            },
             "description": "Reuses the email from 'Register merchant'. Run that request first."
           },
           "event": [
@@ -135,12 +603,27 @@
           "name": "Register merchant - blank fields (400)",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"businessName\": \"\",\n  \"email\": \"\",\n  \"country\": \"\",\n  \"defaultCurrency\": \"\"\n}"
             },
-            "url": { "raw": "{{baseUrl}}/api/v1/merchants", "host": ["{{baseUrl}}"], "path": ["api", "v1", "merchants"] },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/merchants",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "merchants"
+              ]
+            },
             "description": "Bean Validation failure: returns VALIDATION_FAILED with a populated fieldErrors map."
           },
           "event": [
@@ -162,12 +645,27 @@
           "name": "Register merchant - invalid country (400)",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"businessName\": \"Bad Country Co\",\n  \"email\": \"owner@badcountry.example\",\n  \"country\": \"USA\",\n  \"defaultCurrency\": \"USD\"\n}"
             },
-            "url": { "raw": "{{baseUrl}}/api/v1/merchants", "host": ["{{baseUrl}}"], "path": ["api", "v1", "merchants"] },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/merchants",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "merchants"
+              ]
+            },
             "description": "Domain invariant failure, which Bean Validation cannot express: returns INVALID_REQUEST with an empty fieldErrors map."
           },
           "event": [
@@ -191,8 +689,15 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/api/v1/merchants/mrc_550e8400-e29b-41d4-a716-446655440000",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "v1", "merchants", "mrc_550e8400-e29b-41d4-a716-446655440000"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "merchants",
+                "mrc_550e8400-e29b-41d4-a716-446655440000"
+              ]
             }
           },
           "event": [
@@ -214,8 +719,15 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/api/v1/merchants/not_a_merchant_id",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "v1", "merchants", "not_a_merchant_id"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "merchants",
+                "not_a_merchant_id"
+              ]
             }
           },
           "event": [
