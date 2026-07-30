@@ -1,5 +1,6 @@
 package com.paymesh.identity.api;
 
+import com.paymesh.shared.api.ApiErrorResponse;
 import com.paymesh.identity.application.InvalidCredentialsException;
 import com.paymesh.identity.application.InvalidRefreshTokenException;
 import com.paymesh.identity.application.UserEmailAlreadyExistsException;

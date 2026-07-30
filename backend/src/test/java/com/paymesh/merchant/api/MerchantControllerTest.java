@@ -8,10 +8,12 @@ import org.springframework.context.annotation.Import;
 import com.paymesh.TestcontainersConfiguration;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 
 import static org.hamcrest.Matchers.matchesPattern;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -168,7 +170,7 @@ class MerchantControllerTest {
             .asText();
 
         mockMvc.perform(
-                get("/api/v1/merchants/{merchantId}", merchantId)
+                get("/api/v1/merchants/{merchantId}", merchantId).with(callerFor(merchantId))
             )
             .andExpect(status().isOk())
             .andExpect(
@@ -214,6 +216,7 @@ class MerchantControllerTest {
     void returnsBadRequestWhenMerchantIdIsMalformed() throws Exception {
         mockMvc.perform(
                 get("/api/v1/merchants/{merchantId}", "not_a_merchant_id")
+                    .with(callerFor("mrc_550e8400-e29b-41d4-a716-446655440000"))
             )
             .andExpect(status().isBadRequest())
             .andExpect(
@@ -232,7 +235,7 @@ class MerchantControllerTest {
             "mrc_550e8400-e29b-41d4-a716-446655440000";
 
         mockMvc.perform(
-                get("/api/v1/merchants/{merchantId}", unknownId)
+                get("/api/v1/merchants/{merchantId}", unknownId).with(callerFor(unknownId))
             )
             .andExpect(status().isNotFound())
             .andExpect(
@@ -243,5 +246,84 @@ class MerchantControllerTest {
                 jsonPath("$.message")
                     .value("Merchant not found: " + unknownId)
             );
+    }
+
+    // --- authorization --------------------------------------------------------
+
+    /** Reading a merchant is not public, even though creating one is. */
+    @Test
+    void rejectsMerchantLookupWithoutAToken() throws Exception {
+        mockMvc.perform(
+                get("/api/v1/merchants/{merchantId}", "mrc_550e8400-e29b-41d4-a716-446655440000")
+            )
+            .andExpect(status().isUnauthorized())
+            .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
+    }
+
+    /**
+     * The heart of tenant isolation: another merchant's id is reported as not found, not as
+     * forbidden. A 403 would confirm the id is real and turn this endpoint into an oracle for
+     * enumerating tenants.
+     */
+    @Test
+    void hidesAMerchantFromACallerScopedToADifferentMerchant() throws Exception {
+        String victimId = registerMerchantAndReturnId("victim@tenant.example");
+        String attackerId = registerMerchantAndReturnId("attacker@tenant.example");
+
+        mockMvc.perform(
+                get("/api/v1/merchants/{merchantId}", victimId).with(callerFor(attackerId))
+            )
+            .andExpect(status().isNotFound())
+            .andExpect(jsonPath("$.code").value("MERCHANT_NOT_FOUND"));
+    }
+
+    /** Registration is the signup step, so it precedes holding any credential. */
+    @Test
+    void allowsMerchantRegistrationWithoutAToken() throws Exception {
+        mockMvc.perform(
+                post("/api/v1/merchants")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""
+                        {
+                          "businessName": "Anonymous Signup Co",
+                          "email": "signup@anonymous.example",
+                          "country": "IN",
+                          "defaultCurrency": "INR"
+                        }
+                        """)
+            )
+            .andExpect(status().isCreated());
+    }
+
+    // --- helpers --------------------------------------------------------------
+
+    /** A verified token whose only merchant scope is the one given. */
+    private static org.springframework.test.web.servlet.request.RequestPostProcessor callerFor(
+        String merchantId
+    ) {
+        return jwt().jwt(builder -> builder
+            .subject("usr_11111111-1111-4111-8111-111111111111")
+            .claim("roles", java.util.List.of("MERCHANT_ADMIN:" + merchantId)));
+    }
+
+    private String registerMerchantAndReturnId(String email) throws Exception {
+        String body = mockMvc.perform(
+                post("/api/v1/merchants")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""
+                        {
+                          "businessName": "Tenant Co",
+                          "email": "%s",
+                          "country": "IN",
+                          "defaultCurrency": "INR"
+                        }
+                        """.formatted(email))
+            )
+            .andExpect(status().isCreated())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+
+        return new ObjectMapper().readTree(body).get("id").asText();
     }
 }

@@ -63,6 +63,15 @@ public final class JwtAccessTokenService implements AccessTokenService {
         this.accessTokenTtl = accessTokenTtl;
     }
 
+    /**
+     * The decoder this service verifies with, so the filter chain can share it instead of building
+     * a second one from the same secret. Exposed on the class, not on the AccessTokenService port,
+     * which stays free of Spring Security types.
+     */
+    public NimbusJwtDecoder decoder() {
+        return decoder;
+    }
+
     @Override
     public IssuedAccessToken issue(User user, Instant issuedAt) {
         Instant expiresAt = issuedAt.plus(accessTokenTtl);

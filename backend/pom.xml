@@ -55,13 +55,22 @@
             <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
 
-        <!-- JWT signing/verification (NimbusJwtEncoder / NimbusJwtDecoder). Pulled in on its
-             own rather than via spring-boot-starter-oauth2-resource-server: we want the JOSE
-             library, not the resource-server auto-configuration. The version is managed by the
-             Spring Security BOM that the Boot parent imports, so no version is pinned here. -->
+        <!-- JWT signing and verification: NimbusJwtEncoder mints access tokens,
+             NimbusJwtDecoder verifies them. -->
         <dependency>
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-oauth2-jose</artifactId>
+        </dependency>
+
+        <!-- BearerTokenAuthenticationFilter and friends: reads the Authorization header,
+             hands the token to our JwtDecoder, and populates the SecurityContext. Using the
+             framework's filter rather than a hand-rolled one means bearer-token parsing,
+             401 vs 403 semantics and the WWW-Authenticate header are all standard behaviour
+             we neither wrote nor have to keep correct. Versions come from the Spring Security
+             BOM the Boot parent imports. -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-oauth2-resource-server</artifactId>
         </dependency>
 
         <!-- Persistence: Spring Data JPA + PostgreSQL driver + Flyway migrations -->
@@ -105,6 +114,15 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- SecurityMockMvcRequestPostProcessors.jwt(): builds an authenticated request with
+             chosen claims, so a test can assert what a caller with a given merchant scope may
+             see without minting and signing a real token. -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
             <scope>test</scope>
         </dependency>
 

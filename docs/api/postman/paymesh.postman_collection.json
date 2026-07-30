@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "PayMesh API",
-    "description": "PayMesh Payment-as-a-Service API. Updated as each capability lands.\n\nSet `baseUrl` (defaults to http://localhost:8080). `merchantId` is captured automatically by 'Register merchant'.\n\nCapabilities covered so far: Identity & Auth, Merchant.",
+    "description": "PayMesh Payment-as-a-Service API.\n\nSet `baseUrl` (defaults to http://localhost:8080). Run the folders top to bottom: onboarding creates a merchant, Identity & Auth attaches a user and captures a token, and Authenticated access uses it.\n\nCapabilities covered: Identity & Auth, Merchant, Customer.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -32,6 +32,30 @@
     {
       "key": "wrongPasswordBody",
       "value": ""
+    },
+    {
+      "key": "customerId",
+      "value": ""
+    },
+    {
+      "key": "otherEmail",
+      "value": ""
+    },
+    {
+      "key": "otherMerchantId",
+      "value": ""
+    },
+    {
+      "key": "otherUserEmail",
+      "value": ""
+    },
+    {
+      "key": "otherAccessToken",
+      "value": ""
+    },
+    {
+      "key": "forgedToken",
+      "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c3JfMTExMTExMTEtMTExMS00MTExLTgxMTEtMTExMTExMTExMTExIiwiaXNzIjoicGF5bWVzaCIsImV4cCI6OTk5OTk5OTk5OX0.ZmFrZS1zaWduYXR1cmUtbm90LXByb2R1Y2VkLWJ5LXRoZS1yZWFsLWtleQ"
     }
   ],
   "item": [
@@ -69,6 +93,197 @@
       ]
     },
     {
+      "name": "Merchant (public onboarding)",
+      "description": "Creating a merchant is the signup step and needs no token -- it precedes having an account at all. Reading one does need a token; those requests live in 'Authenticated access' below, after a session exists.",
+      "item": [
+        {
+          "name": "Register merchant",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"businessName\": \"  FreshBrew Cafe  \",\n  \"email\": \" Owner@FreshBrew.Example \",\n  \"country\": \"in\",\n  \"defaultCurrency\": \"inr\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/merchants",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "merchants"
+              ]
+            },
+            "description": "Input is deliberately untrimmed and mixed-case: the domain trims the business name, lowercases the email, and uppercases country and currency."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Unique email per run so the unique constraint does not fail a repeat run.",
+                  "pm.collectionVariables.set('runEmail', 'owner+' + Date.now() + '@freshbrew.example');",
+                  "const body = JSON.parse(pm.request.body.raw);",
+                  "body.email = pm.collectionVariables.get('runEmail');",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('opaque prefixed id', () => pm.expect(body.id).to.match(/^mrc_[0-9a-f-]{36}$/));",
+                  "pm.test('business name trimmed', () => pm.expect(body.businessName).to.eql('FreshBrew Cafe'));",
+                  "pm.test('email lowercased', () => pm.expect(body.email).to.eql(body.email.toLowerCase()));",
+                  "pm.test('country uppercased', () => pm.expect(body.country).to.eql('IN'));",
+                  "pm.test('currency uppercased', () => pm.expect(body.defaultCurrency).to.eql('INR'));",
+                  "pm.test('starts pending verification', () => pm.expect(body.status).to.eql('PENDING_VERIFICATION'));",
+                  "pm.test('timestamps are UTC ISO-8601', () => pm.expect(body.createdAt).to.match(/Z$/));",
+                  "pm.collectionVariables.set('merchantId', body.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register merchant - duplicate email (409)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"businessName\": \"FreshBrew Again\",\n  \"email\": \"{{runEmail}}\",\n  \"country\": \"IN\",\n  \"defaultCurrency\": \"INR\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/merchants",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "merchants"
+              ]
+            },
+            "description": "Reuses the email from 'Register merchant'. Run that request first."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('MERCHANT_EMAIL_ALREADY_EXISTS'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register merchant - blank fields (400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"businessName\": \"\",\n  \"email\": \"\",\n  \"country\": \"\",\n  \"defaultCurrency\": \"\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/merchants",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "merchants"
+              ]
+            },
+            "description": "Bean Validation failure: returns VALIDATION_FAILED with a populated fieldErrors map."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "const body = pm.response.json();",
+                  "pm.test('code', () => pm.expect(body.code).to.eql('VALIDATION_FAILED'));",
+                  "pm.test('reports every blank field', () => pm.expect(Object.keys(body.fieldErrors)).to.have.lengthOf(4));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register merchant - invalid country (400)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"businessName\": \"Bad Country Co\",\n  \"email\": \"owner@badcountry.example\",\n  \"country\": \"USA\",\n  \"defaultCurrency\": \"USD\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/merchants",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "merchants"
+              ]
+            },
+            "description": "Domain invariant failure, which Bean Validation cannot express: returns INVALID_REQUEST with an empty fieldErrors map."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "const body = pm.response.json();",
+                  "pm.test('code', () => pm.expect(body.code).to.eql('INVALID_REQUEST'));",
+                  "pm.test('names the broken rule', () => pm.expect(body.message).to.eql('Country must be of length 2'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "Identity & Auth",
       "description": "Registration, login, and rotating refresh tokens.\n\nRun the requests in order: each depends on tokens captured by the previous one. The reuse request deliberately revokes the whole family, so re-run from 'Register user' to get a working session again.",
       "item": [
@@ -96,9 +311,9 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"email\": \"{{authEmail}}\",\n  \"password\": \"correct-horse-battery-staple\"\n}"
+              "raw": "{\n  \"email\": \"{{authEmail}}\",\n  \"password\": \"correct-horse-battery-staple\",\n  \"merchantId\": \"{{merchantId}}\"\n}"
             },
-            "description": "Generates a unique email per run so the unique constraint does not fail a repeat run."
+            "description": "Attaches the user to the merchant registered above, granting MERCHANT_ADMIN scoped to it. That scope is what every request in 'Authenticated access' relies on."
           },
           "event": [
             {
@@ -119,7 +334,8 @@
                   "const b = pm.response.json();",
                   "pm.test('opaque prefixed id', () => pm.expect(b.id).to.match(/^usr_[0-9a-f-]{36}$/));",
                   "pm.test('starts active', () => pm.expect(b.status).to.eql('ACTIVE'));",
-                  "pm.test('never echoes a password', () => pm.expect(JSON.stringify(b)).to.not.include('correct-horse'));"
+                  "pm.test('never echoes a password', () => pm.expect(JSON.stringify(b)).to.not.include('correct-horse'));",
+                  "pm.test('scoped to the merchant just created', () => pm.expect(b.roles[0].merchantId).to.eql(pm.collectionVariables.get('merchantId')));"
                 ]
               }
             }
@@ -278,7 +494,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"email\": \"{{authEmail}}\",\n  \"password\": \"correct-horse-battery-staple\"\n}"
+              "raw": "{\n  \"email\": \"{{authEmail}}\",\n  \"password\": \"correct-horse-battery-staple\",\n  \"merchantId\": \"{{merchantId}}\"\n}"
             }
           },
           "event": [
@@ -465,72 +681,11 @@
       ]
     },
     {
-      "name": "Merchant",
-      "description": "Merchant registration and lookup. Persisted in PostgreSQL.",
+      "name": "Authenticated access",
+      "description": "Everything that requires a bearer token. Run 'Merchant (public onboarding)' and 'Identity & Auth' first -- these use the access token captured by Login.\n\nThe cross-tenant requests build a second, unrelated merchant and user to prove that one tenant cannot see another's data.",
       "item": [
         {
-          "name": "Register merchant",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"businessName\": \"  FreshBrew Cafe  \",\n  \"email\": \" Owner@FreshBrew.Example \",\n  \"country\": \"in\",\n  \"defaultCurrency\": \"inr\"\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/merchants",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "merchants"
-              ]
-            },
-            "description": "Input is deliberately untrimmed and mixed-case: the domain trims the business name, lowercases the email, and uppercases country and currency."
-          },
-          "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// Unique email per run so the unique constraint does not fail a repeat run.",
-                  "pm.collectionVariables.set('runEmail', 'owner+' + Date.now() + '@freshbrew.example');",
-                  "const body = JSON.parse(pm.request.body.raw);",
-                  "body.email = pm.collectionVariables.get('runEmail');",
-                  "pm.request.body.raw = JSON.stringify(body);"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
-                  "const body = pm.response.json();",
-                  "pm.test('opaque prefixed id', () => pm.expect(body.id).to.match(/^mrc_[0-9a-f-]{36}$/));",
-                  "pm.test('business name trimmed', () => pm.expect(body.businessName).to.eql('FreshBrew Cafe'));",
-                  "pm.test('email lowercased', () => pm.expect(body.email).to.eql(body.email.toLowerCase()));",
-                  "pm.test('country uppercased', () => pm.expect(body.country).to.eql('IN'));",
-                  "pm.test('currency uppercased', () => pm.expect(body.defaultCurrency).to.eql('INR'));",
-                  "pm.test('starts pending verification', () => pm.expect(body.status).to.eql('PENDING_VERIFICATION'));",
-                  "pm.test('timestamps are UTC ISO-8601', () => pm.expect(body.createdAt).to.match(/Z$/));",
-                  "pm.collectionVariables.set('merchantId', body.id);"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Get merchant by id",
+          "name": "Get merchant - no token (401)",
           "request": {
             "method": "GET",
             "url": {
@@ -544,7 +699,80 @@
                 "merchants",
                 "{{merchantId}}"
               ]
+            },
+            "description": "Reading a merchant is not public, even though creating one is."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('UNAUTHENTICATED'));"
+                ]
+              }
             }
+          ]
+        },
+        {
+          "name": "Get merchant - forged token (401)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/merchants/{{merchantId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "merchants",
+                "{{merchantId}}"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{forgedToken}}"
+              }
+            ],
+            "description": "A structurally valid JWT carrying the right claims but signed with the wrong key. The filter chain verifies the signature, so claims alone buy nothing."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get merchant - own (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/merchants/{{merchantId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "merchants",
+                "{{merchantId}}"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ]
           },
           "event": [
             {
@@ -553,38 +781,128 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('200 OK', () => pm.response.to.have.status(200));",
-                  "pm.test('returns the merchant just registered', () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('merchantId')));"
+                  "pm.test('is the caller\\'s merchant', () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('merchantId')));"
                 ]
               }
             }
           ]
         },
         {
-          "name": "Register merchant - duplicate email (409)",
+          "name": "Create customer",
           "request": {
             "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"businessName\": \"FreshBrew Again\",\n  \"email\": \"{{runEmail}}\",\n  \"country\": \"IN\",\n  \"defaultCurrency\": \"INR\"\n}"
-            },
             "url": {
-              "raw": "{{baseUrl}}/api/v1/merchants",
+              "raw": "{{baseUrl}}/api/v1/customers",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "api",
                 "v1",
-                "merchants"
+                "customers"
               ]
             },
-            "description": "Reuses the email from 'Register merchant'. Run that request first."
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"Buyer@Example.Test\",\n  \"merchantReference\": \"  order-42  \",\n  \"name\": \"  Jamie Buyer  \"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "There is no merchantId field in this body. The tenant comes from the token, which is what makes writing under someone else's merchant impossible rather than merely discouraged."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('opaque prefixed id', () => pm.expect(b.id).to.match(/^cus_[0-9a-f-]{36}$/));",
+                  "pm.test('tenant taken from the token', () => pm.expect(b.merchantId).to.eql(pm.collectionVariables.get('merchantId')));",
+                  "pm.test('email lowercased', () => pm.expect(b.email).to.eql('buyer@example.test'));",
+                  "pm.test('reference trimmed', () => pm.expect(b.merchantReference).to.eql('order-42'));",
+                  "pm.test('lookup hashes are never exposed', () => { const s = JSON.stringify(b); pm.expect(s).to.not.include('emailHash'); pm.expect(s).to.not.include('phoneHash'); });",
+                  "pm.collectionVariables.set('customerId', b.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get customer - own (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/customers/{{customerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "customers",
+                "{{customerId}}"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('same customer', () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('customerId')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create customer - duplicate reference (409)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/customers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "customers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"another@example.test\",\n  \"merchantReference\": \"order-42\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "Unique per merchant, not globally."
           },
           "event": [
             {
@@ -593,26 +911,98 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
-                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('MERCHANT_EMAIL_ALREADY_EXISTS'));"
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('CUSTOMER_REFERENCE_ALREADY_EXISTS'));"
                 ]
               }
             }
           ]
         },
         {
-          "name": "Register merchant - blank fields (400)",
+          "name": "Create customer - no token (401)",
           "request": {
             "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/customers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "customers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"nobody@example.test\"\n}"
+            },
             "header": [
               {
                 "key": "Content-Type",
                 "value": "application/json"
               }
-            ],
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create customer - invalid email (400)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/customers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "customers"
+              ]
+            },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"businessName\": \"\",\n  \"email\": \"\",\n  \"country\": \"\",\n  \"defaultCurrency\": \"\"\n}"
+              "raw": "{\n  \"email\": \"not-an-email\"\n}"
             },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('VALIDATION_FAILED'));",
+                  "pm.test('names the field', () => pm.expect(pm.response.json().fieldErrors.email).to.exist);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cross-tenant setup: register a second merchant",
+          "request": {
+            "method": "POST",
             "url": {
               "raw": "{{baseUrl}}/api/v1/merchants",
               "host": [
@@ -624,49 +1014,113 @@
                 "merchants"
               ]
             },
-            "description": "Bean Validation failure: returns VALIDATION_FAILED with a populated fieldErrors map."
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"businessName\": \"Unrelated Business\",\n  \"email\": \"{{otherEmail}}\",\n  \"country\": \"IN\",\n  \"defaultCurrency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ]
           },
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('otherEmail', 'other+' + Date.now() + '@paymesh.example');"
+                ]
+              }
+            },
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
-                  "const body = pm.response.json();",
-                  "pm.test('code', () => pm.expect(body.code).to.eql('VALIDATION_FAILED'));",
-                  "pm.test('reports every blank field', () => pm.expect(Object.keys(body.fieldErrors)).to.have.lengthOf(4));"
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('otherMerchantId', pm.response.json().id);"
                 ]
               }
             }
           ]
         },
         {
-          "name": "Register merchant - invalid country (400)",
+          "name": "Cross-tenant setup: register its user",
           "request": {
             "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"businessName\": \"Bad Country Co\",\n  \"email\": \"owner@badcountry.example\",\n  \"country\": \"USA\",\n  \"defaultCurrency\": \"USD\"\n}"
-            },
             "url": {
-              "raw": "{{baseUrl}}/api/v1/merchants",
+              "raw": "{{baseUrl}}/api/v1/auth/register",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "api",
                 "v1",
-                "merchants"
+                "auth",
+                "register"
               ]
             },
-            "description": "Domain invariant failure, which Bean Validation cannot express: returns INVALID_REQUEST with an empty fieldErrors map."
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{otherUserEmail}}\",\n  \"password\": \"correct-horse-battery-staple\",\n  \"merchantId\": \"{{otherMerchantId}}\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('otherUserEmail', 'otheruser+' + Date.now() + '@paymesh.example');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cross-tenant setup: log it in",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{otherUserEmail}}\",\n  \"password\": \"correct-horse-battery-staple\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ]
           },
           "event": [
             {
@@ -674,21 +1128,19 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
-                  "const body = pm.response.json();",
-                  "pm.test('code', () => pm.expect(body.code).to.eql('INVALID_REQUEST'));",
-                  "pm.test('names the broken rule', () => pm.expect(body.message).to.eql('Country must be of length 2'));"
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('otherAccessToken', pm.response.json().accessToken);"
                 ]
               }
             }
           ]
         },
         {
-          "name": "Get merchant - unknown id (404)",
+          "name": "Cross-tenant: read another merchant (404, not 403)",
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{baseUrl}}/api/v1/merchants/mrc_550e8400-e29b-41d4-a716-446655440000",
+              "raw": "{{baseUrl}}/api/v1/merchants/{{merchantId}}",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -696,9 +1148,16 @@
                 "api",
                 "v1",
                 "merchants",
-                "mrc_550e8400-e29b-41d4-a716-446655440000"
+                "{{merchantId}}"
               ]
-            }
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherAccessToken}}"
+              }
+            ],
+            "description": "Answering 403 would confirm the id is real, turning this endpoint into an oracle for enumerating tenants. It is reported as not found instead."
           },
           "event": [
             {
@@ -714,21 +1173,28 @@
           ]
         },
         {
-          "name": "Get merchant - malformed id (400)",
+          "name": "Cross-tenant: read another merchant's customer (404)",
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{baseUrl}}/api/v1/merchants/not_a_merchant_id",
+              "raw": "{{baseUrl}}/api/v1/customers/{{customerId}}",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "api",
                 "v1",
-                "merchants",
-                "not_a_merchant_id"
+                "customers",
+                "{{customerId}}"
               ]
-            }
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherAccessToken}}"
+              }
+            ],
+            "description": "Same rule one level down: an id alone never authorizes a read."
           },
           "event": [
             {
@@ -736,8 +1202,52 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
-                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('INVALID_REQUEST'));"
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('CUSTOMER_NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cross-tenant: same merchantReference is free (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/customers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "customers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"buyer@unrelated.test\",\n  \"merchantReference\": \"order-42\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherAccessToken}}"
+              }
+            ],
+            "description": "The reference that just returned 409 for the first merchant is available here, because uniqueness is scoped to the tenant."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.test('written under the second merchant', () => pm.expect(pm.response.json().merchantId).to.eql(pm.collectionVariables.get('otherMerchantId')));"
                 ]
               }
             }
