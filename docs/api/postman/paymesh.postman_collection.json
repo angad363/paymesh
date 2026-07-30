@@ -1,0 +1,237 @@
+{
+  "info": {
+    "name": "PayMesh API",
+    "description": "PayMesh Payment-as-a-Service API. Updated as each capability lands.\n\nSet `baseUrl` (defaults to http://localhost:8080). `merchantId` is captured automatically by 'Register merchant'.\n\nCapabilities covered so far: Merchant.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080" },
+    { "key": "merchantId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Actuator health",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/actuator/health", "host": ["{{baseUrl}}"], "path": ["actuator", "health"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('UP', () => pm.expect(pm.response.json().status).to.eql('UP'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Merchant",
+      "description": "Merchant registration and lookup. Persisted in PostgreSQL.",
+      "item": [
+        {
+          "name": "Register merchant",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"businessName\": \"  FreshBrew Cafe  \",\n  \"email\": \" Owner@FreshBrew.Example \",\n  \"country\": \"in\",\n  \"defaultCurrency\": \"inr\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/merchants", "host": ["{{baseUrl}}"], "path": ["api", "v1", "merchants"] },
+            "description": "Input is deliberately untrimmed and mixed-case: the domain trims the business name, lowercases the email, and uppercases country and currency."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Unique email per run so the unique constraint does not fail a repeat run.",
+                  "pm.collectionVariables.set('runEmail', 'owner+' + Date.now() + '@freshbrew.example');",
+                  "const body = JSON.parse(pm.request.body.raw);",
+                  "body.email = pm.collectionVariables.get('runEmail');",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('opaque prefixed id', () => pm.expect(body.id).to.match(/^mrc_[0-9a-f-]{36}$/));",
+                  "pm.test('business name trimmed', () => pm.expect(body.businessName).to.eql('FreshBrew Cafe'));",
+                  "pm.test('email lowercased', () => pm.expect(body.email).to.eql(body.email.toLowerCase()));",
+                  "pm.test('country uppercased', () => pm.expect(body.country).to.eql('IN'));",
+                  "pm.test('currency uppercased', () => pm.expect(body.defaultCurrency).to.eql('INR'));",
+                  "pm.test('starts pending verification', () => pm.expect(body.status).to.eql('PENDING_VERIFICATION'));",
+                  "pm.test('timestamps are UTC ISO-8601', () => pm.expect(body.createdAt).to.match(/Z$/));",
+                  "pm.collectionVariables.set('merchantId', body.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get merchant by id",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/merchants/{{merchantId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "merchants", "{{merchantId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('returns the merchant just registered', () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('merchantId')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register merchant - duplicate email (409)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"businessName\": \"FreshBrew Again\",\n  \"email\": \"{{runEmail}}\",\n  \"country\": \"IN\",\n  \"defaultCurrency\": \"INR\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/merchants", "host": ["{{baseUrl}}"], "path": ["api", "v1", "merchants"] },
+            "description": "Reuses the email from 'Register merchant'. Run that request first."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('MERCHANT_EMAIL_ALREADY_EXISTS'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register merchant - blank fields (400)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"businessName\": \"\",\n  \"email\": \"\",\n  \"country\": \"\",\n  \"defaultCurrency\": \"\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/merchants", "host": ["{{baseUrl}}"], "path": ["api", "v1", "merchants"] },
+            "description": "Bean Validation failure: returns VALIDATION_FAILED with a populated fieldErrors map."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "const body = pm.response.json();",
+                  "pm.test('code', () => pm.expect(body.code).to.eql('VALIDATION_FAILED'));",
+                  "pm.test('reports every blank field', () => pm.expect(Object.keys(body.fieldErrors)).to.have.lengthOf(4));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Register merchant - invalid country (400)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"businessName\": \"Bad Country Co\",\n  \"email\": \"owner@badcountry.example\",\n  \"country\": \"USA\",\n  \"defaultCurrency\": \"USD\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/merchants", "host": ["{{baseUrl}}"], "path": ["api", "v1", "merchants"] },
+            "description": "Domain invariant failure, which Bean Validation cannot express: returns INVALID_REQUEST with an empty fieldErrors map."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "const body = pm.response.json();",
+                  "pm.test('code', () => pm.expect(body.code).to.eql('INVALID_REQUEST'));",
+                  "pm.test('names the broken rule', () => pm.expect(body.message).to.eql('Country must be of length 2'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get merchant - unknown id (404)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/merchants/mrc_550e8400-e29b-41d4-a716-446655440000",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "merchants", "mrc_550e8400-e29b-41d4-a716-446655440000"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('MERCHANT_NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get merchant - malformed id (400)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/merchants/not_a_merchant_id",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "merchants", "not_a_merchant_id"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('INVALID_REQUEST'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
