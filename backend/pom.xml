@@ -45,6 +45,25 @@
             <artifactId>spring-boot-starter-webmvc</artifactId>
         </dependency>
 
+        <!-- Security: BCryptPasswordEncoder for password hashing, and (from the next
+             checkpoint on) the filter chain that enforces the tokens this service issues.
+             NOTE: adding this starter switches on Spring Security's auto-configuration, which
+             locks down EVERY endpoint by default. SecurityConfiguration re-opens them, because
+             applying tokens to the merchant API is deliberately a later change. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- JWT signing/verification (NimbusJwtEncoder / NimbusJwtDecoder). Pulled in on its
+             own rather than via spring-boot-starter-oauth2-resource-server: we want the JOSE
+             library, not the resource-server auto-configuration. The version is managed by the
+             Spring Security BOM that the Boot parent imports, so no version is pinned here. -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-oauth2-jose</artifactId>
+        </dependency>
+
         <!-- Persistence: Spring Data JPA + PostgreSQL driver + Flyway migrations -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
