@@ -1,29 +1,96 @@
+# ============================================================================
+#  PayMesh backend configuration
+#  Single source of truth for app config. Each property is explained inline.
+# ============================================================================
+
 spring:
+  # Logical name of the application. Shows up in logs, actuator /info, and later
+  # in tracing/metrics as the service identifier. Omit -> defaults to blank.
   application:
     name: paymesh-backend
 
+  # --- Datasource: how the app connects to PostgreSQL ------------------------
+  # Spring Boot builds a HikariCP connection pool from these. The postgresql
+  # driver on the classpath is auto-detected, so we do NOT set driver-class-name
+  # -- Boot infers it from the jdbc: URL.
   datasource:
+    # JDBC URL: protocol + host + port + database name. Omit -> with spring-data-jpa
+    # on the classpath the app fails to start (no datasource to auto-configure).
     url: jdbc:postgresql://localhost:5432/paymesh
+    # DB role the app authenticates as. Omit -> auth failure when the pool opens.
     username: paymesh_app
+    # Password for that role. DEV-ONLY value; real secrets come from env/secret
+    # manager later and are never committed. Omit -> auth failure.
     password: paymesh_dev_password
 
+  # --- JPA / Hibernate -------------------------------------------------------
   jpa:
     hibernate:
+      # validate: Hibernate NEVER creates or alters tables; at startup it only
+      # checks the live schema matches the mapped entities and fails fast on a
+      # mismatch. Flyway owns all schema changes, so this is production-safe.
+      # With no entities yet there is nothing to validate, so startup passes.
+      #   create / create-drop -> wipe & rebuild on every boot (data loss)
+      #   update               -> silently mutates prod schema, no history/review
+      #   none                 -> also safe, but won't catch entity/schema drift
       ddl-auto: validate
+    # false: do NOT dump generated SQL to stdout. Sensible production default
+    # (System.out logging is unstructured and slow). Flip to true locally to see
+    # queries; pair with format_sql below.
+    show-sql: false
+    # open-in-view=false: close the persistence context at the end of the service
+    # layer instead of holding a DB connection open through view/HTTP rendering.
+    # Avoids lazy-loading in controllers and connection-pool exhaustion. Boot
+    # defaults this to true (with a warning); we turn it off deliberately.
     open-in-view: false
+    properties:
+      hibernate:
+        # When SQL logging IS on (show-sql: true), pretty-print it across indented
+        # lines instead of one long string. No effect while show-sql is false; set
+        # now so dev logging is readable later.
+        format_sql: true
+    # NOTE ON DIALECT: we intentionally do NOT set database-platform / dialect.
+    # Hibernate auto-detects PostgreSQLDialect from the live JDBC connection
+    # metadata. Hard-coding a versioned dialect is unnecessary in Spring Boot 4
+    # and risks drifting from the actual DB version.
 
+  # --- Flyway: version-controlled schema migrations (schema source of truth) --
+  flyway:
+    # true: run pending migrations automatically at startup. Default when
+    # flyway-core is on the classpath; explicit so it's obvious the app owns
+    # migration execution. Disabled -> schema is never created/upgraded by the app.
+    enabled: true
+    # Folder(s) Flyway scans for versioned SQL, e.g. V1__create_merchants.sql.
+    # This is the default; stated so the convention is explicit. The folder does
+    # not exist yet (no migrations this checkpoint) -> Flyway finds zero scripts
+    # and does nothing, which is a valid, green state.
+    locations: classpath:db/migration
+    # false: refuse to run against a NON-empty database that has no Flyway history,
+    # instead of silently "adopting" it. Fail-loud is the safe production default;
+    # set true only for a deliberate one-time adoption of a pre-existing schema.
+    baseline-on-migrate: false
+
+# --- Web server --------------------------------------------------------------
 server:
+  # HTTP port. Omit -> defaults to 8080 anyway; pinned for clarity.
   port: 8080
+  # graceful: on SIGTERM, stop accepting new requests but let in-flight ones
+  # finish before exit. Matters once real money movement runs through here --
+  # prevents cutting off a request mid-transaction on deploy.
   shutdown: graceful
 
+# --- Actuator (operational endpoints) ---------------------------------------
 management:
   endpoints:
     web:
       exposure:
+        # Only expose health + info over HTTP; everything else stays off to avoid
+        # leaking internals. Omit -> Boot exposes only /health by default.
         include:
           - health
           - info
-
   endpoint:
     health:
+      # never: /actuator/health returns just UP/DOWN, no component internals
+      # (DB host, disk paths) to unauthenticated callers.
       show-details: never
