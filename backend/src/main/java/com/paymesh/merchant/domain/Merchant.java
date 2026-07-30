@@ -60,6 +60,33 @@ public final class Merchant {
         );
     }
 
+    /**
+     * Rebuilds a Merchant from already-persisted state. Deliberately does NOT re-normalize: those
+     * values passed through register() before they were stored, so re-normalizing on read would
+     * mask corruption. Unlike register(), it can restore any status and a distinct updatedAt.
+     */
+    public static Merchant reconstitute(
+        MerchantId merchantId,
+        String businessName,
+        String email,
+        String country,
+        String defaultCurrency,
+        MerchantStatus status,
+        Instant createdAt,
+        Instant updatedAt
+    ) {
+        return new Merchant(
+            merchantId,
+            businessName,
+            email,
+            country,
+            defaultCurrency,
+            status,
+            createdAt,
+            updatedAt
+        );
+    }
+
     private static String normalizeBusinessName(String businessName) {
         if(businessName == null) {
             throw new IllegalArgumentException("Business name cannot be null");

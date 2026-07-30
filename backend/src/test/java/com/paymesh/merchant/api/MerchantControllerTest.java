@@ -6,6 +6,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 
 import static org.hamcrest.Matchers.matchesPattern;
@@ -16,6 +17,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest
 @AutoConfigureMockMvc
+// Registration now writes to PostgreSQL. Each test runs in a transaction that is rolled back
+// afterwards, so the fixed emails below cannot collide with a previous run.
+@Transactional
 class MerchantControllerTest {
 
     private final MockMvc mockMvc;
