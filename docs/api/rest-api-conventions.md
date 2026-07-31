@@ -1348,7 +1348,9 @@ PAYMENT_ALREADY_CONFIRMED
 INVALID_PAYMENT_STATE
 REFUND_AMOUNT_EXCEEDED
 REFUND_NOT_ALLOWED
-IDEMPOTENCY_KEY_CONFLICT
+IDEMPOTENCY_KEY_REQUIRED
+IDEMPOTENCY_KEY_REUSED
+REQUEST_IN_PROGRESS
 RATE_LIMIT_EXCEEDED
 INTERNAL_ERROR
 ```
@@ -2150,10 +2152,10 @@ Example conflict:
 
 ```json
 {
-  "type": "https://api.paymesh.dev/problems/idempotency-key-conflict",
-  "title": "Idempotency key conflict",
+  "type": "https://api.paymesh.dev/problems/idempotency-key-reused",
+  "title": "Idempotency key reused",
   "status": 409,
-  "code": "IDEMPOTENCY_KEY_CONFLICT",
+  "code": "IDEMPOTENCY_KEY_REUSED",
   "detail": "The supplied idempotency key was previously used with a different request.",
   "instance": "/api/v1/payment-intents",
   "requestId": "req_01J...",

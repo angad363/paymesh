@@ -61,8 +61,26 @@ rather than surfacing as a `NullPointerException` inside `JwtAccessTokenService`
 **Guard two — the known dev value is refused outside development.** The dev secret is
 public, so an operator pasting it into a real environment variable defeats guard one
 while achieving nothing. A startup check compares the configured secret against the
-known dev constant and, when they match and the `dev` profile is not active, throws
-with a message that says what to do. Implemented as an `ApplicationListener` /
+known dev constant and, when they match and the deployment is not a development one,
+throws with a message that says what to do.
+
+Two details that this wording originally left dangerously vague, both found in review
+after a packaged jar was booted successfully on the published key:
+
+- **"Development" means `dev` is the *only* active profile**, not merely one of them.
+  `SPRING_PROFILES_ACTIVE=dev,production` is a production deployment. Layered config
+  (Helm base + overlay, compose `env_file` + inline) appends profiles rather than
+  replacing them, so this is an ordinary operator error, and Spring's
+  `Environment.matchesProfiles("dev")` returns true for it.
+- **The comparison strips and ignores case.** Spring does not trim environment
+  variables, and a Kubernetes secret populated from a file or a Docker `--env-file`
+  routinely carries a trailing newline. An exact `equals` reduces the signing key to a
+  public string plus one guessable character.
+
+Note when testing this: `ApplicationContextRunner.withPropertyValues` **trims its
+values**, so a whitespace case written through it passes against a broken guard and
+proves nothing. Drive those cases through a raw `StandardEnvironment` with a
+`MapPropertySource`. Implemented as an `ApplicationListener` /
 `@Bean` validation in the shared infrastructure package, not inside identity — it is a
 deployment rule, not an identity rule.
 
@@ -189,12 +207,21 @@ the rest of the codebase rather than the RFC-7807 shape the conventions doc desc
 ### Testing
 
 Unit tests over the filter with a stub repository cover every row of the table above.
-An integration test against Testcontainers covers the two that only the database can
-prove:
+An integration test against Testcontainers covers the ones only the database can prove:
 
-- The same key sent twice concurrently produces exactly one execution of the handler
-  and two identical responses.
+- The same key sent **concurrently** produces exactly one execution of the handler, at
+  least one `201`, and every other response is either that same `201` replayed or a
+  `409 REQUEST_IN_PROGRESS`.
+- The same key sent **sequentially** after the first completes produces two identical
+  responses, the second carrying `Idempotency-Replayed: true`.
 - A record left `IN_PROGRESS` yields `409 REQUEST_IN_PROGRESS`, not a hang.
+
+> **Corrected 31 July 2026.** This section originally asked for two *concurrent*
+> requests to produce "two identical responses". That contradicts the outcome table
+> above and cannot hold: the loser of the race arrives while the winner is still
+> `IN_PROGRESS`, so there is no stored response to replay yet. Identical responses is
+> a property of a *sequential* retry, and the two cases are now stated separately. The
+> table is normative; where this prose disagreed with it, the prose was wrong.
 
 Write the concurrency test so that it **fails if the insert is changed to
 read-then-write**. A test that passes either way proves nothing.
