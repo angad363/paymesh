@@ -50,19 +50,21 @@ Three further reasons, each sufficient on its own:
   unemitted. Wiring it makes the outbox PR provable end to end today rather than dead
   scaffolding — which was the stated reason roadmap item 7 deferred the whole thing
   rather than half-building it.
-- **It surfaces a blocker early.** See §0.5: this codebase currently has no way to run two
-  writes in one transaction, and finding that out inside the Payment PR would stall it.
+- **It surfaces a blocker early.** See §1.1: this codebase has no multi-statement
+  transaction anywhere, and the annotation-based way of getting one does not work with the
+  house bean style. Finding that out inside the Payment PR would stall it.
 
 **What "before" costs.** One extra PR on the critical path, and — because PR 2 emits
-`payment.created` — PR 2 cannot merge until PR 1 does. Mitigated by stacking PR 2's
-branch on PR 1's, which this project has done before.
+`payment.created` — PR 2 cannot merge until PR 1 does. Rebase PR 2 onto PR 1 once PR 1
+merges (see §6).
 
 **What "with Payment" would have cost.** The reviewer of PR 2 would be judging the
 outbox's correctness and the state machine's correctness in one sitting, and the outbox's
-entire correctness claim is one `commit()`. The failure mode is not a broken build; it is
-a green build in which the state change and the event row commit separately and nobody
-notices until an event goes missing under load. That is precisely the class of bug this
-project has been paying an independent reviewer to catch.
+entire correctness claim is one `commit()`. Because §1.1 lands on `TransactionTemplate`
+rather than an annotation, a service that simply *forgets* to wrap its two writes compiles,
+passes every happy-path test, and commits them separately — silently. That failure is
+invisible precisely where it must not be, which is the argument for a PR whose only subject
+is the transaction boundary.
 
 ### 0.2 An order may hold **at most one live payment intent**, and the database enforces it
 
@@ -78,9 +80,44 @@ A partial unique index, not an application check. A rule enforced only in applic
 is not enforced: two concurrent `POST /api/v1/payment-intents` for one order both pass a
 pre-check and both insert. The index is what makes the second lose.
 
-The exclusion set is exactly `FAILED` and `CANCELLED` — the two states from which a
-retry is legitimate. `SUCCEEDED`, `PARTIALLY_REFUNDED` and `REFUNDED` still block, because
-an order that has been paid must not acquire a second intent.
+The exclusion set is exactly `FAILED` and `CANCELLED`. `SUCCEEDED`, `PARTIALLY_REFUNDED`
+and `REFUNDED` still block, because an order that has been paid must not acquire a second
+intent.
+
+**A slot that cannot be released kills the order, which is worse than the overpayment the
+index prevents.** Since the index frees the slot only on `FAILED` or `CANCELLED`, every
+state a customer can strand an intent in must have a route to `CANCELLED`:
+
+| State | Route out | Owner |
+|---|---|---|
+| `REQUIRES_PAYMENT_METHOD` | merchant cancel | PR 2 |
+| `REQUIRES_CONFIRMATION` | merchant cancel | PR 3 |
+| `REQUIRES_ACTION` | **merchant cancel** — see below | PR 4 |
+| `AUTHORIZED` | merchant cancel | PR 5 |
+| `PROCESSING` | **none. Deliberate.** | deferred, §0.4 |
+
+`REQUIRES_ACTION → CANCELLED` is not optional and was missing from the first draft of this
+spec. A customer who abandons a 3DS challenge, closes the tab, or lets it time out is
+ordinary behaviour, not a failure mode; without this transition the intent sits in
+`REQUIRES_ACTION` forever, the merchant cannot create a second one (`409`), cannot mark the
+order paid, and cannot re-create the order without colliding with their own
+`merchant_order_ref`. The order is dead.
+
+It composes safely with §0.4: if the customer completes the challenge *after* the merchant
+cancels, the late `SUCCEEDED` callback lands on a `CANCELLED` intent, is refused as
+`IGNORED_TERMINAL`, and moves no money. It does leave PayMesh and the provider disagreeing
+in a narrow race — the `provider_callbacks` row records exactly that, with the outcome
+that makes it findable, and resolving it is reconciliation's job (SDD §24.1). State this
+in the ADR; do not pretend the race is not there.
+
+**`PROCESSING` is deliberately uncancellable, and this is a named deferral, not an
+oversight.** An in-flight attempt may already have succeeded at the provider, so a local
+cancel could erase a payment that really happened — strictly worse than a stuck order. The
+only exit is a callback, and §0.4 admits a callback may never arrive. The full answer is a
+`PROCESSING` timeout plus provider reconciliation (SDD §21.4, §24.1), and **neither is in
+scope here.** Until they exist, an intent whose callback is lost strands its order, and
+recovery is manual. That is the trade, written down so it is discovered here and not in
+month three.
 
 The pre-check may exist for a friendly message. It may not be trusted. The adapter
 translates the constraint violation into `409 ORDER_HAS_ACTIVE_PAYMENT_INTENT`, exactly
@@ -120,7 +157,7 @@ Which transitions are live, by PR:
 |---|---|---|
 | 2 | `REQUIRES_PAYMENT_METHOD`, `CANCELLED` | create → `REQUIRES_PAYMENT_METHOD`; `REQUIRES_PAYMENT_METHOD` → `CANCELLED` |
 | 3 | `REQUIRES_CONFIRMATION`, `PROCESSING` | attach; confirm; `REQUIRES_CONFIRMATION` → `CANCELLED` |
-| 4 | `SUCCEEDED`, `FAILED`, `AUTHORIZED`, `REQUIRES_ACTION` | all four from `PROCESSING`; `REQUIRES_ACTION` → `PROCESSING` |
+| 4 | `SUCCEEDED`, `FAILED`, `AUTHORIZED`, `REQUIRES_ACTION` | all four from `PROCESSING`; `REQUIRES_ACTION` → `PROCESSING` (re-confirm); **`REQUIRES_ACTION` → `CANCELLED`** (merchant, §0.2) |
 | 5 | — | `AUTHORIZED` → `SUCCEEDED` (capture); `AUTHORIZED` → `CANCELLED` |
 | — | `PARTIALLY_REFUNDED`, `REFUNDED` | **never in this design** — Refund owns them |
 
@@ -146,6 +183,19 @@ A duplicate delivery loses on that primary key, the transaction rolls back, and 
 happened — the intent is untouched, no state-history row, no outbox row. The response is
 `200` with `{"outcome": "DUPLICATE"}`.
 
+**The blocking behaviour is load-bearing and easy to talk yourself out of.** Because the
+insert is inside the transaction, a concurrent duplicate does not fail immediately:
+Postgres blocks the second inserter on the index entry until the first transaction commits
+or rolls back. If the first commits, the second gets its unique violation and no-ops
+correctly. **If the first rolls back, the second's insert succeeds and it applies the
+event** — which is precisely why an in-transaction insert cannot swallow an event that was
+never actually processed. A reviewer reasoning about this without the blocking step will
+convince themselves there is a lost-event bug. There is not.
+
+The `SELECT ... FOR UPDATE` in §4.4 step 2 deliberately precedes the insert. It orders two
+*different* callbacks for one intent; the primary key orders two *identical* ones. Neither
+does the other's job.
+
 Note the scope: `(provider, external_event_id)`, **not** merchant-leading. This is the one
 table in PayMesh where the merchant-leading rule does not apply, because a provider's
 event id is provider-global and the merchant is *derived* from the intent the callback
@@ -169,8 +219,17 @@ payment left in `PROCESSING` and no way to replay it. One transaction, one commi
    state machine alone is not enough, because the machine contains a cycle:
    `PROCESSING → REQUIRES_ACTION → PROCESSING`. A stale `REQUIRES_ACTION` event arriving
    after the second `PROCESSING` would be a *legal* transition and would drag the payment
-   backwards. Ties are refused, not applied: an equal timestamp is either a duplicate
-   (caught above) or ambiguous, and refusing is the safe direction.
+   backwards.
+
+   **Ties are refused, and that is a choice between two failure modes rather than the
+   elimination of one.** Two genuinely different events sharing a timestamp — a provider
+   emitting `AUTHORIZED` and `SUCCEEDED` in the same second — means the second is dropped
+   and the payment strands in `AUTHORIZED`. Refusing a tie trades "moved backwards" for
+   "never moved forward"; it is the better of the two because a stranded payment is
+   visible and recoverable while a reversed one is neither, but it is not safety. The
+   proper fix is a provider **sequence number** rather than a timestamp, which the
+   Provider Simulator can emit when it exists — and this is the strongest argument for
+   adding one.
 
 Both refusals return `200` with an outcome of `IGNORED_STALE` / `IGNORED_TERMINAL`, and
 both still write the `provider_callbacks` row so a re-delivery of the stale event is also
@@ -236,22 +295,52 @@ and the state change share a transaction.**
 
 Every application service in this codebase is a `final` class with no Spring annotations,
 instantiated from an `@Bean` method (CLAUDE.md, java-coding-conventions §13). That style
-**cannot carry `@Transactional`**: Spring's transaction advisor needs a proxy, a class
-with no interface needs a CGLIB subclass, and a `final` class cannot be subclassed. The
-annotation would be silently inert — the worst possible outcome, because the build stays
-green and the two writes commit separately.
+**cannot carry `@Transactional`**, and the failure is loud: Spring's transaction advisor
+needs a proxy, Boot defaults `spring.aop.proxy-target-class=true` so it reaches for a CGLIB
+subclass, and a `final` class cannot be subclassed. The context refuses to refresh.
 
-There is also, today, no multi-statement transaction anywhere in PayMesh. Every write is a
-single `saveAndFlush`, which Spring Data wraps on its own. This PR introduces the first
-one.
+```
+BeanCreationException: Error creating bean with name '…'
+  Could not generate CGLIB subclass of class …
+Caused by: java.lang.IllegalArgumentException: Cannot subclass final class …
+```
+
+> **Corrected 1 August 2026.** This section originally claimed the annotation would be
+> "silently inert — the build stays green". That is false, and it was verified false by
+> the reviewer: startup fails outright. The correction matters beyond this paragraph,
+> because an implementer who internalises "annotations are quietly ignored here" will
+> misjudge every other Spring feature in the codebase. `@Transactional` demonstrably
+> *works* in PayMesh today — just never on an application service.
+
+Three shapes were measured, and the obvious escape hatch does not work either:
+
+| Bean shape | Boot defaults | with `proxy-target-class=false` |
+|---|---|---|
+| `final`, no interface — the `CreateOrderService` shape | **startup failure** | still fails |
+| `final`, implements an interface | **startup failure**, same `Cannot subclass final class` | works |
+| non-final, no interface (control) | works | works |
+
+Adding an interface does not help, because Boot reaches for CGLIB even when one exists. It
+only helps if `proxy-target-class=false` is set platform-wide, which is not a thing to do
+to fix one bean.
+
+There is also no multi-statement transaction anywhere in PayMesh today. `@Transactional`
+appears only on Spring Data repository interfaces — Spring Data's own on the CRUD methods,
+plus the idempotency layer's hand-written `@Modifying` native queries — and every one of
+them wraps a single statement. This PR introduces the first transaction that spans two.
 
 **Use `TransactionTemplate`, injected explicitly.** It needs no proxy, works with `final`
 classes, and being visible in the constructor suits a codebase that wires everything by
 hand. Declare the `TransactionTemplate` bean in `SharedConfiguration`.
 
-Do **not** solve this by dropping `final` and annotating. That trades an explicit
-three-line change for an invisible, proxy-dependent one, in the one place where "it looks
-like it works" is unacceptable.
+Do **not** solve this by dropping `final` and annotating. The annotation route is not
+*broken*, it is merely invisible at the call site — and the whole reason this project wires
+beans by hand is that a transaction boundary you cannot see in the constructor is a
+transaction boundary nobody re-checks.
+
+The cost of `TransactionTemplate` is real and belongs on the record: a service that simply
+forgets to wrap its two writes compiles and passes every happy-path test. That is exactly
+what §1.5's sabotage test exists to catch, and why it is not optional.
 
 ### 1.2 Migration `V7__create_outbox_events.sql`
 
@@ -743,7 +832,16 @@ provider_callbacks
   received_at        TIMESTAMPTZ   NOT NULL
   processed_at       TIMESTAMPTZ   NOT NULL
 
+  -- DELIBERATELY NOT MERCHANT-LEADING. DO NOT "FIX" THIS.
+  -- Every other uniqueness rule in PayMesh leads with merchant_id, because every other
+  -- one scopes data a merchant supplied. This one does not: external_event_id is the
+  -- PROVIDER's id, provider-global, and the merchant here is DERIVED from the intent the
+  -- callback names rather than supplied by the caller. Adding merchant_id to this key
+  -- would let a single provider event be processed once per merchant it can be resolved
+  -- against -- which is the exact duplicate this constraint exists to prevent, and a
+  -- duplicate that moves money.
   PRIMARY KEY (provider, external_event_id)
+
   FOREIGN KEY (merchant_id, payment_intent_id)
       REFERENCES payment_intents (merchant_id, payment_intent_id)
   CHECK (outcome IN ('APPLIED', 'IGNORED_STALE', 'IGNORED_TERMINAL'))
@@ -751,13 +849,26 @@ provider_callbacks
 INDEX (merchant_id, payment_intent_id, received_at DESC)
 ```
 
+The comment above is **part of the migration**, not a note in this spec. `V3` and `V5` set
+the standard of explaining *why* per constraint, and the warning has to land where the
+next reviewer is actually looking — which is the SQL file, not a design doc nobody reopens.
+
 Both `merchant_id` and `payment_intent_id` are `NOT NULL` because a callback naming an
-intent this platform does not know is **rejected with `404` and stored nowhere**. There is
-nothing to deduplicate for an event that had no effect, and storing rows keyed on a
-caller-chosen `external_event_id` for intents that do not exist is unbounded write
-amplification on an endpoint reachable with one shared secret. This does mean the endpoint
-tells its caller whether an intent exists; the caller is the provider, which necessarily
-knows.
+intent this platform does not know is **rejected and stored nowhere**. There is nothing to
+deduplicate for an event that had no effect, and storing rows keyed on a caller-chosen
+`external_event_id` for intents that do not exist is unbounded write amplification on an
+endpoint reachable with one shared secret.
+
+**The status code for it is `404`, and that is a deliberate retry request, not merely a
+rejection.** §4.4's rule is that every other path answers `200` because a provider retries
+on non-2xx; here retrying is exactly what should happen, because the likeliest cause is a
+callback overtaking the transaction that created the intent. The write-amplification
+argument is why nothing is *stored*; the retry semantics are why the code is `404` and not
+a stored-and-ignored `200`. Those are two decisions, and both are wanted.
+
+The bound on that amplification is therefore the provider's own retry budget, not this
+endpoint — one more reason the row is not written. It also means the endpoint tells its
+caller whether an intent exists; the caller is the provider, which necessarily knows.
 
 ### 4.2 Authentication
 
@@ -845,7 +956,19 @@ Outbox events emitted: `payment.succeeded`, `payment.failed`, `payment.authorize
 **Every path except "unknown intent" returns `200`.** A provider retries on non-2xx.
 Answering a duplicate or a superseded event with `409` produces an infinite retry against a
 payment that is already finished — a self-inflicted outage that looks like a provider
-problem.
+problem. The one `404` is the one case where a retry is the correct thing to ask for
+(§4.1).
+
+**Cancel widens again, and this PR owns it.** `REQUIRES_ACTION → CANCELLED` becomes legal
+on `POST /api/v1/payment-intents/{id}/cancel`, for the reason set out in §0.2: an abandoned
+3DS challenge otherwise holds the order's only intent slot forever. Actor is `MERCHANT`.
+`PROCESSING → CANCELLED` stays refused.
+
+Its test is the ordering case, not the happy path: **cancel from `REQUIRES_ACTION`, then
+deliver a `SUCCEEDED` callback.** The intent must remain `CANCELLED`, the callback must be
+recorded with outcome `IGNORED_TERMINAL`, and no outbox row may be written. That row is the
+only trace of a genuine PayMesh/provider divergence, and reconciliation will need to find
+it.
 
 ### 4.5 Redaction
 
@@ -929,10 +1052,14 @@ is `409`; over-capture is `422`; partial capture leaves `captured_amount_minor` 
 | 4 provider callbacks | `V10` | 3 | 3 merged |
 | 5 manual capture | — | 4 | 4 merged |
 
-- **1 and 2 may be authored in parallel** by stacking 2's branch on 1's. They touch
-  disjoint packages and disjoint migrations; the only shared file is
-  `IdempotencyConfiguration` (2 adds routes, 1 does not). Stacking costs mechanical
-  conflicts at merge, which this project has absorbed before.
+- **1 and 2 may be authored in parallel** by branching 2 from 1 before 1 merges. They touch
+  disjoint packages and disjoint migrations.
+  **When PR 1 merges, rebase PR 2 onto `main` and re-run the full suite before review** —
+  do not open PR 2 for review off the pre-merge base. Stacking #26 on #24 produced three
+  add/add conflicts, and only one of them came from a file the two branches shared; the
+  other two came from #23 landing *between* the branch point and the merge. Conflicts are a
+  function of everything that merges during the window, not of the two branches in hand, so
+  the branch-point diff is not a prediction of them.
 - **3, 4 and 5 are strictly serial.** Each one's reachable states depend on the previous
   one's, and 4 in particular cannot be reviewed without 3's attempts table.
 - **The `V6` `payment_method_tokens` fix is independent of all five** — see §3.2. Nothing
@@ -946,10 +1073,14 @@ Each PR carries, in the same PR:
   with assertions that assert. PR 4's folder needs a pre-request script that computes the
   HMAC; write it, do not paste a fixed signature.
 - `docs/decisions/` — **ADR-010** transactional outbox in PostgreSQL with no relay (PR 1;
-  include the `final`-class / `TransactionTemplate` finding, it is the non-obvious part);
-  **ADR-011** one live payment intent per order, enforced by a partial unique index (PR 2);
-  **ADR-012** provider callback deduplication and ordering (PR 4). Numbers assigned here so
-  two implementers do not both write ADR-010.
+  include §1.1's measured proxy table, and the accepted cost that a forgotten
+  `TransactionTemplate` wrap is silent where a forgotten annotation would not compile);
+  **ADR-011** one live payment intent per order, enforced by a partial unique index (PR 2;
+  must carry §0.2's slot-release table, the `REQUIRES_ACTION` cancel race, and the
+  uncancellable `PROCESSING` deferral — the constraint is only defensible alongside them);
+  **ADR-012** provider callback deduplication and ordering (PR 4; include the tie-refusal
+  trade and the case for a provider sequence number). Numbers assigned here so two
+  implementers do not both write ADR-010.
 - `docs/project-status.md` — at the end of the session, not during.
 
 Nothing merges on the author's report. An independent reviewer re-runs the suite and, where
@@ -969,18 +1100,29 @@ three bugs in this project.
    payment succeeds. This is correct-by-design and *visibly wrong* to anyone reading the
    API. It resolves when the outbox gets a relay and Order gets a consumer. Until then it
    belongs in `project-status.md` as a known inconsistency, not as a bug report.
-2. **Nothing expires an order or an intent.** Open item 9 already records this for orders.
-   An intent left `REQUIRES_PAYMENT_METHOD` forever also holds the live-intent slot for its
-   order forever, so the sweeper matters more after PR 2 than before it. It is still not
-   built here.
+2. **Nothing expires an order or an intent, and one intent state has no exit at all.**
+   Open item 9 already records the order sweeper. The sharper problem is that an intent
+   holds its order's only slot (§0.2), so a stuck intent is a stuck order. `PROCESSING` is
+   the state with no exit: cancel is refused by design and the only way out is a callback
+   that may never arrive. `REQUIRES_ACTION` had the same problem until §0.2 added a cancel
+   for it. A `PROCESSING` timeout plus provider reconciliation (SDD §21.4, §24.1) is the
+   real answer and neither is in scope; until then, a lost callback strands an order and
+   recovery is manual. This is the single largest known hole in the design and it should go
+   near the top of the open-items list, not into a backlog.
+
+   *(This item previously named `REQUIRES_PAYMENT_METHOD`, which is cancellable from PR 2
+   and therefore the one recoverable case. Corrected 1 August 2026.)*
 3. **`payment_state_history` has no reader.** No endpoint exposes a timeline. The table is
    written from PR 2 because a history with a hole is worthless; exposing it is a later,
    separate decision.
-4. **A stranded `IN_PROGRESS` idempotency record still wedges a key** (open item 6). Payment
-   inherits it. With four idempotent Payment routes the surface grows, and the merchant's
-   escape — a fresh key — now runs into `uq_payment_intents_live_per_order` rather than
-   succeeding. That is safe but the error message will be confusing. Worth a reaper sooner
-   than "eventually".
+4. **A stranded `IN_PROGRESS` idempotency record still wedges a key** (open item 6), and
+   Payment makes it materially worse rather than merely more frequent. With five idempotent
+   Payment routes the surface grows, and the merchant's documented escape — retry with a
+   fresh key — now runs into `uq_payment_intents_live_per_order` and returns
+   `409 ORDER_HAS_ACTIVE_PAYMENT_INTENT` instead of succeeding. Safe, but the escape hatch
+   no longer works and the error names the wrong problem. It compounds with item 2: neither
+   the wedged key nor the stuck intent has a sweeper. **The reaper should move up the
+   open-items list on the strength of this**, not wait for table growth to justify it.
 5. **`java-coding-conventions.md` §7 still says business-rule failures live in
    `application`**, which cannot be true for exceptions thrown by an aggregate. Payment adds
    five more such exceptions in `domain`. Fix the doc or acknowledge the exception in it.
