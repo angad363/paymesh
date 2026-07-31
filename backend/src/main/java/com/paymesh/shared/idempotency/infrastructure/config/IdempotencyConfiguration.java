@@ -27,15 +27,14 @@ public class IdempotencyConfiguration {
      * Declarations are {@code "METHOD /path/template"} -- the template, not a concrete URI, because
      * the template is what gets stored as the record's endpoint.
      * <p>
-     * Empty today: {@code POST /api/v1/merchants} is unauthenticated and so has no merchant to
-     * scope a key by, and {@code POST /api/v1/customers} creates no financial effect worth the
-     * header. The Order capability adds the first two entries:
-     * <pre>
-     * "POST /api/v1/orders",
-     * "POST /api/v1/orders/{orderId}/cancel"
-     * </pre>
+     * Still absent, deliberately: {@code POST /api/v1/merchants} is unauthenticated and so has no
+     * merchant to scope a key by, and {@code POST /api/v1/customers} creates no financial effect
+     * worth the header.
      */
-    private static final List<String> IDEMPOTENT_ROUTES = List.of();
+    private static final List<String> IDEMPOTENT_ROUTES = List.of(
+        "POST /api/v1/orders",
+        "POST /api/v1/orders/{orderId}/cancel"
+    );
 
     @Bean
     IdempotencyRepository idempotencyRepository(SpringDataIdempotencyRepository springDataRepository) {

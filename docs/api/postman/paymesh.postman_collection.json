@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "PayMesh API",
-    "description": "PayMesh Payment-as-a-Service API.\n\nSet `baseUrl` (defaults to http://localhost:8080). Run the folders top to bottom: onboarding creates a merchant, Identity & Auth attaches a user and captures a token, and Authenticated access uses it.\n\nCapabilities covered: Identity & Auth, Merchant, Customer.",
+    "description": "PayMesh Payment-as-a-Service API.\n\nSet `baseUrl` (defaults to http://localhost:8080). Run the folders top to bottom: onboarding creates a merchant, Identity & Auth attaches a user and captures a token, and Authenticated access uses it.\n\nCapabilities covered: Identity & Auth, Merchant, Customer, Order.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -56,6 +56,78 @@
     {
       "key": "forgedToken",
       "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c3JfMTExMTExMTEtMTExMS00MTExLTgxMTEtMTExMTExMTExMTExIiwiaXNzIjoicGF5bWVzaCIsImV4cCI6OTk5OTk5OTk5OX0.ZmFrZS1zaWduYXR1cmUtbm90LXByb2R1Y2VkLWJ5LXRoZS1yZWFsLWtleQ"
+    },
+    {
+      "key": "orderId",
+      "value": ""
+    },
+    {
+      "key": "linkedOrderId",
+      "value": ""
+    },
+    {
+      "key": "otherCustomerId",
+      "value": ""
+    },
+    {
+      "key": "ghostCustomerId",
+      "value": ""
+    },
+    {
+      "key": "orderCursor",
+      "value": ""
+    },
+    {
+      "key": "firstPageId",
+      "value": ""
+    },
+    {
+      "key": "firstOrderBody",
+      "value": ""
+    },
+    {
+      "key": "cancelledBody",
+      "value": ""
+    },
+    {
+      "key": "strangerCustomerBody",
+      "value": ""
+    },
+    {
+      "key": "createOrderKey",
+      "value": ""
+    },
+    {
+      "key": "dupRefKey",
+      "value": ""
+    },
+    {
+      "key": "zeroAmountKey",
+      "value": ""
+    },
+    {
+      "key": "linkedOrderKey",
+      "value": ""
+    },
+    {
+      "key": "strangerCustomerKey",
+      "value": ""
+    },
+    {
+      "key": "ghostCustomerKey",
+      "value": ""
+    },
+    {
+      "key": "cancelKey",
+      "value": ""
+    },
+    {
+      "key": "secondCancelKey",
+      "value": ""
+    },
+    {
+      "key": "crossCancelKey",
+      "value": ""
     }
   ],
   "item": [
@@ -1248,6 +1320,1276 @@
                 "exec": [
                   "pm.test('201 Created', () => pm.response.to.have.status(201));",
                   "pm.test('written under the second merchant', () => pm.expect(pm.response.json().merchantId).to.eql(pm.collectionVariables.get('otherMerchantId')));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Orders",
+      "description": "Runs after Authenticated access, which captured accessToken, customerId and otherAccessToken. Covers both writes behind the idempotency layer, cursor pagination, and the cross-tenant 404.",
+      "item": [
+        {
+          "name": "Setup: a customer under the second merchant",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/customers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "customers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"other-buyer@example.test\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherAccessToken}}"
+              }
+            ],
+            "description": "Belongs to the SECOND merchant. Used below to prove that naming another tenant's customer on an order is rejected without confirming the customer is real."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('otherCustomerId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create order",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchantOrderReference\": \"  ORDER-7788  \",\n  \"amountMinor\": 1999,\n  \"currency\": \"inr\",\n  \"description\": \"Two masala chai\",\n  \"metadata\": { \"channel\": \"web\" }\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{createOrderKey}}"
+              }
+            ],
+            "description": "There is no merchantId in this body. The tenant comes from the token. Money is an integer count of minor units with the currency in its own field."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('createOrderKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('opaque prefixed id', () => pm.expect(b.id).to.match(/^ord_[0-9a-f-]{36}$/));",
+                  "pm.test('tenant taken from the token', () => pm.expect(b.merchantId).to.eql(pm.collectionVariables.get('merchantId')));",
+                  "pm.test('amount is an integer of minor units', () => { pm.expect(b.amountMinor).to.eql(1999); pm.expect(Number.isInteger(b.amountMinor)).to.be.true; });",
+                  "pm.test('currency uppercased', () => pm.expect(b.currency).to.eql('INR'));",
+                  "pm.test('reference trimmed', () => pm.expect(b.merchantOrderReference).to.eql('ORDER-7788'));",
+                  "pm.test('nothing paid yet', () => pm.expect(b.amountPaidMinor).to.eql(0));",
+                  "pm.test('starts PENDING', () => pm.expect(b.status).to.eql('PENDING'));",
+                  "pm.test('metadata echoed back', () => pm.expect(b.metadata.channel).to.eql('web'));",
+                  "pm.test('not cancelled', () => pm.expect(b.cancelledAt).to.be.oneOf([null, undefined]));",
+                  "pm.test('no row version leaked', () => pm.expect(JSON.stringify(b)).to.not.include('version'));",
+                  "pm.collectionVariables.set('orderId', b.id);",
+                  "pm.collectionVariables.set('firstOrderBody', pm.response.text());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create order - replay the same key and body (idempotent)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchantOrderReference\": \"  ORDER-7788  \",\n  \"amountMinor\": 1999,\n  \"currency\": \"inr\",\n  \"description\": \"Two masala chai\",\n  \"metadata\": { \"channel\": \"web\" }\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{createOrderKey}}"
+              }
+            ],
+            "description": "A network retry. Same key, same body: the stored response comes back verbatim and the handler never runs again."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created, replayed not re-executed', () => pm.response.to.have.status(201));",
+                  "pm.test('marked as a replay', () => pm.expect(pm.response.headers.get('Idempotency-Replayed')).to.eql('true'));",
+                  "pm.test('byte-identical to the original response', () => pm.expect(pm.response.text()).to.eql(pm.collectionVariables.get('firstOrderBody')));",
+                  "pm.test('no second order was created', () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('orderId')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create order - same key, different body (409)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amountMinor\": 9999,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{createOrderKey}}"
+              }
+            ],
+            "description": "The key was already used for a different request. Replaying the first answer would be a lie, so this is refused rather than served from the record."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('IDEMPOTENCY_KEY_REUSED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create order - no Idempotency-Key (400)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amountMinor\": 1999,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "The header is mandatory on this route: a write that can create money movement must be safe to retry."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('IDEMPOTENCY_KEY_REQUIRED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create order - duplicate merchantOrderReference (409)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchantOrderReference\": \"ORDER-7788\",\n  \"amountMinor\": 500,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{dupRefKey}}"
+              }
+            ],
+            "description": "A FRESH Idempotency-Key, so this is a genuinely new request -- and it still hits the unique constraint. The two de-duplication rules are independent: the header answers 'same request?', the reference answers 'same purchase?'."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('dupRefKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('ORDER_REFERENCE_ALREADY_EXISTS'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create order - zero amount (400)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amountMinor\": 0,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{zeroAmountKey}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('zeroAmountKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('VALIDATION_FAILED'));",
+                  "pm.test('names the offending field', () => pm.expect(pm.response.json().fieldErrors).to.have.property('amountMinor'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create order - linked to a customer of this merchant (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"{{customerId}}\",\n  \"amountMinor\": 2500,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{linkedOrderKey}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('linkedOrderKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.test('customer linked', () => pm.expect(pm.response.json().customerId).to.eql(pm.collectionVariables.get('customerId')));",
+                  "pm.collectionVariables.set('linkedOrderId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create order - customer of another merchant (422, reveals nothing)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"{{otherCustomerId}}\",\n  \"amountMinor\": 2500,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{strangerCustomerKey}}"
+              }
+            ],
+            "description": "The customer is real; it belongs to the other merchant. The next request proves the answer is identical to one for a customer that never existed, so this endpoint cannot be used to confirm another tenant's customer ids."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('strangerCustomerKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable Content', () => pm.response.to.have.status(422));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('CUSTOMER_NOT_FOUND'));",
+                  "pm.collectionVariables.set('strangerCustomerBody', pm.response.text().replace(pm.collectionVariables.get('otherCustomerId'), 'X'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create order - customer that never existed (422, identical answer)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"{{ghostCustomerId}}\",\n  \"amountMinor\": 2500,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{ghostCustomerKey}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('ghostCustomerKey', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('ghostCustomerId', 'cus_' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable Content', () => pm.response.to.have.status(422));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('CUSTOMER_NOT_FOUND'));",
+                  "pm.test('indistinguishable from another tenant\\'s customer', () => pm.expect(pm.response.text().replace(pm.collectionVariables.get('ghostCustomerId'), 'X')).to.eql(pm.collectionVariables.get('strangerCustomerBody')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get order - own (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders/{{orderId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders",
+                "{{orderId}}"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('same order', () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('orderId')));",
+                  "pm.test('still PENDING', () => pm.expect(pm.response.json().status).to.eql('PENDING'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cross-tenant: read another merchant's order (404, not 403)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders/{{orderId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders",
+                "{{orderId}}"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherAccessToken}}"
+              }
+            ],
+            "description": "A real order id and a valid token for a different merchant. 403 would confirm the id exists and turn this route into an oracle for enumerating other tenants' orders."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('not 403 -- existence must not leak', () => pm.expect(pm.response.code).to.not.eql(403));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('ORDER_NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get order - malformed id (400)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders/not_an_order_id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders",
+                "not_an_order_id"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('INVALID_REQUEST'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List orders (200, pagination envelope)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('collection envelope, not a bare array', () => { pm.expect(b).to.have.property('data'); pm.expect(b.data).to.be.an('array'); pm.expect(b).to.have.property('pagination'); });",
+                  "pm.test('default limit is 20', () => pm.expect(b.pagination.limit).to.eql(20));",
+                  "pm.test('pagination states hasMore', () => pm.expect(b.pagination).to.have.property('hasMore'));",
+                  "pm.test('every order belongs to the caller', () => b.data.forEach(o => pm.expect(o.merchantId).to.eql(pm.collectionVariables.get('merchantId'))));",
+                  "pm.test('the created orders are listed', () => pm.expect(b.data.map(o => o.id)).to.include(pm.collectionVariables.get('orderId')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List orders - first page of one (200, captures the cursor)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders?limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('one row', () => pm.expect(b.data.length).to.eql(1));",
+                  "pm.test('more to come', () => pm.expect(b.pagination.hasMore).to.eql(true));",
+                  "pm.test('cursor is opaque', () => { pm.expect(b.pagination.nextCursor).to.be.a('string'); pm.expect(b.pagination.nextCursor).to.not.include('ord_'); });",
+                  "pm.collectionVariables.set('orderCursor', b.pagination.nextCursor);",
+                  "pm.collectionVariables.set('firstPageId', b.data[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List orders - second page via the cursor (200, no repeats)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders?limit=1&cursor={{orderCursor}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "1"
+                },
+                {
+                  "key": "cursor",
+                  "value": "{{orderCursor}}"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "Keyset pagination over (created_at, order_id). The order id is the tiebreak: without it, two orders created in the same instant would be skipped or repeated at a page boundary."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('one row', () => pm.expect(b.data.length).to.eql(1));",
+                  "pm.test('a different order than page one', () => pm.expect(b.data[0].id).to.not.eql(pm.collectionVariables.get('firstPageId')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List orders - limit above the cap (200, capped at 100)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders?limit=5000",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "5000"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('capped, never unbounded', () => pm.expect(pm.response.json().pagination.limit).to.eql(100));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List orders - limit below one (400)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders?limit=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "0"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('INVALID_REQUEST'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List orders - unknown status filter (400)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders?status=NOPE",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "NOPE"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('INVALID_REQUEST'));",
+                  "pm.test('no internal type names in the message', () => pm.expect(pm.response.json().message).to.not.include('enum'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cross-tenant: list orders sees none of them (200, empty)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherAccessToken}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('the other merchant has no orders', () => pm.expect(pm.response.json().data.length).to.eql(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cross-tenant: cancel another merchant's order (404)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders/{{orderId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders",
+                "{{orderId}}",
+                "cancel"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"not mine to cancel\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherAccessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{crossCancelKey}}"
+              }
+            ],
+            "description": "Cancelling is a write, so the tenant check matters more here than on a read. Still 404, not 403."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('crossCancelKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('ORDER_NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancel order (200)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders/{{orderId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders",
+                "{{orderId}}",
+                "cancel"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"out of stock\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cancelKey}}"
+              }
+            ],
+            "description": "Cancellation is requested as an action. There is no status field to set: the aggregate owns the state machine."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cancelKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('now CANCELLED', () => pm.expect(b.status).to.eql('CANCELLED'));",
+                  "pm.test('reason recorded', () => pm.expect(b.cancellationReason).to.eql('out of stock'));",
+                  "pm.test('cancellation is timestamped', () => pm.expect(b.cancelledAt).to.be.a('string'));",
+                  "pm.collectionVariables.set('cancelledBody', pm.response.text());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancel again on a FRESH key (409)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders/{{orderId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders",
+                "{{orderId}}",
+                "cancel"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"out of stock\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{secondCancelKey}}"
+              }
+            ],
+            "description": "A new key means a new request, so it reaches the state machine -- which refuses, because the order is no longer PENDING."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('secondCancelKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('ORDER_NOT_CANCELLABLE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancel again on the SAME key (200, replayed)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders/{{orderId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders",
+                "{{orderId}}",
+                "cancel"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"out of stock\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cancelKey}}"
+              }
+            ],
+            "description": "The same request as the one that succeeded. It never reaches the state machine, so it gets the stored 200 rather than the 409 above."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('marked as a replay', () => pm.expect(pm.response.headers.get('Idempotency-Replayed')).to.eql('true'));",
+                  "pm.test('the original answer, verbatim', () => pm.expect(pm.response.text()).to.eql(pm.collectionVariables.get('cancelledBody')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List orders - filter by status (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders?status=CANCELLED",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "CANCELLED"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('only cancelled orders', () => b.data.forEach(o => pm.expect(o.status).to.eql('CANCELLED')));",
+                  "pm.test('the cancelled order is there', () => pm.expect(b.data.map(o => o.id)).to.include(pm.collectionVariables.get('orderId')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create order - no token (401)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amountMinor\": 1999,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('UNAUTHENTICATED'));"
                 ]
               }
             }
