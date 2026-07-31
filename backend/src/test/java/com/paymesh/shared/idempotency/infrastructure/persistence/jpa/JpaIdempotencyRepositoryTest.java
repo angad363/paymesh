@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.context.ActiveProfiles;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -24,6 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
+@ActiveProfiles("dev")
 class JpaIdempotencyRepositoryTest {
 
     private static final String ENDPOINT = "POST /api/v1/orders";
