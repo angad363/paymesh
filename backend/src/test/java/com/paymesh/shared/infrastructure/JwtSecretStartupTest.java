@@ -2,13 +2,22 @@ package com.paymesh.shared.infrastructure;
 
 import com.paymesh.identity.infrastructure.config.JwtProperties;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.MapPropertySource;
+import org.springframework.core.env.StandardEnvironment;
+
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The four ways this application starts, or refuses to, depending on the JWT signing secret.
@@ -75,6 +84,69 @@ class JwtSecretStartupTest {
                 "paymesh.security.jwt.refresh-token-ttl=30d"
             )
             .run(context -> assertThat(context).hasNotFailed());
+    }
+
+    /**
+     * "The dev profile is active" has to mean dev and nothing else. {@code dev,production} is a
+     * layered-configuration accident waiting to happen -- a Helm overlay or a compose env_file
+     * appends a profile rather than replacing one -- and it produces the worst instance of all:
+     * real datasource credentials from the environment, tokens signed with the published key.
+     */
+    @Test
+    void refusesTheDevSecretWhenDevIsMerelyOneOfSeveralActiveProfiles() {
+        assertThatThrownBy(() -> new DevelopmentSecretGuard(
+            environmentWith(COMMITTED_DEV_SECRET, "dev", "production")
+        ))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("PAYMESH_SECURITY_JWT_SECRET");
+    }
+
+    @Test
+    void allowsTheDevSecretWhenDevIsTheOnlyActiveProfile() {
+        assertThatCode(() -> new DevelopmentSecretGuard(environmentWith(COMMITTED_DEV_SECRET, "dev")))
+            .doesNotThrowAnyException();
+    }
+
+    /**
+     * Spring does not trim environment variables. A Kubernetes secret populated from a file, or a
+     * Docker --env-file, routinely carries a trailing newline, and a guard that a single invisible
+     * character defeats is a guard that signs real tokens with a public string.
+     * <p>
+     * These construct the guard directly instead of going through ApplicationContextRunner, whose
+     * withPropertyValues trims what it applies: a whitespace case written that way passes against
+     * an exact-match comparison and proves nothing.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {
+        COMMITTED_DEV_SECRET,
+        COMMITTED_DEV_SECRET + "\n",
+        COMMITTED_DEV_SECRET + " ",
+        " " + COMMITTED_DEV_SECRET,
+        "DEV-ONLY-INSECURE-JWT-SIGNING-SECRET-CHANGE-ME"
+    })
+    void refusesTheDevSecretHoweverItIsSpelled(String secret) {
+        assertThatThrownBy(() -> new DevelopmentSecretGuard(environmentWith(secret, "production")))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("PAYMESH_SECURITY_JWT_SECRET");
+    }
+
+    @Test
+    void allowsAnOperatorSuppliedSecretThatMerelyResemblesNothingCommitted() {
+        assertThatCode(() -> new DevelopmentSecretGuard(
+            environmentWith(OPERATOR_SUPPLIED_SECRET, "production")
+        ))
+            .doesNotThrowAnyException();
+    }
+
+    private static Environment environmentWith(String secret, String... activeProfiles) {
+        StandardEnvironment environment = new StandardEnvironment();
+        environment.setActiveProfiles(activeProfiles);
+        environment.getPropertySources().addFirst(new MapPropertySource(
+            "test",
+            Map.of("paymesh.security.jwt.secret", secret)
+        ));
+
+        return environment;
     }
 
     /**

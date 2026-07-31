@@ -31,11 +31,11 @@ public class DevelopmentSecretGuard {
     private static final String DEV_JWT_SECRET = "dev-only-insecure-jwt-signing-secret-change-me";
 
     public DevelopmentSecretGuard(Environment environment) {
-        if (environment.matchesProfiles(DEV_PROFILE)) {
+        if (isDevelopmentOnly(environment)) {
             return;
         }
 
-        if (DEV_JWT_SECRET.equals(environment.getProperty(JWT_SECRET_PROPERTY))) {
+        if (isCommittedDevSecret(environment.getProperty(JWT_SECRET_PROPERTY))) {
             throw new IllegalStateException(
                 JWT_SECRET_PROPERTY + " is set to the development value committed to this "
                     + "repository, which is public and therefore signs tokens anyone can forge. "
@@ -43,5 +43,29 @@ public class DevelopmentSecretGuard {
                     + "bytes, or activate the 'dev' profile if this is a development machine."
             );
         }
+    }
+
+    /**
+     * "dev" has to be the only active profile, not merely one of them. Layered configuration
+     * appends profiles rather than replacing them -- a Helm overlay on a base, a compose env_file
+     * beside an inline value -- so {@code dev,production} is an ordinary operator slip, and it
+     * produces the worst instance imaginable: real datasource credentials from the environment,
+     * every token signed with a key published in this repository.
+     */
+    private static boolean isDevelopmentOnly(Environment environment) {
+        String[] activeProfiles = environment.getActiveProfiles();
+
+        return activeProfiles.length == 1 && DEV_PROFILE.equals(activeProfiles[0]);
+    }
+
+    /**
+     * Compared loosely on purpose. Spring does not trim environment variables, and a Kubernetes
+     * secret populated from a file or a Docker --env-file routinely carries a trailing newline;
+     * an exact match would then wave through a signing key that is a public string plus one
+     * guessable character. Anything that differs from the committed value only by whitespace or
+     * case is that value for every purpose an attacker cares about.
+     */
+    private static boolean isCommittedDevSecret(String configuredSecret) {
+        return configuredSecret != null && DEV_JWT_SECRET.equalsIgnoreCase(configuredSecret.strip());
     }
 }
