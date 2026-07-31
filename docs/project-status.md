@@ -174,10 +174,19 @@ The Postman collection is **54 requests / 147 assertions** and its folders must 
 top to bottom — onboarding creates a merchant, Identity & Auth attaches a user and
 captures a token, Authenticated access and Orders use it.
 
-**Running the packaged jar needs three environment variables** that
-`./mvnw spring-boot:run` supplies for you: `PAYMESH_SECURITY_JWT_SECRET` (32+ bytes),
-`SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD`. Without the first the
-application refuses to start, by design.
+**Nothing activates the `dev` profile by default, and that is the whole point.** Each
+supported launch path turns it on differently: `./mvnw spring-boot:run` via the
+`<profiles>` block in `pom.xml`, the IDE via the shared `BackendApplication [dev]`
+configuration in `.run/`, and the test suite via `@ActiveProfiles("dev")`. Running the
+packaged jar activates nothing, so it needs `PAYMESH_SECURITY_JWT_SECRET` (32+ bytes),
+`SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD` supplied explicitly.
+
+A startup failure reading `Property: paymesh.security.jwt.secret / Reason: must not be
+blank` means the profile is not active. That is the guard working. It was also, for a
+while, a genuine papercut: the IDE run button has no idea the Maven plugin exists, so
+a fresh clone failed with a message whose Action line never mentions profiles at all.
+The `.run/` configuration exists so the button works rather than failing more
+legibly (#28). See README §Running it locally.
 
 The collection is not decorative: dropping the tenant predicate in
 `JpaOrderRepository` turns 9 of its assertions red, led by the cross-tenant 404 checks.
