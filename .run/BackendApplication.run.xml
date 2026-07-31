@@ -1,0 +1,24 @@
+<component name="ProjectRunConfigurationManager">
+  <!--
+    Shared IntelliJ run configuration, committed on purpose.
+
+    application.yaml ships no secrets, so the application refuses to start without them. The Maven
+    plugin supplies the dev profile for `./mvnw spring-boot:run`, but the IDE's run button invokes
+    the main class directly and never reads that configuration -- so without this file a fresh clone
+    fails to start from the IDE with a message that does not mention profiles at all.
+
+    This is the IDE's equivalent of the <profiles> block in backend/pom.xml. It activates dev, which
+    loads application-dev.yaml and its throwaway local values. Nothing here is a secret: every value
+    the dev profile supplies is public by definition, which is why DevelopmentSecretGuard refuses
+    those values whenever dev is not the only active profile.
+  -->
+  <configuration default="false" name="BackendApplication [dev]" type="SpringBootApplicationConfigurationType"
+                 factoryName="Spring Boot" nameIsGenerated="false">
+    <module name="backend"/>
+    <option name="SPRING_BOOT_MAIN_CLASS" value="com.paymesh.BackendApplication"/>
+    <option name="ACTIVE_PROFILES" value="dev"/>
+    <method v="2">
+      <option name="Make" enabled="true"/>
+    </method>
+  </configuration>
+</component>
