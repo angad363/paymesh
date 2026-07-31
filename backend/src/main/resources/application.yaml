@@ -17,11 +17,13 @@ spring:
     # JDBC URL: protocol + host + port + database name. Omit -> with spring-data-jpa
     # on the classpath the app fails to start (no datasource to auto-configure).
     url: jdbc:postgresql://localhost:5432/paymesh
-    # DB role the app authenticates as. Omit -> auth failure when the pool opens.
-    username: paymesh_app
-    # Password for that role. DEV-ONLY value; real secrets come from env/secret
-    # manager later and are never committed. Omit -> auth failure.
-    password: paymesh_dev_password
+    # DB role and its password. Declared but deliberately EMPTY: this file is committed,
+    # so anything written here is published. The dev profile supplies throwaway values
+    # (application-dev.yaml); every other environment supplies its own through
+    # SPRING_DATASOURCE_USERNAME / SPRING_DATASOURCE_PASSWORD. Left unset -> auth failure
+    # when the pool opens, which is the intended outcome of forgetting them.
+    username:
+    password:
 
   # --- JPA / Hibernate -------------------------------------------------------
   jpa:
@@ -74,19 +76,22 @@ spring:
 paymesh:
   security:
     jwt:
-      # HS256 signing key for access tokens. Must be at least 32 bytes; the app
-      # refuses to start otherwise, because a shorter key weakens every token it
-      # would go on to issue.
-      #
-      # THE VALUE BELOW IS DEV-ONLY AND PUBLIC. It is committed so a fresh clone
-      # boots and the tests run with no setup. In any deployed environment this is
-      # overridden from the environment / secret manager:
+      # HS256 signing key for access tokens. Declared but deliberately EMPTY, and the
+      # application refuses to start without it. A committed default would be published
+      # in git history, and a deployment that quietly fell back to it would let anyone
+      # mint a token for any user at any merchant -- a total authentication bypass, and a
+      # silent one. Supply it as:
       #     PAYMESH_SECURITY_JWT_SECRET=<32+ random bytes>
-      # (Spring maps that variable onto this property automatically.) Rotating it
-      # invalidates every outstanding access token, which is the intended effect
-      # of a compromise. Refresh tokens survive: they are random values in the
-      # database, not signed by this key.
-      secret: dev-only-insecure-jwt-signing-secret-change-me
+      # (Spring maps that variable onto this property automatically), or run the dev
+      # profile, which supplies a throwaway value from application-dev.yaml.
+      #
+      # Three separate startup checks apply: the property must be present, it must not be
+      # application-dev.yaml's public value outside the dev profile (DevelopmentSecretGuard),
+      # and it must be at least 32 bytes, because a shorter key weakens every token it would
+      # go on to issue. Rotating it invalidates every outstanding access token, which is the
+      # intended effect of a compromise. Refresh tokens survive: they are random values in
+      # the database, not signed by this key.
+      secret:
       # Short by design (SDD 8.6). An access token cannot be revoked before it
       # expires -- nothing checks a denylist -- so its lifetime IS the revocation
       # window. 15 minutes trades a little refresh traffic for that bound.

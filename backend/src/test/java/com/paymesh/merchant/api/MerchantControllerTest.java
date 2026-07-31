@@ -5,6 +5,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.context.ActiveProfiles;
 import com.paymesh.TestcontainersConfiguration;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
@@ -21,6 +22,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
+@ActiveProfiles("dev")
 @AutoConfigureMockMvc
 // Registration now writes to PostgreSQL. Each test runs in a transaction that is rolled back
 // afterwards, so the fixed emails below cannot collide with a previous run.

@@ -153,6 +153,16 @@
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
+				<configuration>
+					<!-- application.yaml deliberately ships no secrets, so a plain `mvn spring-boot:run`
+					     would (correctly) refuse to start. This turns on application-dev.yaml, which
+					     carries the throwaway local values. It applies to the `run` goal only: the jar
+					     this plugin packages has no profile baked in, so a deployment still has to
+					     supply its own secrets. -->
+					<profiles>
+						<profile>dev</profile>
+					</profiles>
+				</configuration>
 			</plugin>
 		</plugins>
 	</build>
