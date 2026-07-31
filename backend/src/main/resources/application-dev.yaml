@@ -1,0 +1,23 @@
+# ============================================================================
+#  Local development overrides: the secrets that application.yaml deliberately
+#  leaves empty, so a fresh clone runs with nothing to set up.
+#
+#  Everything here is public by definition, which is why the profile is never
+#  active by accident. It is switched on explicitly in two places and nowhere
+#  else: spring-boot.run.profiles in pom.xml, and @ActiveProfiles("dev") on the
+#  tests that boot a context. A deployed environment supplies its own values
+#  and must never activate this profile.
+# ============================================================================
+
+spring:
+  datasource:
+    username: paymesh_app
+    password: paymesh_dev_password
+
+paymesh:
+  security:
+    jwt:
+      # DevelopmentSecretGuard refuses this exact value unless the dev profile is active,
+      # so copying it into a real environment variable fails startup loudly rather than
+      # signing production tokens with a key anyone can read in this file.
+      secret: dev-only-insecure-jwt-signing-secret-change-me
