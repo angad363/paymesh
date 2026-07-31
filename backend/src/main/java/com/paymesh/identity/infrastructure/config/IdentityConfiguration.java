@@ -16,12 +16,12 @@ import com.paymesh.identity.infrastructure.persistence.jpa.SpringDataUserReposit
 import com.paymesh.identity.infrastructure.security.BCryptPasswordHasher;
 import com.paymesh.identity.infrastructure.security.JwtAccessTokenService;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 
 import java.time.Clock;
-import java.time.Duration;
 
 /**
  * Explicit wiring for the identity module. Application and domain classes carry no
@@ -32,6 +32,7 @@ import java.time.Duration;
  * one and a second would be an ambiguous-bean failure at startup.
  */
 @Configuration
+@EnableConfigurationProperties(JwtProperties.class)
 public class IdentityConfiguration {
 
     @Bean
@@ -61,12 +62,12 @@ public class IdentityConfiguration {
     }
 
     @Bean
-    JwtAccessTokenService accessTokenService(
-        @Value("${paymesh.security.jwt.secret}") String jwtSecret,
-        @Value("${paymesh.security.jwt.access-token-ttl}") Duration accessTokenTtl,
-        Clock clock
-    ) {
-        return new JwtAccessTokenService(jwtSecret, accessTokenTtl, clock);
+    JwtAccessTokenService accessTokenService(JwtProperties jwtProperties, Clock clock) {
+        return new JwtAccessTokenService(
+            jwtProperties.secret(),
+            jwtProperties.accessTokenTtl(),
+            clock
+        );
     }
 
     /**
@@ -102,7 +103,7 @@ public class IdentityConfiguration {
         SecurityEventRepository securityEventRepository,
         PasswordHasher passwordHasher,
         AccessTokenService accessTokenService,
-        @Value("${paymesh.security.jwt.refresh-token-ttl}") Duration refreshTokenTtl,
+        JwtProperties jwtProperties,
         Clock clock
     ) {
         return new AuthenticationService(
@@ -111,7 +112,7 @@ public class IdentityConfiguration {
             securityEventRepository,
             passwordHasher,
             accessTokenService,
-            refreshTokenTtl,
+            jwtProperties.refreshTokenTtl(),
             clock
         );
     }
