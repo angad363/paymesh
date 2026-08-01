@@ -56,6 +56,19 @@ public class SecurityConfiguration {
                 // Liveness/readiness for orchestrators. show-details is never, so these expose
                 // nothing beyond UP/DOWN.
                 .requestMatchers("/actuator/health/**", "/actuator/info").permitAll()
+                // PROVIDER CALLBACKS ARE NOT UNAUTHENTICATED. THEY AUTHENTICATE DIFFERENTLY.
+                //
+                // A provider has no PayMesh account and no bearer token, so this chain has no
+                // credential to evaluate and says so explicitly -- the default-deny rule below
+                // means silence here would look like an oversight. What actually stands in front of
+                // the route is ProviderCallbackSignatureFilter: an HMAC-SHA256 over the raw body
+                // and a timestamp, constant-time compared, fail-closed on the secret.
+                //
+                // It must NOT be reachable with a merchant's token either. This route moves
+                // payments to SUCCEEDED, so a merchant who could call it could mark their own
+                // payment collected. Placing it here rather than under /api/ is what keeps the two
+                // audiences from sharing a surface at all.
+                .requestMatchers(POST, "/internal/v1/provider-callbacks/**").permitAll()
                 // Default deny. A new endpoint is protected by virtue of existing; opening one is
                 // an explicit line above, never an omission.
                 .anyRequest().authenticated()

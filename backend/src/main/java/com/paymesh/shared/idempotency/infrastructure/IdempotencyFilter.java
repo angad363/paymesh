@@ -1,6 +1,7 @@
 package com.paymesh.shared.idempotency.infrastructure;
 
 import com.paymesh.shared.api.ApiErrorResponse;
+import com.paymesh.shared.api.CachedBodyHttpServletRequest;
 import com.paymesh.shared.idempotency.application.IdempotencyRepository;
 import com.paymesh.shared.idempotency.domain.IdempotencyRecord;
 import com.paymesh.shared.security.AuthenticatedCaller;
@@ -8,11 +9,8 @@ import com.paymesh.shared.security.AuthenticatedCallers;
 import com.paymesh.shared.security.NoMerchantScopeException;
 import com.paymesh.shared.tenant.MerchantId;
 import jakarta.servlet.FilterChain;
-import jakarta.servlet.ReadListener;
 import jakarta.servlet.ServletException;
-import jakarta.servlet.ServletInputStream;
 import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletRequestWrapper;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -20,11 +18,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import org.springframework.web.util.ContentCachingResponseWrapper;
 import tools.jackson.databind.ObjectMapper;
 
-import java.io.BufferedReader;
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.util.Optional;
@@ -115,7 +109,7 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
             return;
         }
 
-        CachedBodyRequest cachedRequest = new CachedBodyRequest(request);
+        CachedBodyHttpServletRequest cachedRequest = new CachedBodyHttpServletRequest(request);
 
         IdempotencyRecord attempt = IdempotencyRecord.started(
             merchantId,
@@ -133,7 +127,7 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
     }
 
     private void executeAndRemember(
-        CachedBodyRequest request,
+        CachedBodyHttpServletRequest request,
         HttpServletResponse response,
         FilterChain chain,
         IdempotencyRecord attempt
@@ -215,68 +209,5 @@ public final class IdempotencyFilter extends OncePerRequestFilter {
         response.setStatus(status.value());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         objectMapper.writeValue(response.getWriter(), ApiErrorResponse.of(code, message));
-    }
-
-    /**
-     * Holds the body in memory so it can be hashed and still be read by the handler.
-     * <p>
-     * A servlet body is a one-shot stream: hashing it without this wrapper would hand the
-     * controller an empty request.
-     */
-    private static final class CachedBodyRequest extends HttpServletRequestWrapper {
-
-        private final byte[] body;
-
-        CachedBodyRequest(HttpServletRequest request) throws IOException {
-            super(request);
-            this.body = request.getInputStream().readAllBytes();
-        }
-
-        byte[] body() {
-            return body;
-        }
-
-        @Override
-        public ServletInputStream getInputStream() {
-            ByteArrayInputStream buffered = new ByteArrayInputStream(body);
-
-            return new ServletInputStream() {
-
-                @Override
-                public int read() {
-                    return buffered.read();
-                }
-
-                @Override
-                public int read(byte[] target, int offset, int length) {
-                    return buffered.read(target, offset, length);
-                }
-
-                @Override
-                public boolean isFinished() {
-                    return buffered.available() == 0;
-                }
-
-                @Override
-                public boolean isReady() {
-                    return true;
-                }
-
-                @Override
-                public void setReadListener(ReadListener readListener) {
-                    throw new UnsupportedOperationException("Idempotent routes are read synchronously");
-                }
-            };
-        }
-
-        @Override
-        public BufferedReader getReader() {
-            String encoding = getCharacterEncoding();
-
-            return new BufferedReader(new InputStreamReader(
-                getInputStream(),
-                encoding == null ? StandardCharsets.UTF_8 : Charset.forName(encoding)
-            ));
-        }
     }
 }

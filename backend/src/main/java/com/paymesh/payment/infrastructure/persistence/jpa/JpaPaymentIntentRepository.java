@@ -93,6 +93,13 @@ public final class JpaPaymentIntentRepository implements PaymentIntentRepository
     }
 
     @Override
+    public Optional<PaymentIntent> findForProviderCallbackForUpdate(PaymentIntentId paymentIntentId) {
+        return paymentIntents
+            .findForProviderCallbackForUpdate(paymentIntentId.value())
+            .map(PaymentIntentJpaMapper::toDomain);
+    }
+
+    @Override
     public List<PaymentIntent> findPage(
         MerchantId merchantId,
         PaymentIntentStatus status,

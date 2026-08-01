@@ -54,6 +54,19 @@ final class InMemoryPaymentIntentRepository implements PaymentIntentRepository {
     }
 
     /**
+     * NO TENANT PREDICATE, matching the real query. That is not an omission in the double: a
+     * provider callback has no merchant to scope by and derives one from the row it finds, so a
+     * double that filtered by merchant here would be testing a rule the production code does not
+     * have.
+     */
+    @Override
+    public Optional<PaymentIntent> findForProviderCallbackForUpdate(PaymentIntentId paymentIntentId) {
+        return intents.stream()
+            .filter(intent -> intent.paymentIntentId().equals(paymentIntentId))
+            .findFirst();
+    }
+
+    /**
      * A list cannot hold a row still, so what this double preserves is the SIGNATURE and the tenant
      * scoping, not the lock. That the transitions serialize is proved against PostgreSQL, which is
      * the only thing that can arbitrate it.

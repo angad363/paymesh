@@ -108,6 +108,27 @@ paymesh:
       # invalidating existing passwords.
       bcrypt-strength: 10
 
+  # --- Provider callbacks -----------------------------------------------------
+  provider:
+    # HMAC-SHA256 key for POST /internal/v1/provider-callbacks/{provider}. Declared but
+    # deliberately EMPTY, and the application refuses to start without it.
+    #
+    # THIS IS THE ONLY AUTHENTICATION ON THE ENDPOINT THAT MARKS A PAYMENT SUCCEEDED. There is
+    # no bearer token on that route -- a provider has no PayMesh account -- so a published or
+    # absent value here means anyone who can reach the port can mark any payment on the platform
+    # collected. Supply it as:
+    #     PAYMESH_PROVIDER_CALLBACK_SECRET=<32+ random bytes>
+    # or run the dev profile, which supplies a throwaway value from application-dev.yaml.
+    #
+    # Two startup checks apply, the same pair the JWT secret gets: the property must be present
+    # (@NotBlank on ProviderProperties), and it must not be application-dev.yaml's public value
+    # outside the dev profile (DevelopmentSecretGuard). Rotating it invalidates nothing stored --
+    # signatures are verified on arrival, never replayed -- so rotation is a restart with a new
+    # value on both sides.
+    #
+    # One secret, one provider. Per-provider secrets and rotation are deferred.
+    callback-secret:
+
 # --- Web server --------------------------------------------------------------
 server:
   # HTTP port. Omit -> defaults to 8080 anyway; pinned for clarity.

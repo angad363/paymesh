@@ -196,6 +196,94 @@
     {
       "key": "confirmedBody",
       "value": ""
+    },
+    {
+      "key": "providerCallbackSecret",
+      "value": ""
+    },
+    {
+      "key": "callbackBody",
+      "value": ""
+    },
+    {
+      "key": "callbackSignature",
+      "value": ""
+    },
+    {
+      "key": "cbOrderId",
+      "value": ""
+    },
+    {
+      "key": "cbOrderKey",
+      "value": ""
+    },
+    {
+      "key": "cbIntentId",
+      "value": ""
+    },
+    {
+      "key": "cbIntentKey",
+      "value": ""
+    },
+    {
+      "key": "cbAttachKey",
+      "value": ""
+    },
+    {
+      "key": "cbConfirmKey",
+      "value": ""
+    },
+    {
+      "key": "cbReconfirmKey",
+      "value": ""
+    },
+    {
+      "key": "cbReference",
+      "value": ""
+    },
+    {
+      "key": "cbOccurredAt",
+      "value": ""
+    },
+    {
+      "key": "cbEarlierAt",
+      "value": ""
+    },
+    {
+      "key": "cbLaterAt",
+      "value": ""
+    },
+    {
+      "key": "cbChallengeEventId",
+      "value": ""
+    },
+    {
+      "key": "cbOrder2Id",
+      "value": ""
+    },
+    {
+      "key": "cbOrder2Key",
+      "value": ""
+    },
+    {
+      "key": "cbSecondIntentId",
+      "value": ""
+    },
+    {
+      "key": "cbIntent2Key",
+      "value": ""
+    },
+    {
+      "key": "cbAttach2Key",
+      "value": ""
+    },
+    {
+      "key": "cbConfirm2Key",
+      "value": ""
+    },
+    {
+      "key": "cbCancel2Key",
+      "value": ""
     }
   ],
   "item": [
@@ -4595,6 +4683,1497 @@
                 "exec": [
                   "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
                   "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('IDEMPOTENCY_KEY_REQUIRED'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Provider callbacks (internal, HMAC-signed)",
+      "description": "POST /internal/v1/provider-callbacks/{provider}. NOT the merchant surface: no bearer token, not under /api/, and deliberately not idempotency-keyed -- provider_callbacks is its deduplication (ADR-012). Every request here signs its own body in a pre-request script; there is no fixed signature to paste, because a signature is valid for one body at one second.",
+      "item": [
+        {
+          "name": "Setup: an order to collect (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amountMinor\": 2500,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cbOrderKey}}"
+              }
+            ],
+            "description": "Its own order: an order holds at most one live payment intent (ADR-011), and every intent earlier in this collection has already claimed one."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cbOrderKey', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('providerCallbackSecret', 'dev-only-insecure-provider-callback-secret-change-me');",
+                  "pm.collectionVariables.set('cbReference', 'sim_pay_' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('cbOrderId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: a payment intent for it (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{cbOrderId}}\",\n  \"amountMinor\": 2500,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cbIntentKey}}"
+              }
+            ],
+            "description": "REQUIRES_PAYMENT_METHOD. Nothing a provider says can reach it yet."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cbIntentKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('cbIntentId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: attach a payment method (200)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{cbIntentId}}/payment-method",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{cbIntentId}}",
+                "payment-method"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentMethodType\": \"CARD\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cbAttachKey}}"
+              }
+            ],
+            "description": "REQUIRES_CONFIRMATION."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cbAttachKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: confirm it (202)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{cbIntentId}}/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{cbIntentId}}",
+                "confirm"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cbConfirmKey}}"
+              }
+            ],
+            "description": "PROCESSING, with one attempt open. 202 because the outcome is genuinely undecided until a callback resolves it -- which is what the rest of this folder does."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cbConfirmKey', pm.variables.replaceIn('{{$guid}}'));",
+                  "// A fixed base instant for the ordering demonstrations below, so 'earlier' and 'later' are",
+                  "// facts about the provider's clock rather than about how fast this collection runs.",
+                  "pm.collectionVariables.set('cbOccurredAt', '2026-08-01T11:00:00Z');",
+                  "pm.collectionVariables.set('cbEarlierAt', '2026-08-01T10:59:00Z');",
+                  "pm.collectionVariables.set('cbLaterAt', '2026-08-01T11:05:00Z');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "pm.test('PROCESSING', () => pm.expect(pm.response.json().status).to.eql('PROCESSING'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Callback with no signature (401)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/internal/v1/provider-callbacks/SIMULATOR",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "v1",
+                "provider-callbacks",
+                "SIMULATOR"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{callbackBody}}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "description": "The HMAC is the authentication. There is no bearer token on this route and no other credential to fall back to."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// THE SIGNATURE IS COMPUTED HERE, NOT PASTED. A fixed signature would be valid for one",
+                  "// body at one second and would rot the moment either changed -- which is the property the",
+                  "// scheme exists to have, so hard-coding one would be testing nothing.",
+                  "const body = JSON.stringify({ eventId: 'sim_evt_' + pm.variables.replaceIn('{{$guid}}'), occurredAt: pm.collectionVariables.get('cbOccurredAt'), paymentIntentId: pm.collectionVariables.get('cbIntentId'), providerReference: pm.collectionVariables.get('cbReference'), outcome: 'SUCCEEDED', capturedAmountMinor: 2500 });",
+                  "const t = Math.floor(Date.now() / 1000);",
+                  "// The signed string is t + '.' + body, so a captured signature cannot be replayed onto a",
+                  "// different body or a different time. HMAC-SHA256, hex, with the shared secret.",
+                  "const v1 = CryptoJS.HmacSHA256(",
+                  "    t + '.' + body,",
+                  "    pm.collectionVariables.get('providerCallbackSecret')",
+                  ").toString(CryptoJS.enc.Hex);",
+                  "// The request body is literally {{callbackBody}}, so what is sent is byte-for-byte what",
+                  "// was signed. Building the JSON in the request pane instead would sign one string and",
+                  "// send another the first time a variable resolved differently.",
+                  "pm.collectionVariables.set('callbackBody', body);",
+                  "pm.collectionVariables.set('callbackSignature', 't=' + t + ',v1=' + v1);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('says nothing about which check failed', () => pm.expect(pm.response.json().code).to.eql('PROVIDER_SIGNATURE_INVALID'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Callback signed over a different body (401)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/internal/v1/provider-callbacks/SIMULATOR",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "v1",
+                "provider-callbacks",
+                "SIMULATOR"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{callbackBody}}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Signature",
+                "value": "{{callbackSignature}}"
+              }
+            ],
+            "description": "The body is inside the signed string, so a captured signature cannot be pasted onto a new body. Otherwise anyone who ever saw one callback could mark any payment succeeded."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// THE SIGNATURE IS COMPUTED HERE, NOT PASTED. A fixed signature would be valid for one",
+                  "// body at one second and would rot the moment either changed -- which is the property the",
+                  "// scheme exists to have, so hard-coding one would be testing nothing.",
+                  "const body = JSON.stringify({ eventId: 'sim_evt_' + pm.variables.replaceIn('{{$guid}}'), occurredAt: pm.collectionVariables.get('cbOccurredAt'), paymentIntentId: pm.collectionVariables.get('cbIntentId'), providerReference: pm.collectionVariables.get('cbReference'), outcome: 'SUCCEEDED', capturedAmountMinor: 2500 });",
+                  "const t = Math.floor(Date.now() / 1000);",
+                  "// The signed string is t + '.' + body, so a captured signature cannot be replayed onto a",
+                  "// different body or a different time. HMAC-SHA256, hex, with the shared secret.",
+                  "const v1 = CryptoJS.HmacSHA256(",
+                  "    t + '.' + body,",
+                  "    pm.collectionVariables.get('providerCallbackSecret')",
+                  ").toString(CryptoJS.enc.Hex);",
+                  "// The request body is literally {{callbackBody}}, so what is sent is byte-for-byte what",
+                  "// was signed. Building the JSON in the request pane instead would sign one string and",
+                  "// send another the first time a variable resolved differently.",
+                  "pm.collectionVariables.set('callbackBody', body);",
+                  "pm.collectionVariables.set('callbackSignature', 't=' + t + ',v1=' + v1);",
+                  "// Sign one body, then send a different one.",
+                  "pm.collectionVariables.set('callbackBody', JSON.stringify(",
+                  "    Object.assign(JSON.parse(body), { capturedAmountMinor: 1 })",
+                  "));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Callback with a stale timestamp (401)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/internal/v1/provider-callbacks/SIMULATOR",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "v1",
+                "provider-callbacks",
+                "SIMULATOR"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{callbackBody}}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Signature",
+                "value": "{{callbackSignature}}"
+              }
+            ],
+            "description": "The timestamp is signed, not merely sent, so it cannot be rewritten to refresh a captured signature. Anything more than 300 seconds out, in either direction, is refused."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = JSON.stringify({ eventId: 'sim_evt_' + pm.variables.replaceIn('{{$guid}}'), occurredAt: pm.collectionVariables.get('cbOccurredAt'), paymentIntentId: pm.collectionVariables.get('cbIntentId'), providerReference: pm.collectionVariables.get('cbReference'), outcome: 'SUCCEEDED', capturedAmountMinor: 2500 });",
+                  "// A perfectly valid signature, stamped 400 seconds ago.",
+                  "const t = Math.floor(Date.now() / 1000) - 400;",
+                  "const v1 = CryptoJS.HmacSHA256(",
+                  "    t + '.' + body,",
+                  "    pm.collectionVariables.get('providerCallbackSecret')",
+                  ").toString(CryptoJS.enc.Hex);",
+                  "pm.collectionVariables.set('callbackBody', body);",
+                  "pm.collectionVariables.set('callbackSignature', 't=' + t + ',v1=' + v1);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "REQUIRES_ACTION callback (200, APPLIED)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/internal/v1/provider-callbacks/SIMULATOR",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "v1",
+                "provider-callbacks",
+                "SIMULATOR"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{callbackBody}}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Signature",
+                "value": "{{callbackSignature}}"
+              }
+            ],
+            "description": "The customer has a 3DS challenge to complete. The action URL is stored REDACTED -- origin and path survive, the query string does not, because it carries a challenge token."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// THE SIGNATURE IS COMPUTED HERE, NOT PASTED. A fixed signature would be valid for one",
+                  "// body at one second and would rot the moment either changed -- which is the property the",
+                  "// scheme exists to have, so hard-coding one would be testing nothing.",
+                  "const body = JSON.stringify({ eventId: 'sim_evt_' + pm.variables.replaceIn('{{$guid}}'), occurredAt: pm.collectionVariables.get('cbOccurredAt'), paymentIntentId: pm.collectionVariables.get('cbIntentId'), providerReference: pm.collectionVariables.get('cbReference'), outcome: 'REQUIRES_ACTION', actionUrl: 'https://3ds.simulator.test/challenge/abc?token=SECRET' });",
+                  "const t = Math.floor(Date.now() / 1000);",
+                  "// The signed string is t + '.' + body, so a captured signature cannot be replayed onto a",
+                  "// different body or a different time. HMAC-SHA256, hex, with the shared secret.",
+                  "const v1 = CryptoJS.HmacSHA256(",
+                  "    t + '.' + body,",
+                  "    pm.collectionVariables.get('providerCallbackSecret')",
+                  ").toString(CryptoJS.enc.Hex);",
+                  "// The request body is literally {{callbackBody}}, so what is sent is byte-for-byte what",
+                  "// was signed. Building the JSON in the request pane instead would sign one string and",
+                  "// send another the first time a variable resolved differently.",
+                  "pm.collectionVariables.set('callbackBody', body);",
+                  "pm.collectionVariables.set('callbackSignature', 't=' + t + ',v1=' + v1);",
+                  "// Kept so the next two requests can re-deliver this exact event.",
+                  "pm.collectionVariables.set('cbChallengeEventId', JSON.parse(body).eventId);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('applied', () => pm.expect(pm.response.json().outcome).to.eql('APPLIED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Re-deliver the same event (200, DUPLICATE)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/internal/v1/provider-callbacks/SIMULATOR",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "v1",
+                "provider-callbacks",
+                "SIMULATOR"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{callbackBody}}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Signature",
+                "value": "{{callbackSignature}}"
+              }
+            ],
+            "description": "A provider retries whether the response was lost or never sent. The row loses on pk_provider_callbacks, the transaction rolls back, and nothing happened -- no transition, no state-history row, no outbox event. 200 and never 409: a conflict here is an infinite retry loop."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// THE SIGNATURE IS COMPUTED HERE, NOT PASTED. A fixed signature would be valid for one",
+                  "// body at one second and would rot the moment either changed -- which is the property the",
+                  "// scheme exists to have, so hard-coding one would be testing nothing.",
+                  "const body = JSON.stringify({ eventId: pm.collectionVariables.get('cbChallengeEventId'), occurredAt: pm.collectionVariables.get('cbOccurredAt'), paymentIntentId: pm.collectionVariables.get('cbIntentId'), providerReference: pm.collectionVariables.get('cbReference'), outcome: 'REQUIRES_ACTION', actionUrl: 'https://3ds.simulator.test/challenge/abc?token=SECRET' });",
+                  "const t = Math.floor(Date.now() / 1000);",
+                  "// The signed string is t + '.' + body, so a captured signature cannot be replayed onto a",
+                  "// different body or a different time. HMAC-SHA256, hex, with the shared secret.",
+                  "const v1 = CryptoJS.HmacSHA256(",
+                  "    t + '.' + body,",
+                  "    pm.collectionVariables.get('providerCallbackSecret')",
+                  ").toString(CryptoJS.enc.Hex);",
+                  "// The request body is literally {{callbackBody}}, so what is sent is byte-for-byte what",
+                  "// was signed. Building the JSON in the request pane instead would sign one string and",
+                  "// send another the first time a variable resolved differently.",
+                  "pm.collectionVariables.set('callbackBody', body);",
+                  "pm.collectionVariables.set('callbackSignature', 't=' + t + ',v1=' + v1);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK, not 409', () => pm.response.to.have.status(200));",
+                  "pm.test('deduplicated', () => pm.expect(pm.response.json().outcome).to.eql('DUPLICATE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Re-confirm after the challenge (202)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{cbIntentId}}/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{cbIntentId}}",
+                "confirm"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cbReconfirmKey}}"
+              }
+            ],
+            "description": "REQUIRES_ACTION back to PROCESSING, opening a second attempt. THIS IS THE CYCLE the monotonic event clock exists for: inside it a stale REQUIRES_ACTION is a LEGAL transition, so the state machine alone cannot refuse it."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cbReconfirmKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "pm.test('PROCESSING again', () => pm.expect(pm.response.json().status).to.eql('PROCESSING'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A stale REQUIRES_ACTION arriving late (200, IGNORED_STALE)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/internal/v1/provider-callbacks/SIMULATOR",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "v1",
+                "provider-callbacks",
+                "SIMULATOR"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{callbackBody}}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Signature",
+                "value": "{{callbackSignature}}"
+              }
+            ],
+            "description": "Its occurredAt is earlier than the event already applied, and the transition it asks for is legal. Only last_provider_event_at refuses it -- read as the maximum across the intent attempts, because the re-confirm above opened a new one whose own clock is null."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// THE SIGNATURE IS COMPUTED HERE, NOT PASTED. A fixed signature would be valid for one",
+                  "// body at one second and would rot the moment either changed -- which is the property the",
+                  "// scheme exists to have, so hard-coding one would be testing nothing.",
+                  "const body = JSON.stringify({ eventId: 'sim_evt_' + pm.variables.replaceIn('{{$guid}}'), occurredAt: pm.collectionVariables.get('cbEarlierAt'), paymentIntentId: pm.collectionVariables.get('cbIntentId'), providerReference: pm.collectionVariables.get('cbReference'), outcome: 'REQUIRES_ACTION', actionUrl: 'https://3ds.simulator.test/challenge/abc' });",
+                  "const t = Math.floor(Date.now() / 1000);",
+                  "// The signed string is t + '.' + body, so a captured signature cannot be replayed onto a",
+                  "// different body or a different time. HMAC-SHA256, hex, with the shared secret.",
+                  "const v1 = CryptoJS.HmacSHA256(",
+                  "    t + '.' + body,",
+                  "    pm.collectionVariables.get('providerCallbackSecret')",
+                  ").toString(CryptoJS.enc.Hex);",
+                  "// The request body is literally {{callbackBody}}, so what is sent is byte-for-byte what",
+                  "// was signed. Building the JSON in the request pane instead would sign one string and",
+                  "// send another the first time a variable resolved differently.",
+                  "pm.collectionVariables.set('callbackBody', body);",
+                  "pm.collectionVariables.set('callbackSignature', 't=' + t + ',v1=' + v1);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('refused as stale', () => pm.expect(pm.response.json().outcome).to.eql('IGNORED_STALE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The payment succeeds (200, APPLIED)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/internal/v1/provider-callbacks/SIMULATOR",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "v1",
+                "provider-callbacks",
+                "SIMULATOR"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{callbackBody}}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Signature",
+                "value": "{{callbackSignature}}"
+              }
+            ],
+            "description": "PROCESSING to SUCCEEDED. Operational state only: no balance moves and no ledger entry exists, so the order stays PENDING -- see open item 1 of project-status."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// THE SIGNATURE IS COMPUTED HERE, NOT PASTED. A fixed signature would be valid for one",
+                  "// body at one second and would rot the moment either changed -- which is the property the",
+                  "// scheme exists to have, so hard-coding one would be testing nothing.",
+                  "const body = JSON.stringify({ eventId: 'sim_evt_' + pm.variables.replaceIn('{{$guid}}'), occurredAt: pm.collectionVariables.get('cbLaterAt'), paymentIntentId: pm.collectionVariables.get('cbIntentId'), providerReference: pm.collectionVariables.get('cbReference'), outcome: 'SUCCEEDED', capturedAmountMinor: 2500 });",
+                  "const t = Math.floor(Date.now() / 1000);",
+                  "// The signed string is t + '.' + body, so a captured signature cannot be replayed onto a",
+                  "// different body or a different time. HMAC-SHA256, hex, with the shared secret.",
+                  "const v1 = CryptoJS.HmacSHA256(",
+                  "    t + '.' + body,",
+                  "    pm.collectionVariables.get('providerCallbackSecret')",
+                  ").toString(CryptoJS.enc.Hex);",
+                  "// The request body is literally {{callbackBody}}, so what is sent is byte-for-byte what",
+                  "// was signed. Building the JSON in the request pane instead would sign one string and",
+                  "// send another the first time a variable resolved differently.",
+                  "pm.collectionVariables.set('callbackBody', body);",
+                  "pm.collectionVariables.set('callbackSignature', 't=' + t + ',v1=' + v1);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('applied', () => pm.expect(pm.response.json().outcome).to.eql('APPLIED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The intent is SUCCEEDED (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{cbIntentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{cbIntentId}}"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "Read back through the merchant API. capturedAmountMinor is what the provider reported and what the intent authorized -- they have to agree."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('SUCCEEDED', () => pm.expect(b.status).to.eql('SUCCEEDED'));",
+                  "pm.test('captured what was owed', () => pm.expect(b.capturedAmountMinor).to.eql(2500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A late callback for a finished payment (200, IGNORED_TERMINAL)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/internal/v1/provider-callbacks/SIMULATOR",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "v1",
+                "provider-callbacks",
+                "SIMULATOR"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{callbackBody}}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Signature",
+                "value": "{{callbackSignature}}"
+              }
+            ],
+            "description": "Terminal states absorb. The second out-of-order mechanism, and not the clock: this event is NEWER than the one that succeeded, and it is still refused."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// THE SIGNATURE IS COMPUTED HERE, NOT PASTED. A fixed signature would be valid for one",
+                  "// body at one second and would rot the moment either changed -- which is the property the",
+                  "// scheme exists to have, so hard-coding one would be testing nothing.",
+                  "const body = JSON.stringify({ eventId: 'sim_evt_' + pm.variables.replaceIn('{{$guid}}'), occurredAt: '2026-08-01T11:10:00Z', paymentIntentId: pm.collectionVariables.get('cbIntentId'), providerReference: pm.collectionVariables.get('cbReference'), outcome: 'FAILED', failureCode: 'do_not_honour', failureMessage: 'Issuer declined' });",
+                  "const t = Math.floor(Date.now() / 1000);",
+                  "// The signed string is t + '.' + body, so a captured signature cannot be replayed onto a",
+                  "// different body or a different time. HMAC-SHA256, hex, with the shared secret.",
+                  "const v1 = CryptoJS.HmacSHA256(",
+                  "    t + '.' + body,",
+                  "    pm.collectionVariables.get('providerCallbackSecret')",
+                  ").toString(CryptoJS.enc.Hex);",
+                  "// The request body is literally {{callbackBody}}, so what is sent is byte-for-byte what",
+                  "// was signed. Building the JSON in the request pane instead would sign one string and",
+                  "// send another the first time a variable resolved differently.",
+                  "pm.collectionVariables.set('callbackBody', body);",
+                  "pm.collectionVariables.set('callbackSignature', 't=' + t + ',v1=' + v1);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK, not 409', () => pm.response.to.have.status(200));",
+                  "pm.test('refused as terminal', () => pm.expect(pm.response.json().outcome).to.eql('IGNORED_TERMINAL'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A callback naming an unknown intent (404)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/internal/v1/provider-callbacks/SIMULATOR",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "v1",
+                "provider-callbacks",
+                "SIMULATOR"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{callbackBody}}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Signature",
+                "value": "{{callbackSignature}}"
+              }
+            ],
+            "description": "THE ONE NON-2XX, and it is a deliberate request to retry: the likeliest cause is a callback overtaking the transaction that created the intent. Nothing is stored -- there is nothing to deduplicate for an event that had no effect."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// THE SIGNATURE IS COMPUTED HERE, NOT PASTED. A fixed signature would be valid for one",
+                  "// body at one second and would rot the moment either changed -- which is the property the",
+                  "// scheme exists to have, so hard-coding one would be testing nothing.",
+                  "const body = JSON.stringify({ eventId: 'sim_evt_' + pm.variables.replaceIn('{{$guid}}'), occurredAt: pm.collectionVariables.get('cbOccurredAt'), paymentIntentId: 'pi_' + pm.variables.replaceIn('{{$guid}}'), providerReference: pm.collectionVariables.get('cbReference'), outcome: 'SUCCEEDED', capturedAmountMinor: 2500 });",
+                  "const t = Math.floor(Date.now() / 1000);",
+                  "// The signed string is t + '.' + body, so a captured signature cannot be replayed onto a",
+                  "// different body or a different time. HMAC-SHA256, hex, with the shared secret.",
+                  "const v1 = CryptoJS.HmacSHA256(",
+                  "    t + '.' + body,",
+                  "    pm.collectionVariables.get('providerCallbackSecret')",
+                  ").toString(CryptoJS.enc.Hex);",
+                  "// The request body is literally {{callbackBody}}, so what is sent is byte-for-byte what",
+                  "// was signed. Building the JSON in the request pane instead would sign one string and",
+                  "// send another the first time a variable resolved differently.",
+                  "pm.collectionVariables.set('callbackBody', body);",
+                  "pm.collectionVariables.set('callbackSignature', 't=' + t + ',v1=' + v1);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('names the intent', () => pm.expect(pm.response.json().code).to.eql('PAYMENT_INTENT_NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: a second order (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amountMinor\": 2500,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cbOrder2Key}}"
+              }
+            ],
+            "description": "For the amount-mismatch and merchant-cancel demonstrations, which need an intent that has not finished."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cbOrder2Key', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('cbOrder2Id', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: a second intent (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{cbOrder2Id}}\",\n  \"amountMinor\": 2500,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cbIntent2Key}}"
+              }
+            ],
+            "description": "Created here; attached and confirmed by the two requests after it."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cbIntent2Key', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('cbSecondIntentId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: attach to the second intent (200)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{cbSecondIntentId}}/payment-method",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{cbSecondIntentId}}",
+                "payment-method"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentMethodType\": \"UPI\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cbAttach2Key}}"
+              }
+            ],
+            "description": "REQUIRES_CONFIRMATION."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cbAttach2Key', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: confirm the second intent (202)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{cbSecondIntentId}}/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{cbSecondIntentId}}",
+                "confirm"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cbConfirm2Key}}"
+              }
+            ],
+            "description": "PROCESSING."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cbConfirm2Key', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A callback claiming the wrong amount (200, IGNORED_TERMINAL)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/internal/v1/provider-callbacks/SIMULATOR",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "v1",
+                "provider-callbacks",
+                "SIMULATOR"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{callbackBody}}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Signature",
+                "value": "{{callbackSignature}}"
+              }
+            ],
+            "description": "A provider does not get to change what is owed (SDD 12.3). Run against a fresh intent, because the one above has already succeeded."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// THE SIGNATURE IS COMPUTED HERE, NOT PASTED. A fixed signature would be valid for one",
+                  "// body at one second and would rot the moment either changed -- which is the property the",
+                  "// scheme exists to have, so hard-coding one would be testing nothing.",
+                  "const body = JSON.stringify({ eventId: 'sim_evt_' + pm.variables.replaceIn('{{$guid}}'), occurredAt: '2026-08-01T11:00:00Z', paymentIntentId: pm.collectionVariables.get('cbSecondIntentId'), providerReference: 'sim_pay_' + pm.variables.replaceIn('{{$guid}}'), outcome: 'SUCCEEDED', capturedAmountMinor: 9999 });",
+                  "const t = Math.floor(Date.now() / 1000);",
+                  "// The signed string is t + '.' + body, so a captured signature cannot be replayed onto a",
+                  "// different body or a different time. HMAC-SHA256, hex, with the shared secret.",
+                  "const v1 = CryptoJS.HmacSHA256(",
+                  "    t + '.' + body,",
+                  "    pm.collectionVariables.get('providerCallbackSecret')",
+                  ").toString(CryptoJS.enc.Hex);",
+                  "// The request body is literally {{callbackBody}}, so what is sent is byte-for-byte what",
+                  "// was signed. Building the JSON in the request pane instead would sign one string and",
+                  "// send another the first time a variable resolved differently.",
+                  "pm.collectionVariables.set('callbackBody', body);",
+                  "pm.collectionVariables.set('callbackSignature', 't=' + t + ',v1=' + v1);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('not applied', () => pm.expect(pm.response.json().outcome).to.eql('IGNORED_TERMINAL'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Park the second intent at REQUIRES_ACTION (200, APPLIED)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/internal/v1/provider-callbacks/SIMULATOR",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "v1",
+                "provider-callbacks",
+                "SIMULATOR"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{callbackBody}}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Signature",
+                "value": "{{callbackSignature}}"
+              }
+            ],
+            "description": "The customer is sent to a 3DS challenge and abandons it."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// THE SIGNATURE IS COMPUTED HERE, NOT PASTED. A fixed signature would be valid for one",
+                  "// body at one second and would rot the moment either changed -- which is the property the",
+                  "// scheme exists to have, so hard-coding one would be testing nothing.",
+                  "const body = JSON.stringify({ eventId: 'sim_evt_' + pm.variables.replaceIn('{{$guid}}'), occurredAt: '2026-08-01T12:00:00Z', paymentIntentId: pm.collectionVariables.get('cbSecondIntentId'), providerReference: 'sim_pay_' + pm.variables.replaceIn('{{$guid}}'), outcome: 'REQUIRES_ACTION', actionUrl: 'https://3ds.simulator.test/challenge/xyz' });",
+                  "const t = Math.floor(Date.now() / 1000);",
+                  "// The signed string is t + '.' + body, so a captured signature cannot be replayed onto a",
+                  "// different body or a different time. HMAC-SHA256, hex, with the shared secret.",
+                  "const v1 = CryptoJS.HmacSHA256(",
+                  "    t + '.' + body,",
+                  "    pm.collectionVariables.get('providerCallbackSecret')",
+                  ").toString(CryptoJS.enc.Hex);",
+                  "// The request body is literally {{callbackBody}}, so what is sent is byte-for-byte what",
+                  "// was signed. Building the JSON in the request pane instead would sign one string and",
+                  "// send another the first time a variable resolved differently.",
+                  "pm.collectionVariables.set('callbackBody', body);",
+                  "pm.collectionVariables.set('callbackSignature', 't=' + t + ',v1=' + v1);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('applied', () => pm.expect(pm.response.json().outcome).to.eql('APPLIED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancel the abandoned challenge (200)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{cbSecondIntentId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{cbSecondIntentId}}",
+                "cancel"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"customer abandoned the 3DS challenge\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cbCancel2Key}}"
+              }
+            ],
+            "description": "REQUIRES_ACTION to CANCELLED, and this transition is not optional (ADR-011). Without it an abandoned challenge holds the order's only slot forever and the order is dead in both directions."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cbCancel2Key', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('CANCELLED', () => pm.expect(pm.response.json().status).to.eql('CANCELLED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The customer completes it anyway (200, IGNORED_TERMINAL)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/internal/v1/provider-callbacks/SIMULATOR",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "v1",
+                "provider-callbacks",
+                "SIMULATOR"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{callbackBody}}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Signature",
+                "value": "{{callbackSignature}}"
+              }
+            ],
+            "description": "PAYMESH AND THE PROVIDER NOW GENUINELY DISAGREE, and this row is the only trace of it. The callback is refused and recorded; resolving the divergence is reconciliation's job, and no reconciler exists yet. The race is real and ADR-012 says so rather than pretending otherwise."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// THE SIGNATURE IS COMPUTED HERE, NOT PASTED. A fixed signature would be valid for one",
+                  "// body at one second and would rot the moment either changed -- which is the property the",
+                  "// scheme exists to have, so hard-coding one would be testing nothing.",
+                  "const body = JSON.stringify({ eventId: 'sim_evt_' + pm.variables.replaceIn('{{$guid}}'), occurredAt: '2026-08-01T12:05:00Z', paymentIntentId: pm.collectionVariables.get('cbSecondIntentId'), providerReference: 'sim_pay_' + pm.variables.replaceIn('{{$guid}}'), outcome: 'SUCCEEDED', capturedAmountMinor: 2500 });",
+                  "const t = Math.floor(Date.now() / 1000);",
+                  "// The signed string is t + '.' + body, so a captured signature cannot be replayed onto a",
+                  "// different body or a different time. HMAC-SHA256, hex, with the shared secret.",
+                  "const v1 = CryptoJS.HmacSHA256(",
+                  "    t + '.' + body,",
+                  "    pm.collectionVariables.get('providerCallbackSecret')",
+                  ").toString(CryptoJS.enc.Hex);",
+                  "// The request body is literally {{callbackBody}}, so what is sent is byte-for-byte what",
+                  "// was signed. Building the JSON in the request pane instead would sign one string and",
+                  "// send another the first time a variable resolved differently.",
+                  "pm.collectionVariables.set('callbackBody', body);",
+                  "pm.collectionVariables.set('callbackSignature', 't=' + t + ',v1=' + v1);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK, not 409', () => pm.response.to.have.status(200));",
+                  "pm.test('refused as terminal', () => pm.expect(pm.response.json().outcome).to.eql('IGNORED_TERMINAL'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The intent is still CANCELLED (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{cbSecondIntentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{cbSecondIntentId}}"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "Nothing the provider said moved it, and nothing captured."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('CANCELLED', () => pm.expect(b.status).to.eql('CANCELLED'));",
+                  "pm.test('captured nothing', () => pm.expect(b.capturedAmountMinor).to.eql(0));"
                 ]
               }
             }

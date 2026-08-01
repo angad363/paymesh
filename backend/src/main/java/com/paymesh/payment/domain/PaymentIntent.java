@@ -42,11 +42,18 @@ public final class PaymentIntent {
     /**
      * The states a merchant may cancel from today.
      * <p>
-     * It grows with the state machine: REQUIRES_ACTION and AUTHORIZED join when the provider states
-     * become reachable. <b>Every state a customer can strand an intent in must end up in this
-     * set</b>, because {@code uq_payment_intents_live_per_order} frees an order's slot only on
-     * FAILED or CANCELLED -- an uncancellable state is a dead order, which is worse than the
-     * overpayment the index prevents.
+     * It grows with the state machine: AUTHORIZED joins when manual capture lands. <b>Every state a
+     * customer can strand an intent in must end up in this set</b>, because
+     * {@code uq_payment_intents_live_per_order} frees an order's slot only on FAILED or CANCELLED --
+     * an uncancellable state is a dead order, which is worse than the overpayment the index
+     * prevents.
+     * <p>
+     * REQUIRES_ACTION IS IN THE SET, AND IT IS NOT OPTIONAL (ADR-011, ADR-012). A customer who
+     * abandons a 3DS challenge, closes the tab or lets it time out is ordinary behaviour, and
+     * without this the intent sits in REQUIRES_ACTION forever, the merchant cannot create a second
+     * one, cannot mark the order paid, and cannot re-create the order without colliding with their
+     * own merchantOrderReference. It composes with the callback path: a challenge completed after
+     * the cancel lands on a CANCELLED intent and is refused as IGNORED_TERMINAL.
      * <p>
      * PROCESSING is the deliberate exception and will never be added: an in-flight attempt may
      * already have succeeded at the provider, so cancelling locally could erase a payment that
@@ -55,13 +62,34 @@ public final class PaymentIntent {
      */
     private static final Set<PaymentIntentStatus> CANCELLABLE = Set.of(
         PaymentIntentStatus.REQUIRES_PAYMENT_METHOD,
-        PaymentIntentStatus.REQUIRES_CONFIRMATION
+        PaymentIntentStatus.REQUIRES_CONFIRMATION,
+        PaymentIntentStatus.REQUIRES_ACTION
+    );
+
+    /**
+     * The one state a provider callback may move an intent out of.
+     * <p>
+     * All four provider outcomes come from PROCESSING and nowhere else. In particular AUTHORIZED to
+     * SUCCEEDED is <b>not</b> here: that is a capture, the merchant asks for it, and the PR that
+     * owns manual capture owns the transition. A SUCCEEDED callback arriving against an AUTHORIZED
+     * intent is therefore refused as IGNORED_TERMINAL rather than quietly capturing on the
+     * provider's say-so.
+     */
+    private static final Set<PaymentIntentStatus> CONFIRMABLE = Set.of(
+        PaymentIntentStatus.REQUIRES_CONFIRMATION,
+        // The 3DS loop: the customer completed the challenge and the merchant confirms again,
+        // opening a second attempt against the same intent. This is the cycle that makes the
+        // monotonic event clock necessary -- inside it, a stale REQUIRES_ACTION is a LEGAL
+        // transition and the state machine alone cannot refuse it (ADR-012).
+        PaymentIntentStatus.REQUIRES_ACTION
     );
 
     private static final int CUSTOMER_REFERENCE_MAX_LENGTH = 40;
     private static final int ORDER_REFERENCE_MAX_LENGTH = 40;
     private static final int DESCRIPTION_MAX_LENGTH = 500;
     private static final int CANCELLATION_REASON_MAX_LENGTH = 200;
+    private static final int FAILURE_CODE_MAX_LENGTH = 60;
+    private static final int FAILURE_MESSAGE_MAX_LENGTH = 500;
     private static final int CURRENCY_LENGTH = 3;
 
     private final PaymentIntentId paymentIntentId;
@@ -263,11 +291,12 @@ public final class PaymentIntent {
      * attached has nothing to be collected with, and inferring a default here would pick an
      * instrument on the merchant's behalf.
      * <p>
-     * REQUIRES_ACTION will also become confirmable when the state exists; it does not yet, and
-     * adding it now would make a state reachable before the PR that owns it.
+     * REQUIRES_ACTION is also confirmable -- see {@link #CONFIRMABLE}. That is the 3DS loop, and it
+     * opens a second attempt rather than reusing the first: what the provider was asked, and when,
+     * is a per-try fact.
      */
     public PaymentIntent confirm(Instant confirmedAt) {
-        if (status != PaymentIntentStatus.REQUIRES_CONFIRMATION) {
+        if (!CONFIRMABLE.contains(status)) {
             throw new PaymentIntentNotConfirmableException(paymentIntentId, status);
         }
 
@@ -276,6 +305,135 @@ public final class PaymentIntent {
         }
 
         return withStatus(paymentMethodType, PaymentIntentStatus.PROCESSING, confirmedAt);
+    }
+
+    /**
+     * PROCESSING to AUTHORIZED: the provider is holding the funds and has not moved them. Only a
+     * MANUAL-capture intent should legitimately land here, but which it is is the provider's report
+     * and not this aggregate's to second-guess -- an AUTHORIZED answer to an AUTOMATIC intent is a
+     * divergence worth recording, not one worth rewriting.
+     * <p>
+     * No captured amount, deliberately: an authorization has captured nothing, and writing the
+     * authorized figure into {@code captured_amount_minor} would make an uncaptured payment look
+     * collected to every reader of that column.
+     */
+    public PaymentIntent authorize(Instant authorizedAt) {
+        requireProviderTransition(PaymentIntentStatus.AUTHORIZED, authorizedAt);
+
+        return withStatus(paymentMethodType, PaymentIntentStatus.AUTHORIZED, authorizedAt);
+    }
+
+    /**
+     * PROCESSING to REQUIRES_ACTION: the customer has to do something off-site, typically a 3DS
+     * challenge. The intent is parked, not finished, and it has two ways out -- the merchant
+     * confirms again once the challenge completes, or the merchant cancels (see {@link #CANCELLABLE}).
+     */
+    public PaymentIntent requireAction(Instant requiredAt) {
+        requireProviderTransition(PaymentIntentStatus.REQUIRES_ACTION, requiredAt);
+
+        return withStatus(paymentMethodType, PaymentIntentStatus.REQUIRES_ACTION, requiredAt);
+    }
+
+    /**
+     * PROCESSING to SUCCEEDED.
+     * <p>
+     * <b>Reaching SUCCEEDED moves no balance and posts no ledger entry</b> (design section 0.5).
+     * This is operational state: it says a provider reported a collection, and the Ledger -- which
+     * does not exist -- remains the financial source of truth. The captured amount is written here
+     * because {@code ck_payment_intents_succeeded_captured} refuses a succeeded intent that captured
+     * nothing, and because a payment record that cannot say how much it took is not a record.
+     * <p>
+     * The amount is checked against the intent's own. A provider does not get to change what is
+     * owed, and the caller has already refused a mismatch before reaching this -- this is the
+     * backstop, not the check.
+     */
+    public PaymentIntent succeed(long capturedAmountMinor, Instant succeededAt) {
+        requireProviderTransition(PaymentIntentStatus.SUCCEEDED, succeededAt);
+
+        if (capturedAmountMinor <= 0 || capturedAmountMinor > amountMinor) {
+            throw new IllegalArgumentException(
+                "Captured amount must be between 1 and the intent's " + amountMinor + " minor units"
+            );
+        }
+
+        return new PaymentIntent(
+            paymentIntentId,
+            merchantId,
+            orderId,
+            customerId,
+            amountMinor,
+            currency,
+            captureMethod,
+            paymentMethodType,
+            PaymentIntentStatus.SUCCEEDED,
+            capturedAmountMinor,
+            refundedAmountMinor,
+            failureCode,
+            failureMessage,
+            cancellationReason,
+            cancelledAt,
+            description,
+            metadata,
+            version,
+            createdAt,
+            succeededAt
+        );
+    }
+
+    /**
+     * PROCESSING to FAILED, with the provider's reason after redaction.
+     * <p>
+     * FAILED also releases the order's live-intent slot, which is why a failed collection does not
+     * kill the order: the merchant can create a fresh intent and try again.
+     */
+    public PaymentIntent fail(String failureCode, String failureMessage, Instant failedAt) {
+        requireProviderTransition(PaymentIntentStatus.FAILED, failedAt);
+
+        return new PaymentIntent(
+            paymentIntentId,
+            merchantId,
+            orderId,
+            customerId,
+            amountMinor,
+            currency,
+            captureMethod,
+            paymentMethodType,
+            PaymentIntentStatus.FAILED,
+            capturedAmountMinor,
+            refundedAmountMinor,
+            normalizeOptional(failureCode, FAILURE_CODE_MAX_LENGTH, "Failure code"),
+            normalizeOptional(failureMessage, FAILURE_MESSAGE_MAX_LENGTH, "Failure message"),
+            cancellationReason,
+            cancelledAt,
+            description,
+            metadata,
+            version,
+            createdAt,
+            failedAt
+        );
+    }
+
+    /**
+     * The shared guard for the four transitions only a provider can request.
+     * <p>
+     * <b>Terminal states absorb, and that is one of the two out-of-order mechanisms</b> (ADR-012). A
+     * PROCESSING-era callback arriving after the intent already SUCCEEDED, FAILED or was CANCELLED
+     * is refused here, and the callback path answers 200 IGNORED_TERMINAL rather than 409 -- a
+     * provider retries on any non-2xx, so a conflict would be an infinite retry loop against a
+     * payment that is already finished.
+     * <p>
+     * It is only ONE of the two. The state machine cannot refuse a stale event inside the
+     * PROCESSING/REQUIRES_ACTION cycle, because there the stale event is a legal transition. The
+     * monotonic event clock is what refuses that, and neither mechanism subsumes the other.
+     */
+    private void requireProviderTransition(PaymentIntentStatus target, Instant occurredAt) {
+        if (status != PaymentIntentStatus.PROCESSING) {
+            throw new ProviderOutcomeNotApplicableException(paymentIntentId, status, target);
+        }
+
+        if (occurredAt == null) {
+            throw new IllegalArgumentException("Provider event timestamp cannot be null");
+        }
     }
 
     /**

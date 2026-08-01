@@ -21,3 +21,9 @@ paymesh:
       # so copying it into a real environment variable fails startup loudly rather than
       # signing production tokens with a key anyone can read in this file.
       secret: dev-only-insecure-jwt-signing-secret-change-me
+  provider:
+    # Same deal, and it matters more: this key is the ONLY authentication on the endpoint that
+    # marks a payment SUCCEEDED. DevelopmentSecretGuard refuses this exact value unless the dev
+    # profile is the sole active one, so copying it into a real environment variable fails startup
+    # loudly rather than letting anyone forge a callback for any payment.
+    callback-secret: dev-only-insecure-provider-callback-secret-change-me
