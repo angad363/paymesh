@@ -23,6 +23,8 @@ public record PaymentIntentResponse(
     long amountMinor,
     String currency,
     String captureMethod,
+    /** Null until a method is attached, and null forever on an intent cancelled before that. */
+    String paymentMethodType,
     String status,
     long capturedAmountMinor,
     long refundedAmountMinor,
@@ -44,6 +46,7 @@ public record PaymentIntentResponse(
             intent.amountMinor(),
             intent.currency(),
             intent.captureMethod().name(),
+            intent.paymentMethodType() == null ? null : intent.paymentMethodType().name(),
             intent.status().name(),
             intent.capturedAmountMinor(),
             intent.refundedAmountMinor(),

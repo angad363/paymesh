@@ -1,7 +1,9 @@
 package com.paymesh.order.infrastructure.persistence.jpa;
 
+import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -19,6 +21,25 @@ import java.util.Optional;
 public interface SpringDataOrderRepository extends JpaRepository<OrderJpaEntity, String> {
 
     Optional<OrderJpaEntity> findByMerchantIdAndOrderId(String merchantId, String orderId);
+
+    /**
+     * The same row, locked until the caller's transaction ends: {@code SELECT ... FOR UPDATE}.
+     * <p>
+     * PESSIMISTIC_WRITE rather than optimistic {@code @Version}, and the difference matters here.
+     * Optimistic control lets both writers proceed and fails the loser at flush time, which needs an
+     * application-level retry to be correct; the lock makes the second reader WAIT, so it reads the
+     * winner's committed result and judges itself against the truth. Payment's create path is
+     * deciding whether an order may be collected against, and "wait and then see" is the only answer
+     * that cannot be stale. SDD 23.3 names pessimistic locking for exactly this class of decision.
+     * <p>
+     * Still merchant-leading, like every other method here: a lock is not an authorization.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select o from OrderJpaEntity o where o.merchantId = :merchantId and o.orderId = :orderId")
+    Optional<OrderJpaEntity> findForUpdateByMerchantIdAndOrderId(
+        @Param("merchantId") String merchantId,
+        @Param("orderId") String orderId
+    );
 
     boolean existsByMerchantIdAndMerchantOrderReference(String merchantId, String merchantOrderReference);
 

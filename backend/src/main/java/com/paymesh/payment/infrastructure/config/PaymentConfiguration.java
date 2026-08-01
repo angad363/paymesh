@@ -1,16 +1,21 @@
 package com.paymesh.payment.infrastructure.config;
 
 import com.paymesh.order.application.GetOrderService;
+import com.paymesh.payment.application.AttachPaymentMethodService;
 import com.paymesh.payment.application.CancelPaymentIntentService;
+import com.paymesh.payment.application.ConfirmPaymentIntentService;
 import com.paymesh.payment.application.CreatePaymentIntentService;
 import com.paymesh.payment.application.GetPaymentIntentService;
 import com.paymesh.payment.application.ListPaymentIntentsService;
 import com.paymesh.payment.application.OrderLookup;
+import com.paymesh.payment.application.PaymentAttemptRepository;
 import com.paymesh.payment.application.PaymentIntentRepository;
 import com.paymesh.payment.application.PaymentStateHistoryRepository;
 import com.paymesh.payment.infrastructure.order.OrderModuleLookup;
+import com.paymesh.payment.infrastructure.persistence.jpa.JpaPaymentAttemptRepository;
 import com.paymesh.payment.infrastructure.persistence.jpa.JpaPaymentIntentRepository;
 import com.paymesh.payment.infrastructure.persistence.jpa.JpaPaymentStateHistoryRepository;
+import com.paymesh.payment.infrastructure.persistence.jpa.SpringDataPaymentAttemptRepository;
 import com.paymesh.payment.infrastructure.persistence.jpa.SpringDataPaymentIntentRepository;
 import com.paymesh.payment.infrastructure.persistence.jpa.SpringDataPaymentStateHistoryRepository;
 import com.paymesh.shared.outbox.application.OutboxWriter;
@@ -81,6 +86,55 @@ public class PaymentConfiguration {
         PaymentIntentRepository paymentIntentRepository
     ) {
         return new ListPaymentIntentsService(paymentIntentRepository);
+    }
+
+    @Bean
+    PaymentAttemptRepository paymentAttemptRepository(
+        SpringDataPaymentAttemptRepository springDataPaymentAttemptRepository
+    ) {
+        return new JpaPaymentAttemptRepository(springDataPaymentAttemptRepository);
+    }
+
+    @Bean
+    AttachPaymentMethodService attachPaymentMethodService(
+        PaymentIntentRepository paymentIntentRepository,
+        PaymentStateHistoryRepository paymentStateHistoryRepository,
+        GetPaymentIntentService getPaymentIntentService,
+        OutboxWriter outboxWriter,
+        TransactionTemplate transactionTemplate,
+        Clock clock
+    ) {
+        return new AttachPaymentMethodService(
+            paymentIntentRepository,
+            paymentStateHistoryRepository,
+            getPaymentIntentService,
+            outboxWriter,
+            transactionTemplate,
+            clock
+        );
+    }
+
+    @Bean
+    ConfirmPaymentIntentService confirmPaymentIntentService(
+        PaymentIntentRepository paymentIntentRepository,
+        PaymentAttemptRepository paymentAttemptRepository,
+        PaymentStateHistoryRepository paymentStateHistoryRepository,
+        GetPaymentIntentService getPaymentIntentService,
+        OrderLookup orderLookup,
+        OutboxWriter outboxWriter,
+        TransactionTemplate transactionTemplate,
+        Clock clock
+    ) {
+        return new ConfirmPaymentIntentService(
+            paymentIntentRepository,
+            paymentAttemptRepository,
+            paymentStateHistoryRepository,
+            getPaymentIntentService,
+            orderLookup,
+            outboxWriter,
+            transactionTemplate,
+            clock
+        );
     }
 
     @Bean

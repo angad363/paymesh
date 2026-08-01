@@ -70,7 +70,7 @@ The index is therefore only defensible alongside this table:
 | State | Route out | Lands in |
 |---|---|---|
 | `REQUIRES_PAYMENT_METHOD` | merchant cancel | **exists now** |
-| `REQUIRES_CONFIRMATION` | merchant cancel | next PR (attach/confirm) |
+| `REQUIRES_CONFIRMATION` | merchant cancel | **exists now** (attach/confirm PR) |
 | `REQUIRES_ACTION` | merchant cancel | the PR after (provider callbacks) |
 | `AUTHORIZED` | merchant cancel | the PR after that (manual capture) |
 | `PROCESSING` | **none. Deliberate.** | §4 |
@@ -145,6 +145,12 @@ found now and not in month three.
 - `uq_payment_intents_live_per_order` is also the index the `?orderId=` filter and the
   create path's lookup would want, but `idx_payment_intents_merchant_order` exists
   separately: a partial index cannot serve a query over rows it excludes.
+
+- **The mirror problem is ADR-013.** This ADR is about an intent stranding its order. The other
+  direction — the *order* being cancelled out from under a live intent, which from the attach/confirm
+  PR means an intent could collect for an order the merchant explicitly cancelled — is answered
+  separately, by a payability re-read at confirm and a row lock at create. Neither subsumes the
+  other, and §3 above says so.
 
 ## Deliberately out of scope
 

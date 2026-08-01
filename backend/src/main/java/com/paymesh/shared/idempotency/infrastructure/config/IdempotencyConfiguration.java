@@ -35,6 +35,8 @@ public class IdempotencyConfiguration {
         "POST /api/v1/orders",
         "POST /api/v1/orders/{orderId}/cancel",
         "POST /api/v1/payment-intents",
+        "POST /api/v1/payment-intents/{paymentIntentId}/payment-method",
+        "POST /api/v1/payment-intents/{paymentIntentId}/confirm",
         "POST /api/v1/payment-intents/{paymentIntentId}/cancel"
     );
 

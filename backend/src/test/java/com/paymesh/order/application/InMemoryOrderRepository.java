@@ -41,6 +41,16 @@ final class InMemoryOrderRepository implements OrderRepository {
             .findFirst();
     }
 
+    /**
+     * The same read. A list cannot hold a row still, so what this double preserves is the SIGNATURE
+     * and the tenant scoping, not the lock -- the locking behaviour is proved against PostgreSQL,
+     * because it is the only thing that can arbitrate it.
+     */
+    @Override
+    public Optional<Order> findByOrderIdForUpdate(MerchantId merchantId, OrderId orderId) {
+        return findByOrderId(merchantId, orderId);
+    }
+
     @Override
     public List<Order> findPage(MerchantId merchantId, OrderStatus status, OrderCursor cursor, int limit) {
         return orders.stream()

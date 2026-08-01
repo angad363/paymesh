@@ -53,6 +53,19 @@ final class InMemoryPaymentIntentRepository implements PaymentIntentRepository {
             .findFirst();
     }
 
+    /**
+     * A list cannot hold a row still, so what this double preserves is the SIGNATURE and the tenant
+     * scoping, not the lock. That the transitions serialize is proved against PostgreSQL, which is
+     * the only thing that can arbitrate it.
+     */
+    @Override
+    public Optional<PaymentIntent> findByPaymentIntentIdForUpdate(
+        MerchantId merchantId,
+        PaymentIntentId paymentIntentId
+    ) {
+        return findByPaymentIntentId(merchantId, paymentIntentId);
+    }
+
     @Override
     public List<PaymentIntent> findPage(
         MerchantId merchantId,

@@ -4,6 +4,7 @@ import com.paymesh.payment.domain.CaptureMethod;
 import com.paymesh.payment.domain.PaymentIntent;
 import com.paymesh.payment.domain.PaymentIntentId;
 import com.paymesh.payment.domain.PaymentIntentStatus;
+import com.paymesh.payment.domain.PaymentMethodType;
 import com.paymesh.shared.tenant.MerchantId;
 
 import java.util.Map;
@@ -26,6 +27,8 @@ public final class PaymentIntentJpaMapper {
             intent.amountMinor(),
             intent.currency(),
             intent.captureMethod().name(),
+            // Null until a method is attached, which the CHECK tolerates in exactly two states.
+            intent.paymentMethodType() == null ? null : intent.paymentMethodType().name(),
             intent.status().name(),
             intent.capturedAmountMinor(),
             intent.refundedAmountMinor(),
@@ -53,6 +56,9 @@ public final class PaymentIntentJpaMapper {
             entity.amountMinor(),
             entity.currency(),
             CaptureMethod.valueOf(entity.captureMethod()),
+            entity.paymentMethodType() == null
+                ? null
+                : PaymentMethodType.valueOf(entity.paymentMethodType()),
             PaymentIntentStatus.valueOf(entity.status()),
             entity.capturedAmountMinor(),
             entity.refundedAmountMinor(),

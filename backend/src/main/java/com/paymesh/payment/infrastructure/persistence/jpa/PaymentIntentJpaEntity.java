@@ -15,9 +15,9 @@ import java.util.Map;
  * Persistence model for the payment_intents table (V8__create_payment_intents.sql).
  * Column definitions must match that migration -- ddl-auto=validate fails startup on drift.
  * <p>
- * {@code payment_method_type} is deliberately NOT mapped. The column exists in V8 so that attaching
- * a method needs no migration, but nothing in this PR reads or writes it and an unmapped column is
- * not schema drift. The PR that owns attach maps it alongside the enum whose vocabulary it defines.
+ * {@code payment_method_type} was deliberately left unmapped by V8's PR and is mapped here, by the
+ * PR that owns attach and therefore owns the vocabulary that goes in it. No migration was needed:
+ * the column has existed since V8 precisely so that this change is a Java change.
  */
 @Entity
 @Table(name = "payment_intents")
@@ -49,6 +49,11 @@ public class PaymentIntentJpaEntity {
     // Enum NAME, never the ordinal; the mapper converts and thereby validates it.
     @Column(name = "capture_method", nullable = false, length = 16)
     private String captureMethod;
+
+    // Nullable, and ck_payment_intents_method_known is what says when: null is legal only before an
+    // attach has happened, or on an intent cancelled before one did.
+    @Column(name = "payment_method_type", length = 20)
+    private String paymentMethodType;
 
     @Column(name = "status", nullable = false, length = 32)
     private String status;
@@ -109,6 +114,7 @@ public class PaymentIntentJpaEntity {
         long amountMinor,
         String currency,
         String captureMethod,
+        String paymentMethodType,
         String status,
         long capturedAmountMinor,
         long refundedAmountMinor,
@@ -129,6 +135,7 @@ public class PaymentIntentJpaEntity {
         this.amountMinor = amountMinor;
         this.currency = currency;
         this.captureMethod = captureMethod;
+        this.paymentMethodType = paymentMethodType;
         this.status = status;
         this.capturedAmountMinor = capturedAmountMinor;
         this.refundedAmountMinor = refundedAmountMinor;
@@ -169,6 +176,10 @@ public class PaymentIntentJpaEntity {
 
     public String captureMethod() {
         return captureMethod;
+    }
+
+    public String paymentMethodType() {
+        return paymentMethodType;
     }
 
     public String status() {

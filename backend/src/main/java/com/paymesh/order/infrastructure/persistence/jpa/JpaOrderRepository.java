@@ -61,6 +61,12 @@ public final class JpaOrderRepository implements OrderRepository {
     }
 
     @Override
+    public Optional<Order> findByOrderIdForUpdate(MerchantId merchantId, OrderId orderId) {
+        return orders.findForUpdateByMerchantIdAndOrderId(merchantId.value(), orderId.value())
+            .map(OrderJpaMapper::toDomain);
+    }
+
+    @Override
     public List<Order> findPage(
         MerchantId merchantId,
         OrderStatus status,

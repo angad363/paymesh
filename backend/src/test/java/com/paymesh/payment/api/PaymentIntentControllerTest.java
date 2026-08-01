@@ -379,7 +379,234 @@ class PaymentIntentControllerTest {
             .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
     }
 
+    // --- attach ---------------------------------------------------------------------------
+
+    @Test
+    void attachesAPaymentMethodAndAwaitsConfirmation() throws Exception {
+        String intentId = createIntent(merchantId, createOrder(merchantId));
+
+        attach(merchantId, intentId, key(), "CARD")
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.id").value(intentId))
+            .andExpect(jsonPath("$.status").value("REQUIRES_CONFIRMATION"))
+            .andExpect(jsonPath("$.paymentMethodType").value("CARD"));
+    }
+
+    /** A lowercase type is normalized, not refused -- the same courtesy currency gets. */
+    @Test
+    void normalizesTheAttachedMethodType() throws Exception {
+        String intentId = createIntent(merchantId, createOrder(merchantId));
+
+        attach(merchantId, intentId, key(), "net_banking")
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.paymentMethodType").value("NET_BANKING"));
+    }
+
+    /**
+     * THE ONE INTENT AWAITING A METHOD HAS NO METHOD. Asserted as an absence so that a future change
+     * defaulting it to CARD breaks a test rather than passing review.
+     */
+    @Test
+    void reportsNoPaymentMethodBeforeOneIsAttached() throws Exception {
+        String intentId = createIntent(merchantId, createOrder(merchantId));
+
+        mockMvc.perform(get("/api/v1/payment-intents/{id}", intentId).with(callerFor(merchantId)))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.paymentMethodType").doesNotExist());
+    }
+
+    /**
+     * The two dedup rules again. A second attach on a FRESH key is a genuinely new request and meets
+     * the state machine: 409. The same request replayed on the SAME key never reaches it.
+     */
+    @Test
+    void refusesASecondAttachOnAFreshKeyButReplaysItOnTheSameKey() throws Exception {
+        String intentId = createIntent(merchantId, createOrder(merchantId));
+        String firstKey = key();
+
+        attach(merchantId, intentId, firstKey, "CARD").andExpect(status().isOk());
+
+        attach(merchantId, intentId, key(), "CARD")
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("PAYMENT_METHOD_NOT_ATTACHABLE"));
+
+        attach(merchantId, intentId, firstKey, "CARD")
+            .andExpect(status().isOk())
+            .andExpect(header().string("Idempotency-Replayed", "true"))
+            .andExpect(jsonPath("$.status").value("REQUIRES_CONFIRMATION"));
+    }
+
+    @Test
+    void rejectsAnUnknownPaymentMethodType() throws Exception {
+        String intentId = createIntent(merchantId, createOrder(merchantId));
+
+        attach(merchantId, intentId, key(), "CRYPTO")
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+            .andExpect(jsonPath("$.fieldErrors.paymentMethodType").exists());
+    }
+
+    @Test
+    void rejectsAnAttachWithNoIdempotencyKey() throws Exception {
+        String intentId = createIntent(merchantId, createOrder(merchantId));
+
+        mockMvc.perform(post("/api/v1/payment-intents/{id}/payment-method", intentId)
+                .with(callerFor(merchantId))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"paymentMethodType\": \"CARD\"}"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REQUIRED"));
+    }
+
+    @Test
+    void refusesToAttachToAnotherMerchantsIntent() throws Exception {
+        String intentId = createIntent(merchantId, createOrder(merchantId));
+
+        attach(otherMerchantId, intentId, key(), "CARD")
+            .andExpect(status().isNotFound())
+            .andExpect(jsonPath("$.code").value("PAYMENT_INTENT_NOT_FOUND"));
+    }
+
+    // --- confirm --------------------------------------------------------------------------
+
+    /**
+     * 202, NOT 200, even though nothing asynchronous is invoked. The request is accepted and the
+     * outcome is undecided until a provider callback resolves it; 200 would claim the work is done.
+     */
+    @Test
+    void confirmsAnAttachedIntentWithAnAccepted() throws Exception {
+        String intentId = createIntent(merchantId, createOrder(merchantId));
+        attach(merchantId, intentId, key(), "UPI").andExpect(status().isOk());
+
+        confirm(merchantId, intentId, key())
+            .andExpect(status().isAccepted())
+            .andExpect(jsonPath("$.id").value(intentId))
+            .andExpect(jsonPath("$.status").value("PROCESSING"))
+            .andExpect(jsonPath("$.paymentMethodType").value("UPI"))
+            .andExpect(jsonPath("$.capturedAmountMinor").value(0));
+    }
+
+    /** Attach is a prerequisite, not a convention. */
+    @Test
+    void refusesToConfirmAnIntentWithNoPaymentMethod() throws Exception {
+        String intentId = createIntent(merchantId, createOrder(merchantId));
+
+        confirm(merchantId, intentId, key())
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("PAYMENT_INTENT_NOT_CONFIRMABLE"));
+    }
+
+    @Test
+    void refusesASecondConfirmOnAFreshKeyButReplaysItOnTheSameKey() throws Exception {
+        String intentId = createIntent(merchantId, createOrder(merchantId));
+        attach(merchantId, intentId, key(), "CARD").andExpect(status().isOk());
+        String firstKey = key();
+
+        confirm(merchantId, intentId, firstKey).andExpect(status().isAccepted());
+
+        confirm(merchantId, intentId, key())
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("PAYMENT_INTENT_NOT_CONFIRMABLE"));
+
+        confirm(merchantId, intentId, firstKey)
+            .andExpect(status().isAccepted())
+            .andExpect(header().string("Idempotency-Replayed", "true"))
+            .andExpect(jsonPath("$.status").value("PROCESSING"));
+    }
+
+    /**
+     * ADR-013, OVER HTTP. The merchant cancels the order after the intent exists -- which nothing
+     * stops, because Order does not know Payment exists -- and the confirm that would have collected
+     * for it is refused 422. This is the single most important test in this class.
+     */
+    @Test
+    void refusesToConfirmAgainstAnOrderCancelledAfterTheIntentWasCreated() throws Exception {
+        String orderId = createOrder(merchantId);
+        String intentId = createIntent(merchantId, orderId);
+        attach(merchantId, intentId, key(), "CARD").andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/v1/orders/{id}/cancel", orderId)
+                .with(callerFor(merchantId))
+                .header("Idempotency-Key", key()))
+            .andExpect(status().isOk());
+
+        confirm(merchantId, intentId, key())
+            .andExpect(status().isUnprocessableEntity())
+            .andExpect(jsonPath("$.code").value("ORDER_NOT_PAYABLE"));
+
+        mockMvc.perform(get("/api/v1/payment-intents/{id}", intentId).with(callerFor(merchantId)))
+            .andExpect(jsonPath("$.status").value("REQUIRES_CONFIRMATION"));
+    }
+
+    /** Malformed at the boundary, so it never reaches the redactor that would have dropped it. */
+    @Test
+    void rejectsAReturnUrlThatIsNotAnAbsoluteHttpUrl() throws Exception {
+        String intentId = createIntent(merchantId, createOrder(merchantId));
+        attach(merchantId, intentId, key(), "CARD").andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/v1/payment-intents/{id}/confirm", intentId)
+                .with(callerFor(merchantId))
+                .header("Idempotency-Key", key())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"returnUrl\": \"javascript:alert(1)\"}"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+            .andExpect(jsonPath("$.fieldErrors.returnUrl").exists());
+    }
+
+    @Test
+    void rejectsAConfirmWithNoIdempotencyKey() throws Exception {
+        String intentId = createIntent(merchantId, createOrder(merchantId));
+
+        mockMvc.perform(post("/api/v1/payment-intents/{id}/confirm", intentId)
+                .with(callerFor(merchantId)))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REQUIRED"));
+    }
+
+    @Test
+    void refusesToConfirmAnotherMerchantsIntent() throws Exception {
+        String intentId = createIntent(merchantId, createOrder(merchantId));
+        attach(merchantId, intentId, key(), "CARD").andExpect(status().isOk());
+
+        confirm(otherMerchantId, intentId, key())
+            .andExpect(status().isNotFound())
+            .andExpect(jsonPath("$.code").value("PAYMENT_INTENT_NOT_FOUND"));
+    }
+
     // --- cancel -----------------------------------------------------------------------------
+
+    /** The slot-release route out of REQUIRES_CONFIRMATION (ADR-011). */
+    @Test
+    void cancelsAnIntentAwaitingConfirmation() throws Exception {
+        String intentId = createIntent(merchantId, createOrder(merchantId));
+        attach(merchantId, intentId, key(), "WALLET").andExpect(status().isOk());
+
+        cancel(merchantId, intentId, key())
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("CANCELLED"))
+            // The method it died holding is kept, not cleared.
+            .andExpect(jsonPath("$.paymentMethodType").value("WALLET"));
+    }
+
+    /**
+     * PROCESSING IS DELIBERATELY UNCANCELLABLE (ADR-011 section 5). An in-flight attempt may already
+     * have succeeded at the provider, so a local cancel could erase a payment that really happened.
+     * This test is the thing standing between that rule and a well-meaning future change.
+     */
+    @Test
+    void refusesToCancelAProcessingIntent() throws Exception {
+        String intentId = createIntent(merchantId, createOrder(merchantId));
+        attach(merchantId, intentId, key(), "CARD").andExpect(status().isOk());
+        confirm(merchantId, intentId, key()).andExpect(status().isAccepted());
+
+        cancel(merchantId, intentId, key())
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("PAYMENT_INTENT_NOT_CANCELLABLE"));
+
+        mockMvc.perform(get("/api/v1/payment-intents/{id}", intentId).with(callerFor(merchantId)))
+            .andExpect(jsonPath("$.status").value("PROCESSING"));
+    }
 
     @Test
     void cancelsAnIntentAwaitingAPaymentMethod() throws Exception {
@@ -512,6 +739,28 @@ class PaymentIntentControllerTest {
             .header("Idempotency-Key", idempotencyKey)
             .contentType(MediaType.APPLICATION_JSON)
             .content(body);
+    }
+
+    private ResultActions attach(
+        String merchantId,
+        String intentId,
+        String idempotencyKey,
+        String paymentMethodType
+    ) throws Exception {
+        return mockMvc.perform(post("/api/v1/payment-intents/{id}/payment-method", intentId)
+            .with(callerFor(merchantId))
+            .header("Idempotency-Key", idempotencyKey)
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"paymentMethodType\": \"%s\"}".formatted(paymentMethodType)));
+    }
+
+    private ResultActions confirm(String merchantId, String intentId, String idempotencyKey)
+        throws Exception {
+        return mockMvc.perform(post("/api/v1/payment-intents/{id}/confirm", intentId)
+            .with(callerFor(merchantId))
+            .header("Idempotency-Key", idempotencyKey)
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"returnUrl\": \"https://shop.test/return?session=SECRET\", \"device\": \"web\"}"));
     }
 
     private ResultActions cancel(String merchantId, String intentId, String idempotencyKey)

@@ -7,7 +7,6 @@ import com.paymesh.payment.domain.PaymentIntent;
 import com.paymesh.payment.domain.PaymentIntentId;
 import com.paymesh.payment.domain.PaymentIntentStatus;
 import com.paymesh.shared.tenant.MerchantId;
-import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Limit;
 
@@ -65,7 +64,7 @@ public final class JpaPaymentIntentRepository implements PaymentIntentRepository
             // other integrity failures reachable here are the composite foreign keys, and an intent
             // naming another tenant's order must not be reported to the caller as "you already have
             // one" -- that would be both wrong and a hint about another merchant's data.
-            if (violates(exception, LIVE_PER_ORDER_INDEX)) {
+            if (ConstraintViolations.violates(exception, LIVE_PER_ORDER_INDEX)) {
                 throw new OrderHasActivePaymentIntentException(paymentIntent.orderId());
             }
 
@@ -80,6 +79,16 @@ public final class JpaPaymentIntentRepository implements PaymentIntentRepository
     ) {
         return paymentIntents
             .findByMerchantIdAndPaymentIntentId(merchantId.value(), paymentIntentId.value())
+            .map(PaymentIntentJpaMapper::toDomain);
+    }
+
+    @Override
+    public Optional<PaymentIntent> findByPaymentIntentIdForUpdate(
+        MerchantId merchantId,
+        PaymentIntentId paymentIntentId
+    ) {
+        return paymentIntents
+            .findForUpdateByMerchantIdAndPaymentIntentId(merchantId.value(), paymentIntentId.value())
             .map(PaymentIntentJpaMapper::toDomain);
     }
 
@@ -127,23 +136,5 @@ public final class JpaPaymentIntentRepository implements PaymentIntentRepository
         }
 
         return paymentIntents.findPage(merchant, cursorCreatedAt, cursorId, applied);
-    }
-
-    /**
-     * Whether this integrity violation came from the named constraint.
-     * <p>
-     * Spring wraps Hibernate's exception, which is the only layer that knows the constraint's name,
-     * so the cause chain has to be walked. A violation whose name cannot be read is treated as "not
-     * this one" and rethrown: mislabelling an unknown failure as a known conflict is worse than a
-     * 500 that says something went wrong.
-     */
-    private static boolean violates(DataIntegrityViolationException exception, String constraintName) {
-        for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
-            if (cause instanceof ConstraintViolationException violation) {
-                return constraintName.equals(violation.getConstraintName());
-            }
-        }
-
-        return false;
     }
 }

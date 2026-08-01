@@ -52,17 +52,23 @@ public final class CancelPaymentIntentService {
      * merchant takes to abandon a collection and start another.
      */
     public PaymentIntent cancel(MerchantId merchantId, PaymentIntentId paymentIntentId, String reason) {
-        PaymentIntent intent = getPaymentIntentService.getById(merchantId, paymentIntentId);
-
         Instant now = Instant.now(clock);
-        PaymentIntentStatus from = intent.status();
-        PaymentIntent cancelled = intent.cancel(reason, now);
 
         // The transition, its history row and the event announcing it commit together or not at all,
         // for the same reason creation's three writes do: a timeline missing a transition that
         // happened is worse than no timeline, because it looks complete.
+        //
+        // THE READ IS INSIDE THE TRANSACTION AND HOLDS A ROW LOCK. It used to be outside, and that
+        // was a race with itself and with confirm: two writers deciding from the same row collide on
+        // the optimistic version, and the loser gets a 500 about row counts rather than the 409 the
+        // state machine would have given it. Under the lock the loser waits and is told what
+        // actually happened.
         return transactions.execute(status -> {
-            PaymentIntent saved = paymentIntents.save(cancelled);
+            PaymentIntent intent = getPaymentIntentService.getByIdForUpdate(
+                merchantId, paymentIntentId
+            );
+            PaymentIntentStatus from = intent.status();
+            PaymentIntent saved = paymentIntents.save(intent.cancel(reason, now));
 
             history.append(new PaymentStateChange(
                 saved.merchantId(),
