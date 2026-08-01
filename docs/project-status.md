@@ -18,7 +18,7 @@ platform work that had to land first: the application refuses to boot on the com
 JWT signing key, public writes are idempotent through PostgreSQL, and a transactional
 outbox lets a state change and the event announcing it commit together.
 
-**501 tests, 0 failures.** Eight Flyway migrations (V1–V8). Eleven ADRs. The Postman
+**727 tests, 0 failures.** Twelve Flyway migrations (V1–V12). Fifteen ADRs. The Postman
 collection runs seven folders, the newest covering payment intents.
 
 The application is still a single deployable with strict module boundaries — the
@@ -306,6 +306,10 @@ The collection is not decorative: dropping the tenant predicate in
 | 009 | Public-write idempotency in PostgreSQL; records deleted on 5xx |
 | 010 | Transactional outbox in PostgreSQL, written in the caller's transaction; no relay yet |
 | 011 | One live payment intent per order, enforced by a partial unique index |
+| 012 | Provider callbacks deduplicated by `(provider, external_event_id)` and ordered by a monotonic clock |
+| 013 | Guard the confirm transition against an order cancelled underneath it |
+| 014 | Expire orders, but never one holding a live collection |
+| 015 | Time a stranded `PROCESSING` payment out to `FAILED`, with the risk stated |
 
 Note that the SDD's Appendix D has its own ADR list with the same numbers and
 different decisions. When citing one, say which source you mean.
@@ -314,82 +318,76 @@ different decisions. When citing one, say which source you mean.
 
 ## Open items, worst first
 
-1. **An order can be cancelled out from under a live payment intent, and nothing reconciles
-   them.** Found in review of the Payment PR and confirmed against PostgreSQL. `Order.cancel`
-   checks only that the order is `PENDING` — it has no idea an intent exists, and correctly
-   so, because Order must not know Payment exists. Payment reads the order's payability
-   *once, outside* the create transaction and never re-checks it. Create the order, create
-   the intent, cancel the order: the order is `CANCELLED`, the intent is still live and still
-   holds the order's only slot, and a second create is refused `ORDER_NOT_PAYABLE`. The order
-   is dead in both directions with no route back through the API. The same state is reachable
-   with no cancel at all, as a plain time-of-check-to-time-of-use race.
+_Items 1 and 2 of the previous list are now **closed in code** and kept below only where a
+residue survives. The Payment module is feature-complete; what follows is what is known to be
+wrong with it, worst first, and every one of these was found by review rather than by a
+failing test._
 
-   Today the damage is an inconsistency, because nothing moves money. **Once attach and
-   confirm land, that live intent can reach `SUCCEEDED` against a `CANCELLED` order** —
-   collecting for an order the merchant explicitly cancelled. Nothing in the schema, the
-   aggregate or the `OrderLookup` port prevents it. It is the mirror of item 2 below and
-   neither subsumes the other.
-
-   **Decided (2 August 2026): guard the transition, not the order.** The fix ships with the
-   attach+confirm PR and has two halves:
-
-   - **`confirm` re-reads the order's payability inside its own transaction and refuses if
-     the order is no longer `PENDING`.** Confirm is the moment money starts moving, so it is
-     the transition that has to be defensible; create is not. A stale `payable` read at
-     create costs an inconsistency, a stale one at confirm costs a collection.
-   - **Create takes a row lock on the order through the `OrderLookup` port**, closing the
-     plain time-of-check-to-time-of-use race between the lookup and the insert.
-
-   **Rejected: making `Order.cancel` refuse when a live intent exists.** It closes the hole
-   cleanly and it is the wrong shape — Order would have to know Payment exists, which the
-   module boundary forbids (ADR-008, design spec §0.5). The consequence of the decision is
-   accepted openly: a cancelled order can still be *holding* a live intent, and the intent
-   must be cancelled separately. What can no longer happen is that intent succeeding.
-
-   The candidates and their full costs remain written up in the design spec's §7 item 3.
-2. **`PROCESSING` is a payment-intent state with no exit, and a stuck intent is a stuck
-   order.** An intent holds its order's only live slot (ADR-011). Cancel is refused from
-   `PROCESSING` by design, because an in-flight attempt may already have succeeded at the
-   provider, so the only way out is a callback that may never arrive. A lost callback
-   therefore strands the order and recovery is manual. A `PROCESSING` timeout plus provider
-   reconciliation (SDD §21.4, §24.1) is the real answer; the timeout is now in scope (see
-   *The remaining scope*), reconciliation is not. This is the mirror of item 1 — that one is
-   the order dying under a live intent, this one is the intent dying with the order attached
-   — and neither subsumes the other.
-
-   *(This slot previously held "`payment_method_tokens` has the flaw Order just fixed".
-   **Resolved** by `V6__fix_payment_method_tokens_tenant_foreign_key.sql` (#30): the
-   single-column customer FK is now composite on `(merchant_id, customer_id)`, landed before
-   anything writes the table.)*
-3. **`POST /api/v1/merchants` is unauthenticated by design** and has no rate limit.
+1. **Timing a stranded payment out can kill the order it exists to rescue.** ADR-015 says
+   `FAILED` releases the slot so the merchant can retry. But the intent has been stranded for
+   at least an hour by then, so an order that set `expires_at` is usually past it. The expiry
+   sweep runs within five minutes, finds a `PENDING` order past its deadline with no live
+   intent, and expires it. `EXPIRED` is not payable, so create returns 422, and
+   `uq_orders_merchant_ref` stops the merchant recreating the order under the same reference.
+   The same dead end open item 1 used to describe, reached through its fix. Neither ADR-014
+   nor ADR-015 notices. A grace period after a system-initiated terminal transition is the
+   likely answer. Only bites orders that set a deadline.
+2. **One unmappable row disables a sweep permanently and silently.** Both sweeps run their
+   candidate query — which maps every row through the aggregate — *outside* the per-item
+   try/catch that exists to stop one bad row killing the run. A row that fails to map throws
+   out of `sweep()` entirely, has the oldest timestamp, sits at the head of every batch, and
+   the scheduler keeps rescheduling it. Reaching it needs database state the current CHECKs
+   forbid, so this is a latent trap rather than a live bug. Move the mapping inside the catch.
+3. **ADR-014's race guard depends on `READ COMMITTED` and nothing says so.** The expiry sweep
+   takes the order's row lock and then does an *unlocked* read of `payment_intents`. It sees
+   an intent committed while it waited on the lock only because each statement takes a fresh
+   snapshot. Set `default_transaction_isolation = repeatable read` and it would miss the
+   intent and expire an order being collected against — the one thing ADR-014 exists to
+   prevent. The isolation level is load-bearing and undocumented.
+4. **A provider callback row is never read back, and one line depends on that.**
+   `ProviderCallbackJpaEntity.isNew()` always returns `true`, which is necessary — without it
+   Spring Data merges and a duplicate delivery becomes a silent `UPDATE` that answers
+   `APPLIED`. It stops being correct the moment anything reads a callback row and saves it.
+   Reconciliation is exactly that, and no test guards the assumption.
+5. **An order can still be cancelled out from under a live payment intent.** The dangerous
+   half is closed — confirm re-reads payability inside its transaction, so that intent can
+   never collect (ADR-013) — but the inconsistency remains: a `CANCELLED` order can hold a
+   live intent until a sweep or a merchant releases it. Deliberate. Closing it entirely needs
+   either Order to know Payment exists (forbidden) or a database trigger (hides business logic
+   where no reader looks).
+6. **The error dispatch renders Boot's error body, not the house shape.** Side effect of the
+   fix in #39: the status is now right where it used to be a wrong `401`, but the body is
+   `{timestamp,status,error,path}` rather than `{code,message,fieldErrors}`. Belongs with the
+   existing RFC-7807 divergence.
+7. **The provider-callback Postman folder has never been run.** The HMAC pre-request script
+   encodes the same contract the server-side tests prove, but the collection itself is
+   unexercised, and running it needs a live server plus `newman`.
+8. **One global provider callback secret.** Anyone holding it can name any merchant's intent.
+   A documented deferral until per-provider credentials exist.
+9. **`POST /api/v1/merchants` is unauthenticated by design** and has no rate limit.
    It is the obvious abuse vector: an open write endpoint that creates rows.
-4. **Authorization is binary per tenant.** Holding any role at a merchant grants
+10. **Authorization is binary per tenant.** Holding any role at a merchant grants
    everything at that merchant. `MERCHANT_ADMIN` vs `MERCHANT_USER` matters as soon
    as two endpoints differ by permission.
-5. **Access tokens cannot be revoked before expiry** — nothing checks a denylist, so
+11. **Access tokens cannot be revoked before expiry** — nothing checks a denylist, so
    the 15-minute lifetime *is* the revocation window. Acceptable now; revisit when a
    compromised session has to be killed immediately.
-6. **Customer PII is plaintext** (ADR-006). Needs key management before it holds
+12. **Customer PII is plaintext** (ADR-006). Needs key management before it holds
    anything real.
-7. **A stranded `IN_PROGRESS` idempotency record wedges that key permanently.** If the
+13. **A stranded `IN_PROGRESS` idempotency record wedges that key permanently.** If the
    process dies between the insert and the completion update, the row survives with no
    TTL, no age check and no reaper. The endpoint answers (409, no hang), and the
    merchant's escape is a fresh key — backstopped by `merchant_order_ref`, which is
    precisely why those two dedup rules stay independent. But the cost is a wedged key,
    not merely table growth.
-8. **The outbox has no relay, so nothing is ever published.** `outbox_events` exists and is
+14. **The outbox has no relay, so nothing is ever published.** `outbox_events` exists and is
    written in the same transaction as the state change (ADR-010), but there is no Kafka, no
    relay and no consumer, so every row stays unpublished. SDD §24 names that exact state as
    non-corrupting, which is why it was built this way — but it does mean `order.created`,
    `payment.created` and `payment.cancelled` currently go nowhere, and `orders.status` never
    moves when a payment succeeds because the consumer that would move it does not exist.
    Merchant and Customer still emit nothing at all.
-9. **No `order_state_history`** (SDD §11.4). One reachable transition today, carried by
-   `cancelled_at` + `cancellation_reason` on the row. Payment brings two more; add the
-   table then.
-10. **Nothing sweeps expired orders.** `expires_at` and the `EXPIRED` status exist and
-   nothing sets the status. Payment will need the sweeper anyway.
-11. **Smaller:** `DevelopmentSecretGuard` surfaces as a raw stack trace rather than the
+15. **Smaller:** `DevelopmentSecretGuard` surfaces as a raw stack trace rather than the
     tidy `APPLICATION FAILED TO START` block a `FailureAnalyzer` would give it;
     `ModuleBoundaryTest` allowlists by *filename* rather than path, so a
     `OrderConfiguration.java` created under `order/application` would pass;
@@ -412,51 +410,29 @@ different decisions. When citing one, say which source you mean.
 
 ### Phase 1's remaining capabilities, in SDD order
 
-Payment's core has landed; the rest of it is three more PRs, and they are **strictly
-serial** because each one's reachable states depend on the last. In order: **attach a
-payment method + confirm** (`V9`, `payment_attempts`), then **provider callbacks** (`V10`,
-`provider_callbacks`, ADR-012), then **manual capture**. The design for all three is
-already written in `docs/superpowers/specs/2026-08-01-payment-capability-design.md` §3–§5,
-with migration numbers pre-assigned so parallel work cannot collide on them.
+**Payment is feature-complete.** Create, attach, confirm, provider callbacks (deduplicated
+and ordered), manual capture and cancel are all built, alongside Order's state history, the
+expiry sweep, the `PROCESSING` timeout and the abandoned-checkout sweep. Every state in the
+intent enum is now reachable except `PARTIALLY_REFUNDED` and `REFUNDED`, which belong to the
+Refund capability and are verified unreachable by grep.
 
-Both questions this document raised last session are now answered and on the record: an
-order may hold **only one** live payment intent (ADR-011), and the outbox landed
-**before** Payment rather than with it (ADR-010) — which was the right call, because
-Payment's create path needed it on day one.
+What is left in Phase 1: **Provider Simulator** → **Ledger** → **Refund**.
 
-The question that had to be settled before the confirm PR now is: open item 1, an order
-cancelled out from under a live intent. The answer is recorded there — guard the *confirm*
-transition by re-reading payability inside its transaction, plus a row lock at create.
-Order stays unaware that Payment exists.
+The Provider Simulator is the natural next one, and not only because the SDD orders it that
+way. Three things already written down are waiting on it: reconciliation, which is the
+mitigation ADR-015 leans on and which does not exist; a provider **sequence number**, which is
+the proper fix for the tie-refusal trade ADR-012 accepts; and per-provider credentials in
+place of the single shared callback secret. The callback endpoint was deliberately built as
+the seam it plugs into, so it needs no rework.
 
-### The remaining scope of Phase 1's Payment work, stated exactly
-
-Decided 2 August 2026, so that nothing is discovered mid-PR:
-
-| # | Work | Migration |
-|---|---|---|
-| 1 | Attach a payment method + confirm, including the open item 1 guard | `V9`, `payment_attempts` |
-| 2 | Provider callbacks | `V10`, `provider_callbacks`, ADR-012 |
-| 3 | Manual capture | — |
-| 4 | `order_state_history` (SDD §11.4), open item 9 | a further migration |
-| 5 | Order expiry sweeper (open item 10) | — |
-| 6 | `PROCESSING` timeout, so a lost callback cannot strand an order permanently (open item 2) | — |
-
-**Explicitly not in that scope: the outbox relay.** No Kafka, no relay, no consumer. Every
-`order.created`, `payment.created`, `payment.cancelled`, `payment.succeeded` and
-`payment.failed` row will be written correctly and published nowhere.
-
-The direct consequence, stated so it is never filed as a bug: **`orders.status` will still
-never reach `PAID`.** Payment does not write the `orders` table (design spec §0.5) and the
-consumer that would move the status does not exist. An order whose payment has succeeded
-stays `PENDING` in the API. That is a known, documented inconsistency for the whole of the
-remaining Payment work — correct by design, visibly wrong to anyone reading the API, and
-resolved only when the relay and an Order consumer land.
-
-After Payment: **Provider Simulator** → **Ledger** → **Refund**. The Ledger is
-deliberately last in Phase 1 and last to be extracted. It is the financial source of
+The Ledger stays last in Phase 1 and last to be extracted. It is the financial source of
 truth: double-entry, immutable entries, corrections as reversal transactions rather than
-edits.
+edits. Until it exists, a `SUCCEEDED` payment is operational state and nothing more — no
+balance moves anywhere in this codebase.
+
+**The outbox still has no relay**, so `orders.status` never reaches `PAID` even when its
+payment succeeds. Correct by design and visibly wrong to anyone reading the API; it resolves
+when delivery and an Order-side consumer exist.
 
 ### Working method that has been effective
 

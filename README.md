@@ -41,8 +41,10 @@ tests bypass it and still pass, because the constraint is the guard.
 
 ## Current status
 
-Five of Phase 1's eight capabilities are built. **501 tests, 0 failures. Eight Flyway
-migrations (V1–V8). Eleven ADRs.**
+Five of Phase 1's eight capabilities are built, and **Payment is feature-complete**:
+create, attach, confirm, provider callbacks, capture and cancel, with order expiry and
+stranded-payment sweeps behind them. **727 tests, 0 failures. Twelve Flyway migrations
+(V1–V12). Fifteen ADRs.**
 
 | Capability | State | What is missing |
 |---|---|---|
@@ -313,7 +315,7 @@ wrong.
 
 ## Testing
 
-**501 tests, 0 failures.** They need Docker and never touch a developer database:
+**727 tests, 0 failures.** They need Docker and never touch a developer database:
 integration tests run against a throwaway PostgreSQL container
 ([ADR-005](docs/decisions/ADR-005-use-testcontainers-for-integration-tests.md)), so
 Flyway migrates an empty database on every run and the migrations are re-proved rather
