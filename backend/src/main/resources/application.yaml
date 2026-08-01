@@ -193,6 +193,34 @@ paymesh:
       # How many stranded intents one sweep may take. Each is its own transaction.
       batch-size: 100
 
+    abandoned-intents:
+      # Releases the order slot a checkout nobody came back to is holding.
+      #
+      # WITHOUT THIS, A CLOSED TAB KILLS AN ORDER. uq_payment_intents_live_per_order
+      # frees the slot only on FAILED or CANCELLED, and an intent left in
+      # REQUIRES_PAYMENT_METHOD is neither -- forever. The merchant then cannot create
+      # a second intent, cannot mark the order paid, and cannot reuse their own order
+      # reference. The PROCESSING timeout above covers one of the five live states;
+      # this covers the two a customer reaches by doing nothing at all.
+      enabled: true
+      # Punctuality only. `age` decides which intents qualify.
+      interval: 5m
+      # HOW LONG A CHECKOUT STAYS OPEN. Unlike processing-timeout.age above, this is a
+      # PRODUCT decision and not a money one, and the difference is worth being clear
+      # about before anyone tunes it.
+      #
+      # These two states precede a provider being told anything, so nothing can be in
+      # flight and cancelling cannot contradict a payment that really happened -- the
+      # exact risk that makes PROCESSING uncancellable. The only cost of a short age is
+      # a customer who wandered off to find their card and returns to a closed
+      # checkout; they start again, and no money is involved either way.
+      #
+      # Thirty minutes is generous for a card entry and short enough that an order is
+      # not held all day by an abandoned tab.
+      age: 30m
+      # How many abandoned intents one sweep may take. Each is its own transaction.
+      batch-size: 100
+
 # --- Web server --------------------------------------------------------------
 server:
   # HTTP port. Omit -> defaults to 8080 anyway; pinned for clarity.

@@ -119,6 +119,14 @@ public final class JpaPaymentIntentRepository implements PaymentIntentRepository
             .toList();
     }
 
+    @Override
+    public List<PaymentIntent> findAbandonedBeforeConfirmation(Instant untouchedBefore, int limit) {
+        return paymentIntents.findAbandonedBeforeConfirmation(untouchedBefore, Limit.of(limit))
+            .stream()
+            .map(PaymentIntentJpaMapper::toDomain)
+            .toList();
+    }
+
     private List<PaymentIntentJpaEntity> selectPage(
         MerchantId merchantId,
         PaymentIntentStatus status,

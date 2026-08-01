@@ -121,4 +121,21 @@ final class InMemoryPaymentIntentRepository implements PaymentIntentRepository {
             .limit(limit)
             .toList();
     }
+
+    /**
+     * The same shape as the real query: only the two states that precede a provider being told
+     * anything, only rows untouched since the cutoff, oldest first. PROCESSING is deliberately
+     * absent -- a service test that swept it here would pass while the real sweep, correctly, would
+     * not.
+     */
+    @Override
+    public List<PaymentIntent> findAbandonedBeforeConfirmation(Instant untouchedBefore, int limit) {
+        return intents.stream()
+            .filter(intent -> intent.status() == PaymentIntentStatus.REQUIRES_PAYMENT_METHOD
+                || intent.status() == PaymentIntentStatus.REQUIRES_CONFIRMATION)
+            .filter(intent -> !intent.updatedAt().isAfter(untouchedBefore))
+            .sorted(Comparator.comparing(PaymentIntent::updatedAt))
+            .limit(limit)
+            .toList();
+    }
 }

@@ -52,6 +52,30 @@ public final class CancelPaymentIntentService {
      * merchant takes to abandon a collection and start another.
      */
     public PaymentIntent cancel(MerchantId merchantId, PaymentIntentId paymentIntentId, String reason) {
+        return cancel(
+            merchantId,
+            paymentIntentId,
+            reason,
+            PaymentStateChange.ActorType.MERCHANT,
+            merchantId.value()
+        );
+    }
+
+    /**
+     * The same transition, attributed to whoever actually caused it.
+     * <p>
+     * The sweeper that cancels abandoned checkouts is not a merchant and its timeline rows must not
+     * claim to be. Everything else is identical on purpose: one transaction, one lock, one state
+     * machine, one event. A second copy of this block for system-initiated cancellation is how the
+     * two drift into disagreeing about what cancelling means.
+     */
+    public PaymentIntent cancel(
+        MerchantId merchantId,
+        PaymentIntentId paymentIntentId,
+        String reason,
+        PaymentStateChange.ActorType actorType,
+        String actorId
+    ) {
         Instant now = Instant.now(clock);
 
         // The transition, its history row and the event announcing it commit together or not at all,
@@ -75,8 +99,8 @@ public final class CancelPaymentIntentService {
                 saved.paymentIntentId(),
                 from,
                 saved.status(),
-                PaymentStateChange.ActorType.MERCHANT,
-                saved.merchantId().value(),
+                actorType,
+                actorId,
                 saved.cancellationReason(),
                 now
             ));

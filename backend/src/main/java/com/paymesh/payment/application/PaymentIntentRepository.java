@@ -108,4 +108,19 @@ public interface PaymentIntentRepository {
      * @return PROCESSING intents older than the cutoff, longest-stranded first, across all merchants
      */
     List<PaymentIntent> findStrandedInProcessing(Instant confirmedBefore, int limit);
+
+    /**
+     * Intents abandoned before they were ever confirmed: still REQUIRES_PAYMENT_METHOD or
+     * REQUIRES_CONFIRMATION, and untouched since {@code untouchedBefore}. Oldest first.
+     * <p>
+     * <b>These are the states a customer strands an intent in by simply closing the tab</b>, and they
+     * are categorically different from PROCESSING. Nothing was ever sent to a provider, so no money
+     * can be in flight, so cancelling one cannot erase a payment that really happened -- the exact
+     * risk that makes PROCESSING uncancellable (ADR-015). Cancelling here is safe in a way that
+     * timing out a PROCESSING intent is not, and the two must not be tuned as if they were one knob.
+     * <p>
+     * Unscoped by merchant, like the other sweeps: abandonment is not a tenant-specific event and the
+     * merchant is read off each row rather than supplied.
+     */
+    List<PaymentIntent> findAbandonedBeforeConfirmation(Instant untouchedBefore, int limit);
 }
