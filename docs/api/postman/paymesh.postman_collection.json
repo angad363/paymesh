@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "PayMesh API",
-    "description": "PayMesh Payment-as-a-Service API.\n\nSet `baseUrl` (defaults to http://localhost:8080). Run the folders top to bottom: onboarding creates a merchant, Identity & Auth attaches a user and captures a token, and Authenticated access uses it.\n\nCapabilities covered: Identity & Auth, Merchant, Customer, Order, and the shared transactional outbox (ADR-010).",
+    "description": "PayMesh Payment-as-a-Service API.\n\nSet `baseUrl` (defaults to http://localhost:8080). Run the folders top to bottom: onboarding creates a merchant, Identity & Auth attaches a user and captures a token, and Authenticated access uses it.\n\nCapabilities covered: Identity & Auth, Merchant, Customer, Order, Payment Intents, and the shared transactional outbox (ADR-010).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -139,6 +139,38 @@
     },
     {
       "key": "outboxDuplicateKey",
+      "value": ""
+    },
+    {
+      "key": "paymentIntentId",
+      "value": ""
+    },
+    {
+      "key": "firstIntentBody",
+      "value": ""
+    },
+    {
+      "key": "createIntentKey",
+      "value": ""
+    },
+    {
+      "key": "secondIntentKey",
+      "value": ""
+    },
+    {
+      "key": "mismatchAmountKey",
+      "value": ""
+    },
+    {
+      "key": "crossTenantIntentKey",
+      "value": ""
+    },
+    {
+      "key": "cancelIntentKey",
+      "value": ""
+    },
+    {
+      "key": "secondCancelIntentKey",
       "value": ""
     }
   ],
@@ -2814,6 +2846,637 @@
                   "const matches = pm.response.json().data.filter(o => o.merchantOrderReference === 'OUTBOX-9001');",
                   "pm.test('one order, not two, not zero', () => pm.expect(matches).to.have.lengthOf(1));",
                   "pm.test('and it is the one that was created', () => pm.expect(matches[0].id).to.eql(pm.collectionVariables.get('outboxOrderId')));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Payment Intents",
+      "description": "Runs after Orders, which captured accessToken, customerId, otherAccessToken and linkedOrderId -- a 2500 INR order of the first merchant that is still PENDING.\n\nAn order says what is owed; an intent says how it is being collected. The intent is operational state, not the financial record: nothing here moves a balance, and the Ledger that will is not built.\n\nThe subject of this folder is ADR-011. An order holds AT MOST ONE live intent, and it is a partial unique index that enforces it -- the application's pre-check exists only for the friendlier message and is never trusted. Cancelling is how the slot is released.",
+      "item": [
+        {
+          "name": "Create payment intent (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{linkedOrderId}}\",\n  \"amountMinor\": 2500,\n  \"currency\": \"inr\",\n  \"description\": \"Collecting order 2500\",\n  \"metadata\": {\n    \"channel\": \"web\"\n  }\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{createIntentKey}}"
+              }
+            ],
+            "description": "No merchantId and no status in the body: the tenant comes from the token and the state machine owns the state. The amount must be the order's EXACTLY -- one live intent for the whole obligation is what makes overpayment structurally impossible rather than merely check-constrained."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('createIntentKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('opaque prefixed id', () => pm.expect(b.id).to.match(/^pi_[0-9a-f-]{36}$/));",
+                  "pm.test('tenant taken from the token', () => pm.expect(b.merchantId).to.eql(pm.collectionVariables.get('merchantId')));",
+                  "pm.test('collects the order it names', () => pm.expect(b.orderId).to.eql(pm.collectionVariables.get('linkedOrderId')));",
+                  "pm.test('customer copied from the order', () => pm.expect(b.customerId).to.eql(pm.collectionVariables.get('customerId')));",
+                  "pm.test('amount is the order amount, in minor units', () => { pm.expect(b.amountMinor).to.eql(2500); pm.expect(Number.isInteger(b.amountMinor)).to.be.true; });",
+                  "pm.test('currency uppercased', () => pm.expect(b.currency).to.eql('INR'));",
+                  "pm.test('starts REQUIRES_PAYMENT_METHOD', () => pm.expect(b.status).to.eql('REQUIRES_PAYMENT_METHOD'));",
+                  "pm.test('captureMethod defaults to AUTOMATIC', () => pm.expect(b.captureMethod).to.eql('AUTOMATIC'));",
+                  "pm.test('nothing captured or refunded', () => { pm.expect(b.capturedAmountMinor).to.eql(0); pm.expect(b.refundedAmountMinor).to.eql(0); });",
+                  "pm.test('not cancelled', () => { pm.expect(b.cancelledAt).to.be.oneOf([null, undefined]); pm.expect(b.cancellationReason).to.be.oneOf([null, undefined]); });",
+                  "pm.test('metadata echoed back', () => pm.expect(b.metadata.channel).to.eql('web'));",
+                  "pm.test('NO clientSecret -- a credential nothing can verify is not issued', () => { pm.expect(b).to.not.have.property('clientSecret'); pm.expect(pm.response.text()).to.not.include('clientSecret'); });",
+                  "pm.test('no row version leaked', () => pm.expect(b).to.not.have.property('version'));",
+                  "pm.collectionVariables.set('paymentIntentId', b.id);",
+                  "pm.collectionVariables.set('firstIntentBody', pm.response.text());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create a second intent for the same order (409)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{linkedOrderId}}\",\n  \"amountMinor\": 2500,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{secondIntentKey}}"
+              }
+            ],
+            "description": "A FRESH Idempotency-Key, so this is a genuinely new request and reaches the create path. The order already holds a live intent and uq_payment_intents_live_per_order says it may hold only one (ADR-011). Retrying this will never succeed: the way forward is to cancel the live intent, which is what the last requests in this folder do."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('secondIntentKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('ORDER_HAS_ACTIVE_PAYMENT_INTENT'));",
+                  "pm.test('no second intent was created', () => pm.expect(pm.response.json()).to.not.have.property('id'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create - amount is not the order's (422)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{linkedOrderId}}\",\n  \"amountMinor\": 2400,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{mismatchAmountKey}}"
+              }
+            ],
+            "description": "422, not 400: nothing about the request is malformed, the amount simply is not the order's. An intent collects its order's exact obligation, so there is no partial and no over-collection to argue about."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('mismatchAmountKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable Content', () => pm.response.to.have.status(422));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('PAYMENT_AMOUNT_MISMATCH'));",
+                  "pm.test('checked before the live-intent slot, so this is not reported as a 409', () => pm.expect(pm.response.code).to.not.eql(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cross-tenant: create against another merchant's order (422)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{linkedOrderId}}\",\n  \"amountMinor\": 2500,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherAccessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{crossTenantIntentKey}}"
+              }
+            ],
+            "description": "A real order id and a valid token for a different merchant. ORDER_NOT_PAYABLE is ONE code for three causes -- no such order, not this merchant's order, order not PENDING -- because splitting them would turn this endpoint into an oracle for enumerating another tenant's order ids."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('crossTenantIntentKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable Content', () => pm.response.to.have.status(422));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('ORDER_NOT_PAYABLE'));",
+                  "pm.test('not a 409 -- the other merchant is not told the order has a live intent', () => pm.expect(pm.response.code).to.not.eql(409));",
+                  "pm.test('no intent came back', () => pm.expect(pm.response.json()).to.not.have.property('id'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get payment intent - own (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{paymentIntentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{paymentIntentId}}"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('the same resource create returned', () => pm.expect(b).to.eql(JSON.parse(pm.collectionVariables.get('firstIntentBody'))));",
+                  "pm.test('id', () => pm.expect(b.id).to.eql(pm.collectionVariables.get('paymentIntentId')));",
+                  "pm.test('still REQUIRES_PAYMENT_METHOD', () => pm.expect(b.status).to.eql('REQUIRES_PAYMENT_METHOD'));",
+                  "pm.test('amount and currency unchanged since creation', () => { pm.expect(b.amountMinor).to.eql(2500); pm.expect(b.currency).to.eql('INR'); });",
+                  "pm.test('still no clientSecret on a read either', () => pm.expect(b).to.not.have.property('clientSecret'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cross-tenant: read another merchant's intent (404, not 403)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{paymentIntentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{paymentIntentId}}"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherAccessToken}}"
+              }
+            ],
+            "description": "A pi_ in a path authorizes nothing. 403 would confirm the intent exists; 404 says only that this merchant has no such intent."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('not 403 -- existence must not leak', () => pm.expect(pm.response.code).to.not.eql(403));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('PAYMENT_INTENT_NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List payment intents (200, pagination envelope)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('collection envelope, not a bare array', () => { pm.expect(b).to.have.property('data'); pm.expect(b.data).to.be.an('array'); pm.expect(b).to.have.property('pagination'); });",
+                  "pm.test('default limit is 20', () => pm.expect(b.pagination.limit).to.eql(20));",
+                  "pm.test('pagination states hasMore', () => pm.expect(b.pagination).to.have.property('hasMore'));",
+                  "pm.test('every intent belongs to the caller', () => b.data.forEach(i => pm.expect(i.merchantId).to.eql(pm.collectionVariables.get('merchantId'))));",
+                  "pm.test('the created intent is listed', () => pm.expect(b.data.map(i => i.id)).to.include(pm.collectionVariables.get('paymentIntentId')));",
+                  "pm.test('the refused creates left nothing behind', () => pm.expect(b.data.filter(i => i.orderId === pm.collectionVariables.get('linkedOrderId'))).to.have.lengthOf(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List - filter by orderId (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents?orderId={{linkedOrderId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ],
+              "query": [
+                {
+                  "key": "orderId",
+                  "value": "{{linkedOrderId}}"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "Which intents does this order have? Exactly one, and that is ADR-011 observable."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('only this order\\'s intents', () => b.data.forEach(i => pm.expect(i.orderId).to.eql(pm.collectionVariables.get('linkedOrderId'))));",
+                  "pm.test('the created intent is there', () => pm.expect(b.data.map(i => i.id)).to.include(pm.collectionVariables.get('paymentIntentId')));",
+                  "pm.test('one live intent per order', () => pm.expect(b.data).to.have.lengthOf(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List - filter by a status nothing has reached (200, empty)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents?status=SUCCEEDED",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "SUCCEEDED"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "SUCCEEDED is declared in the status CHECK from V8 but no transition reaches it yet -- the provider callbacks that would are a later PR. An empty data array is the whole point: the filter is honoured, and the state is genuinely unreachable today."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('a known status is accepted, not rejected', () => pm.expect(pm.response.code).to.not.eql(400));",
+                  "pm.test('data is empty', () => { pm.expect(b.data).to.be.an('array'); pm.expect(b.data).to.have.lengthOf(0); });",
+                  "pm.test('the envelope is still an envelope', () => { pm.expect(b.pagination.hasMore).to.eql(false); pm.expect(b.pagination.nextCursor).to.be.oneOf([null, undefined]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancel payment intent (200)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{paymentIntentId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{paymentIntentId}}",
+                "cancel"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"customer changed their mind\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cancelIntentKey}}"
+              }
+            ],
+            "description": "Cancellation is requested as an action; there is no status field to set. It is also the only way the order's live-intent slot is released (ADR-011), which is why every state a customer can strand an intent in has a merchant cancel route -- except PROCESSING, deliberately, because an in-flight attempt may already have succeeded at the provider."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cancelIntentKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('now CANCELLED', () => pm.expect(b.status).to.eql('CANCELLED'));",
+                  "pm.test('reason recorded', () => pm.expect(b.cancellationReason).to.eql('customer changed their mind'));",
+                  "pm.test('cancellation is timestamped', () => pm.expect(b.cancelledAt).to.be.a('string'));",
+                  "pm.test('same intent, not a new one', () => pm.expect(b.id).to.eql(pm.collectionVariables.get('paymentIntentId')));",
+                  "pm.test('cancelling collects nothing', () => pm.expect(b.capturedAmountMinor).to.eql(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancel again on a FRESH key (409)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{paymentIntentId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{paymentIntentId}}",
+                "cancel"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"customer changed their mind\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{secondCancelIntentKey}}"
+              }
+            ],
+            "description": "A new key means a new request, so it reaches the state machine -- which refuses, because CANCELLED is terminal."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('secondCancelIntentKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('PAYMENT_INTENT_NOT_CANCELLABLE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create payment intent - no Idempotency-Key (400)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{linkedOrderId}}\",\n  \"amountMinor\": 2500,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "The header is mandatory on this route. Rejected by the idempotency filter before the handler runs, so nothing is created -- note the order's slot is free at this point and this create would otherwise have succeeded."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('IDEMPOTENCY_KEY_REQUIRED'));",
+                  "pm.test('refused before the handler, so no intent came back', () => pm.expect(pm.response.json()).to.not.have.property('id'));"
                 ]
               }
             }
