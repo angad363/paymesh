@@ -2,19 +2,38 @@ package com.paymesh.order.application;
 
 import com.paymesh.order.domain.Order;
 import com.paymesh.order.domain.OrderId;
+import com.paymesh.shared.outbox.application.OutboxWriter;
+import com.paymesh.shared.outbox.domain.EventId;
+import com.paymesh.shared.outbox.domain.OutboxEvent;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.HashMap;
+import java.util.Map;
 
 public final class CreateOrderService {
 
+    /** SDD 22.1. Bump only when the payload below stops being readable by an existing consumer. */
+    private static final int ORDER_CREATED_VERSION = 1;
+
     private final OrderRepository orderRepository;
     private final CustomerLookup customers;
+    private final OutboxWriter outbox;
+    private final TransactionTemplate transactions;
     private final Clock clock;
 
-    public CreateOrderService(OrderRepository orderRepository, CustomerLookup customers, Clock clock) {
+    public CreateOrderService(
+        OrderRepository orderRepository,
+        CustomerLookup customers,
+        OutboxWriter outbox,
+        TransactionTemplate transactions,
+        Clock clock
+    ) {
         this.orderRepository = orderRepository;
         this.customers = customers;
+        this.outbox = outbox;
+        this.transactions = transactions;
         this.clock = clock;
     }
 
@@ -22,6 +41,8 @@ public final class CreateOrderService {
         if (command == null) {
             throw new IllegalArgumentException("Create Order Command cannot be null");
         }
+
+        Instant now = Instant.now(clock);
 
         Order order = Order.create(
             OrderId.generate(),
@@ -33,7 +54,7 @@ public final class CreateOrderService {
             command.description(),
             command.metadata(),
             command.expiresAt(),
-            Instant.now(clock)
+            now
         );
 
         // Read both optional values back off the aggregate rather than the command: the domain
@@ -51,6 +72,45 @@ public final class CreateOrderService {
             throw new OrderReferenceAlreadyExistsException(merchantOrderReference);
         }
 
-        return orderRepository.save(order);
+        // THE TRANSACTION BOUNDARY, AND IT IS THE POINT (ADR-010). The order and the event
+        // announcing it are one fact: an order that committed without its event would be invisible
+        // to every consumer forever, and an event without its order would announce something that
+        // never happened. Both reads above are deliberately outside -- they take no locks and
+        // holding a transaction open across them buys nothing.
+        //
+        // Forgetting this wrap compiles and passes every happy-path test. That is the accepted cost
+        // of TransactionTemplate over @Transactional, and it is what
+        // OutboxTransactionIntegrationTest exists to catch.
+        return transactions.execute(status -> {
+            Order saved = orderRepository.save(order);
+            outbox.append(orderCreated(saved, now));
+            return saved;
+        });
+    }
+
+    private static OutboxEvent orderCreated(Order order, Instant occurredAt) {
+        // HashMap, not Map.of: customerId and merchantOrderReference are legitimately absent on a
+        // guest checkout, and Map.of rejects a null value. They are carried as explicit JSON nulls
+        // rather than dropped, so a consumer reads the same shape for every order.
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("orderId", order.orderId().value());
+        payload.put("merchantId", order.merchantId().value());
+        payload.put("customerId", order.customerId());
+        payload.put("amountMinor", order.amountMinor());
+        payload.put("currency", order.currency());
+        payload.put("merchantOrderReference", order.merchantOrderReference());
+        payload.put("status", order.status().name());
+        payload.put("createdAt", order.createdAt().toString());
+
+        return new OutboxEvent(
+            EventId.generate(),
+            order.merchantId(),
+            "ORDER",
+            order.orderId().value(),
+            "order.created",
+            ORDER_CREATED_VERSION,
+            payload,
+            occurredAt
+        );
     }
 }
