@@ -376,6 +376,64 @@ class ProviderCallbackIntegrationTest {
     }
 
     /**
+     * THE 3DS PATH A REAL PROVIDER ACTUALLY WALKS, AND THE ONE NOTHING COVERED.
+     * <p>
+     * A provider issues ONE reference per payment and keeps it: it asks for a challenge on that
+     * reference and reports the outcome on the same reference once the customer completes it. But
+     * re-confirming opens a SECOND attempt, and
+     * {@code uq_payment_attempts_provider_reference} is unique across the whole table, so recording
+     * the reference again on that second attempt used to violate the constraint.
+     * <p>
+     * The consequence was not a tidy error. The insert failed, the transaction rolled back, <b>and
+     * the provider_callbacks row rolled back with it</b>, so the event was never deduplicated and the
+     * provider retried into the same 500 forever. The intent stranded in PROCESSING, ADR-015's
+     * sweeper eventually recorded it FAILED for no response, that released the order's slot, and the
+     * merchant could collect a second time for money the customer had already paid.
+     * <p>
+     * Every other test in this class mints a fresh reference per outcome kind, so none of them ever
+     * walked this path -- the one realistic flow was the uncovered one.
+     * <p>
+     * Sabotage that must turn this red: pass {@code event.providerReference()} straight through in
+     * {@code RecordProviderCallbackService.apply} instead of going through
+     * {@code referenceToRecord}.
+     */
+    @Test
+    void completesAChallengedPaymentWhenTheProviderKeepsOneReferenceThroughout() {
+        Fixture fixture = processingIntent();
+
+        // One reference for one payment, exactly as a provider issues it.
+        String reference = fixture.providerReferenceFor("3ds");
+
+        assertThat(deliver(callbackService, new ProviderEvent(
+            eventId(), FIRST_EVENT, fixture.intentId().value(), reference,
+            ProviderOutcome.REQUIRES_ACTION, null, null, null, null,
+            "https://3ds.simulator.test/challenge/abc"
+        ))).isEqualTo(ProviderCallbackOutcome.APPLIED);
+
+        confirmPaymentIntentService.confirm(new ConfirmPaymentIntentCommand(
+            fixture.merchantId(), fixture.intentId(), null, null
+        ));
+        assertThat(attemptCount(fixture)).as("re-confirming opens a second attempt").isEqualTo(2);
+
+        ProviderCallbackOutcome outcome = deliver(callbackService, new ProviderEvent(
+            eventId(), FIRST_EVENT.plusSeconds(60), fixture.intentId().value(), reference,
+            ProviderOutcome.SUCCEEDED, null, ORDER_AMOUNT_MINOR, null, null, null
+        ));
+
+        assertThat(outcome)
+            .as("the customer completed the challenge; the payment must complete with them")
+            .isEqualTo(ProviderCallbackOutcome.APPLIED);
+        assertThat(statusOf(fixture)).isEqualTo(PaymentIntentStatus.SUCCEEDED);
+
+        assertThat(jdbc.queryForObject("""
+            select count(*) from payment_attempts
+             where merchant_id = ? and provider_reference = ?
+            """, Long.class, fixture.merchantId().value(), reference))
+            .as("the reference names the payment once, on the attempt that first saw it")
+            .isEqualTo(1L);
+    }
+
+    /**
      * TIES ARE REFUSED, AND ADR-012 SECTION 3 IS HONEST ABOUT WHAT THAT COSTS.
      * <p>
      * Run inside the PROCESSING/REQUIRES_ACTION cycle on purpose. Anywhere else the state machine
