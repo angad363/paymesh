@@ -10,6 +10,7 @@ import com.paymesh.shared.tenant.MerchantId;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Limit;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
@@ -83,5 +84,12 @@ public final class JpaOrderRepository implements OrderRepository {
             );
 
         return page.stream().map(OrderJpaMapper::toDomain).toList();
+    }
+
+    @Override
+    public List<Order> findExpirable(Instant now, int limit) {
+        return orders.findExpirable(now, Limit.of(limit)).stream()
+            .map(OrderJpaMapper::toDomain)
+            .toList();
     }
 }

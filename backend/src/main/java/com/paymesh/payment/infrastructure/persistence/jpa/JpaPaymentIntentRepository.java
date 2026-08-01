@@ -112,6 +112,13 @@ public final class JpaPaymentIntentRepository implements PaymentIntentRepository
         return page.stream().map(PaymentIntentJpaMapper::toDomain).toList();
     }
 
+    @Override
+    public List<PaymentIntent> findStrandedInProcessing(Instant confirmedBefore, int limit) {
+        return paymentIntents.findStrandedInProcessing(confirmedBefore, Limit.of(limit)).stream()
+            .map(PaymentIntentJpaMapper::toDomain)
+            .toList();
+    }
+
     private List<PaymentIntentJpaEntity> selectPage(
         MerchantId merchantId,
         PaymentIntentStatus status,

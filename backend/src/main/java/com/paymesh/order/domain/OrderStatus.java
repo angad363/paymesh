@@ -8,11 +8,14 @@ import java.util.Locale;
  * PENDING --cancel--------------&gt; CANCELLED
  *    |
  *    +--(payment, later)--&gt; PARTIALLY_PAID --&gt; PAID
- *    +--(expiry, later)---&gt; EXPIRED
+ *    +--sweeper-----------&gt; EXPIRED
  * </pre>
- * Only {@code PENDING -> CANCELLED} is reachable today. The other three are declared here (and in
- * the table's CHECK constraint) so the schema does not need a migration the moment Payment lands;
- * no code path produces them yet and none should be added speculatively.
+ * {@code PENDING -> CANCELLED} (a merchant asks) and {@code PENDING -> EXPIRED} (the sweeper, once
+ * {@code expiresAt} has passed) are reachable. {@code PAID} and {@code PARTIALLY_PAID} are still
+ * not, and will not be until the outbox has a relay and Order has a consumer of
+ * {@code payment.succeeded} -- <b>Payment does not write this column</b> (design spec 0.5), so an
+ * order whose payment has succeeded stays PENDING in the API. That is a known, documented
+ * inconsistency, not a bug report.
  */
 public enum OrderStatus {
     PENDING,

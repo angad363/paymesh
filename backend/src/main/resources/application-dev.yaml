@@ -1,6 +1,26 @@
 # ============================================================================
 #  Local development overrides: the secrets that application.yaml deliberately
-#  leaves empty, so a fresh clone runs with nothing to set up.
+#  leaves empty (so a fresh clone runs with nothing to set up), plus the two
+#  background sweepers, which are switched OFF here.
+#
+#  THE SWEEPERS ARE OFF BECAUSE THIS IS THE PROFILE THE TEST SUITE RUNS UNDER.
+#  Every @SpringBootTest in this project carries @ActiveProfiles("dev"), and a
+#  timer that mutates orders and payment intents while a test is asserting on
+#  them is a flake generator -- one that fails rarely, on someone else's change,
+#  in a way nobody can reproduce. Both jobs default to ON in application.yaml,
+#  which is where the real default lives; this file is the exception and the only
+#  place it is made.
+#
+#  It follows that `./mvnw spring-boot:run` also runs with them off. To watch
+#  either job locally, set the matching environment variable, e.g.
+#      PAYMESH_ORDERS_EXPIRY_SWEEP_ENABLED=true
+#      PAYMESH_PAYMENTS_PROCESSING_TIMEOUT_ENABLED=true
+#  and shorten the interval and age while you are at it -- the production values
+#  (5m, 1h) are far too patient to observe by hand.
+#
+#  The sweep LOGIC is unaffected either way: ExpireOrdersService and
+#  TimeOutProcessingPaymentsService are plain beans that exist regardless, so the
+#  tests that cover them call sweep() directly and never need a scheduler.
 #
 #  Everything here is public by definition, which is why the profile is never
 #  active by accident. It is switched on explicitly in two places and nowhere
@@ -27,3 +47,9 @@ paymesh:
     # profile is the sole active one, so copying it into a real environment variable fails startup
     # loudly rather than letting anyone forge a callback for any payment.
     callback-secret: dev-only-insecure-provider-callback-secret-change-me
+  orders:
+    expiry-sweep:
+      enabled: false
+  payments:
+    processing-timeout:
+      enabled: false

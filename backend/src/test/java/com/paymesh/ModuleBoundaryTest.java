@@ -49,6 +49,19 @@ class ModuleBoundaryTest {
         );
     }
 
+    /**
+     * TRAFFIC IN BOTH DIRECTIONS, THROUGH THE SAME PACKAGE.
+     * <p>
+     * {@code OrderModuleLookup} lets Payment read an order. {@code PaymentActivityAdapter} is the
+     * reverse errand -- it implements a port Order declares, so Order's expiry sweeper can ask
+     * whether an order is being collected against without knowing what a payment intent is
+     * (ADR-014). Both are adapters, both live in {@code infrastructure}, and an adapter cannot avoid
+     * naming the thing it adapts.
+     * <p>
+     * <b>Neither of them makes the graph cyclic</b>, and the reverse test below is what proves it:
+     * Payment imports Order, Order imports nothing, and the second adapter deliberately lives on
+     * this side of the boundary so that stays true.
+     */
     @Test
     void paymentReachesTheOrderModuleOnlyThroughItsSingleAdapter() throws IOException {
         assertOnlyTheseImport(
@@ -56,6 +69,7 @@ class ModuleBoundaryTest {
             "com.paymesh.order.",
             List.of(
                 "payment/infrastructure/order/OrderModuleLookup.java",
+                "payment/infrastructure/order/PaymentActivityAdapter.java",
                 "payment/infrastructure/config/PaymentConfiguration.java"
             )
         );
@@ -68,6 +82,15 @@ class ModuleBoundaryTest {
      * {@code orders.status}, not {@code amount_paid_minor}. Order will move those columns itself by
      * consuming {@code payment.succeeded} once a relay and a consumer exist, and the moment an
      * import appears here that plan has silently been abandoned in favour of a direct call.
+     * <p>
+     * <b>THE ALLOWLIST IS STILL EMPTY AFTER ADR-014, AND THAT WAS THE CONSTRAINT THE DESIGN HAD TO
+     * SATISFY.</b> Order's expiry sweeper genuinely needs an answer from Payment -- it must not
+     * expire an order that has a live intent -- and the obvious way to get one would have been an
+     * adapter under {@code order/infrastructure/payment}, allowlisted here. That would have made the
+     * dependency cyclic: neither module extractable without the other. Instead Order declares
+     * {@code PaymentActivityLookup} as its own interface and Payment implements it, so the arrow
+     * still points one way and this list stays empty. If a name ever appears in it, that trade has
+     * been undone.
      */
     @Test
     void orderNeverImportsPayment() throws IOException {

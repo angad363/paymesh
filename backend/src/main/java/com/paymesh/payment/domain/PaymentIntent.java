@@ -40,10 +40,9 @@ public final class PaymentIntent {
     public static final int MAX_METADATA_VALUE_LENGTH = 500;
 
     /**
-     * The states a merchant may cancel from today.
+     * The states a merchant may cancel from.
      * <p>
-     * It grows with the state machine: AUTHORIZED joins when manual capture lands. <b>Every state a
-     * customer can strand an intent in must end up in this set</b>, because
+     * <b>Every state a customer can strand an intent in must end up in this set</b>, because
      * {@code uq_payment_intents_live_per_order} frees an order's slot only on FAILED or CANCELLED --
      * an uncancellable state is a dead order, which is worse than the overpayment the index
      * prevents.
@@ -55,15 +54,24 @@ public final class PaymentIntent {
      * own merchantOrderReference. It composes with the callback path: a challenge completed after
      * the cancel lands on a CANCELLED intent and is refused as IGNORED_TERMINAL.
      * <p>
+     * AUTHORIZED IS IN THE SET, AND ADR-011'S SLOT TABLE REQUIRES IT. A MANUAL-capture intent stops
+     * at AUTHORIZED and waits for the merchant, so it is a state an abandoned checkout sits in
+     * indefinitely -- and one the merchant may legitimately decide against after the fact ("out of
+     * stock after all"). Without this route the slot is held forever by funds nobody intends to
+     * take. Cancelling here is also the honest counterpart of {@link #capture}: releasing an
+     * authorization rather than collecting it.
+     * <p>
      * PROCESSING is the deliberate exception and will never be added: an in-flight attempt may
      * already have succeeded at the provider, so cancelling locally could erase a payment that
      * really happened -- money taken from a customer with no record of it on this side, which is
-     * strictly worse than a stuck order (ADR-011 section 5).
+     * strictly worse than a stuck order (ADR-011 section 5). The PROCESSING TIMEOUT is not a cancel
+     * and does not appear here; it drives the intent to FAILED and its reasoning is ADR-015's.
      */
     private static final Set<PaymentIntentStatus> CANCELLABLE = Set.of(
         PaymentIntentStatus.REQUIRES_PAYMENT_METHOD,
         PaymentIntentStatus.REQUIRES_CONFIRMATION,
-        PaymentIntentStatus.REQUIRES_ACTION
+        PaymentIntentStatus.REQUIRES_ACTION,
+        PaymentIntentStatus.AUTHORIZED
     );
 
     /**
@@ -410,6 +418,86 @@ public final class PaymentIntent {
             version,
             createdAt,
             failedAt
+        );
+    }
+
+    /**
+     * AUTHORIZED to SUCCEEDED: the merchant collects funds the provider is already holding.
+     * <p>
+     * THE ONE TRANSITION IN THIS AGGREGATE THAT REACHES SUCCEEDED WITHOUT A PROVIDER SAYING SO, and
+     * it is why {@link #succeed} is not reused. A provider reporting SUCCEEDED against an AUTHORIZED
+     * intent is refused as out of order (see {@link #requireProviderTransition}); a MERCHANT asking
+     * for it is the entire point of MANUAL capture. Same destination, different authority, so
+     * different method.
+     * <p>
+     * <b>Only legal when {@link CaptureMethod#MANUAL}.</b> An AUTOMATIC intent is captured by the
+     * provider callback that reports SUCCEEDED, and letting a merchant capture one by hand would mean
+     * two paths racing to collect the same authorization.
+     * <p>
+     * PARTIAL CAPTURE IS ALLOWED AND FULL IS THE DEFAULT. Capturing less than the authorized amount
+     * leaves {@code captured_amount_minor < amount_minor} with the status still SUCCEEDED, which is
+     * what will eventually make {@code orders.PARTIALLY_PAID} reachable -- through the
+     * {@code payment.succeeded} consumer that does not exist yet, never through a second intent.
+     * Capturing MORE is refused here and refused again by
+     * {@code ck_payment_intents_captured}; overcapture is not a policy to revisit, it is a number
+     * that must not exist. Zero is refused too, by
+     * {@code ck_payment_intents_succeeded_captured} and by this method: a succeeded payment that
+     * collected nothing is a contradiction, and a merchant who wants to collect nothing cancels.
+     * <p>
+     * <b>A KNOWN FUTURE CHANGE, stated so nobody treats it as settled</b> (design spec section 5).
+     * With a real provider this becomes AUTHORIZED to PROCESSING plus a capture callback. The
+     * synchronous path is correct for a platform with no provider and will be REPLACED, not extended.
+     *
+     * @param requestedAmountMinor how much to take, in minor units. Never null at this layer -- the
+     *                             service resolves an absent request to the full authorized amount,
+     *                             because "capture" with no figure means "all of it"
+     */
+    public PaymentIntent capture(long requestedAmountMinor, Instant capturedAt) {
+        if (status != PaymentIntentStatus.AUTHORIZED) {
+            throw new PaymentIntentNotCapturableException(paymentIntentId, status);
+        }
+
+        if (captureMethod != CaptureMethod.MANUAL) {
+            throw new PaymentIntentNotCapturableException(paymentIntentId, captureMethod);
+        }
+
+        if (capturedAt == null) {
+            throw new IllegalArgumentException("Capture timestamp cannot be null");
+        }
+
+        if (requestedAmountMinor <= 0) {
+            throw new IllegalArgumentException("Capture amount must be a positive number of minor units");
+        }
+
+        // The database says this too, and the database is the guarantee. This check exists so the
+        // merchant gets a 422 that names the two figures instead of a 500 carrying a constraint name.
+        if (requestedAmountMinor > amountMinor) {
+            throw new CaptureAmountExceedsAuthorizedException(
+                paymentIntentId, requestedAmountMinor, amountMinor
+            );
+        }
+
+        return new PaymentIntent(
+            paymentIntentId,
+            merchantId,
+            orderId,
+            customerId,
+            amountMinor,
+            currency,
+            captureMethod,
+            paymentMethodType,
+            PaymentIntentStatus.SUCCEEDED,
+            requestedAmountMinor,
+            refundedAmountMinor,
+            failureCode,
+            failureMessage,
+            cancellationReason,
+            cancelledAt,
+            description,
+            metadata,
+            version,
+            createdAt,
+            capturedAt
         );
     }
 

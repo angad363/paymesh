@@ -5,6 +5,7 @@ import com.paymesh.payment.domain.PaymentIntentId;
 import com.paymesh.payment.domain.PaymentIntentStatus;
 import com.paymesh.shared.tenant.MerchantId;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -96,6 +97,27 @@ final class InMemoryPaymentIntentRepository implements PaymentIntentRepository {
                 .comparing(PaymentIntent::createdAt)
                 .thenComparing((PaymentIntent intent) -> intent.paymentIntentId().value())
                 .reversed())
+            .limit(limit)
+            .toList();
+    }
+
+    /**
+     * NO TENANT PREDICATE, matching the real query, for the same reason
+     * {@link #findForProviderCallbackForUpdate} has none: the timeout runs with no token and derives
+     * the merchant from each row it finds. A double that filtered by merchant here would be testing
+     * a rule the production code does not have, and would hide a sweep that only ever saw one
+     * merchant's intents.
+     * <p>
+     * The predicate and the ordering match the JPQL exactly -- PROCESSING, {@code updatedAt} at or
+     * before the cutoff, longest-stranded first -- so a service test relying on either fails here
+     * rather than only against PostgreSQL.
+     */
+    @Override
+    public List<PaymentIntent> findStrandedInProcessing(Instant confirmedBefore, int limit) {
+        return intents.stream()
+            .filter(intent -> intent.status() == PaymentIntentStatus.PROCESSING)
+            .filter(intent -> !intent.updatedAt().isAfter(confirmedBefore))
+            .sorted(Comparator.comparing(PaymentIntent::updatedAt))
             .limit(limit)
             .toList();
     }

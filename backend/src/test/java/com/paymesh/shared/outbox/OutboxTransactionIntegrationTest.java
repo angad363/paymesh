@@ -10,6 +10,7 @@ import com.paymesh.order.application.CreateOrderCommand;
 import com.paymesh.order.application.CreateOrderService;
 import com.paymesh.order.application.CustomerLookup;
 import com.paymesh.order.application.OrderRepository;
+import com.paymesh.order.application.OrderStateHistoryRepository;
 import com.paymesh.order.domain.Order;
 import com.paymesh.order.domain.OrderId;
 import com.paymesh.shared.outbox.application.OutboxWriter;
@@ -69,6 +70,14 @@ class OutboxTransactionIntegrationTest {
     @Autowired
     private CustomerLookup customerLookup;
 
+    /**
+     * The state-history port, needed only to rebuild the service with a broken outbox below. The
+     * timeline row joins the same transaction as the order and the event, so a sabotaged outbox must
+     * take it down too -- and the assertion on order_state_history in the test proves it did.
+     */
+    @Autowired
+    private OrderStateHistoryRepository orderStateHistory;
+
     @Autowired
     private MerchantRepository merchants;
 
@@ -122,6 +131,7 @@ class OutboxTransactionIntegrationTest {
 
         CreateOrderService sabotaged = new CreateOrderService(
             orders,
+            orderStateHistory,
             customerLookup,
             event -> {
                 throw new IllegalStateException("outbox is down");
@@ -136,6 +146,12 @@ class OutboxTransactionIntegrationTest {
 
         assertThat(orderCount(merchantId)).as("the order must not survive its lost event").isZero();
         assertThat(outboxCount(merchantId)).isZero();
+        assertThat(jdbc.sql("select count(*) from order_state_history where merchant_id = ?")
+            .param(merchantId.value())
+            .query(Long.class)
+            .single())
+            .as("and neither may its timeline row, which is in the same transaction")
+            .isZero();
     }
 
     /**
