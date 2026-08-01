@@ -121,6 +121,16 @@ found now and not in month three.
   through a *partial capture* of a single authorized intent, never through a second
   intent. The two mechanisms look similar from the outside and are not the same; only
   one of them is being built.
+- **Releasing the slot is announced, not silent.** Because cancellation is the mechanism
+  that frees an order to be collected again, `CancelPaymentIntentService` emits
+  `payment.cancelled` in the same transaction as the transition, carrying
+  `previousStatus`. The design spec originally named `payment.created` as the only event;
+  that was a gap rather than a decision, and it is corrected in §2.4. A consumer fed only
+  the creation event would hold a permanently live intent in its read model and never learn
+  the slot had been released — the same reasoning that put `payment_state_history` in `V8`
+  instead of at PR 4. A stream with a hole in it is worse than no stream, because it looks
+  complete. **The rule generalizes to the remaining PRs**: a transition that changes what a
+  consumer would believe gets an event, in the transition's own transaction.
 - The application pre-check and the index's `WHERE` clause encode the same rule twice.
   `RELEASED_STATUSES` in `JpaPaymentIntentRepository` is the second copy, and it must
   stay identical to the migration's clause — if they drift, the friendly error answers

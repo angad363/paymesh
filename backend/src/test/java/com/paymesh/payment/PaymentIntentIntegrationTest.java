@@ -412,6 +412,57 @@ class PaymentIntentIntegrationTest {
             .containsEntry("reason", "out of stock");
     }
 
+    /**
+     * CANCELLING IS ANNOUNCED, and the spec did not originally say so.
+     * <p>
+     * Cancel is the transition that releases the order's live-intent slot (ADR-011). A consumer fed
+     * only payment.created would carry a live intent in its read model forever, so the stream would
+     * have a hole in exactly the place a reader most needs it. The event is written in the same
+     * transaction as the transition, like every other write in this capability.
+     */
+    @Test
+    void announcesTheCancellationAlongsideTheTransition() {
+        MerchantId merchantId = existingMerchant();
+        String orderId = existingOrder(merchantId, null);
+        PaymentIntent intent = createPaymentIntentService.create(command(merchantId, orderId));
+
+        cancelPaymentIntentService.cancel(merchantId, intent.paymentIntentId(), "out of stock");
+
+        // The payload fields are extracted in SQL rather than matched as text: JSONB is stored
+        // parsed and renders with its own spacing, so a string comparison would be asserting
+        // PostgreSQL's formatting rather than the event's content.
+        List<Map<String, Object>> events = jdbc.queryForList("""
+            select event_type,
+                   aggregate_id,
+                   published_at,
+                   payload ->> 'previousStatus'     as previous_status,
+                   payload ->> 'status'             as status,
+                   payload ->> 'cancellationReason' as cancellation_reason
+              from outbox_events
+             where merchant_id = ?
+             order by occurred_at, event_id
+            """, merchantId.value());
+
+        assertThat(events)
+            .as("the creation and the cancellation, one event each")
+            .hasSize(2);
+
+        Map<String, Object> cancelled = events.stream()
+            .filter(event -> "payment.cancelled".equals(event.get("event_type")))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("no payment.cancelled event was written"));
+
+        assertThat(cancelled)
+            .containsEntry("aggregate_id", intent.paymentIntentId().value())
+            // The state it came from is the part a plain "it is cancelled now" event cannot carry,
+            // and a consumer reconciling a timeline needs it to know whether a payment method was
+            // ever attached before the intent died.
+            .containsEntry("previous_status", PaymentIntentStatus.REQUIRES_PAYMENT_METHOD.name())
+            .containsEntry("status", PaymentIntentStatus.CANCELLED.name())
+            .containsEntry("cancellation_reason", "out of stock");
+        assertThat(cancelled.get("published_at")).isNull();
+    }
+
     // --- paging --------------------------------------------------------------------
 
     /**

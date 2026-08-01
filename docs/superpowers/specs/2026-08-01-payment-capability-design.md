@@ -600,6 +600,22 @@ Creation is one transaction: insert the intent, insert the `payment_state_histor
 (`NULL → REQUIRES_PAYMENT_METHOD`, actor `MERCHANT`), append `payment.created` to the
 outbox. This is why PR 2 depends on PR 1.
 
+> **Corrected 1 August 2026.** This section originally named `payment.created` as the only
+> event, and cancel emitted nothing. That was a gap rather than a decision, and both the
+> implementer and the reviewer independently flagged it. **Cancel now emits
+> `payment.cancelled` in the same transaction as the transition**, carrying `previousStatus`
+> alongside the rest of the intent. Cancel is the transition that *releases the order's
+> live-intent slot* (§0.2), so a consumer fed only `payment.created` would hold a
+> permanently live intent in its read model and never learn otherwise — and the first
+> consumer anyone writes is the one that would have to discover that. It is the same
+> argument §2.1 used to ship `payment_state_history` in `V8` rather than at PR 4: a stream
+> with a hole in it is worse than no stream, because it looks complete. The cancel
+> transaction already existed and already had two writes, so the third was nearly free
+> before a relay exists and awkward afterwards.
+>
+> **PRs 3 to 5 should assume the same rule**: a transition that changes what a consumer
+> would believe gets an event, in the transition's own transaction.
+
 ### 2.5 Cross-module read: the order link
 
 ADR-008. Payment defines the port **it** needs, in its own package:
@@ -1112,10 +1128,35 @@ three bugs in this project.
 
    *(This item previously named `REQUIRES_PAYMENT_METHOD`, which is cancellable from PR 2
    and therefore the one recoverable case. Corrected 1 August 2026.)*
-3. **`payment_state_history` has no reader.** No endpoint exposes a timeline. The table is
+3. **An order can be cancelled out from under a live payment intent, and nothing reconciles
+   them.** *(Found in review of PR 2, 1 August 2026. Confirmed against PostgreSQL.)*
+   `Order.cancel` checks only that the order is `PENDING`; it has no idea an intent exists,
+   and correctly so — Order must not know Payment exists (§0.5). Payment reads `payable`
+   once, *outside* the create transaction, and never re-checks it. So: create the order,
+   create the intent, cancel the order. The order is `CANCELLED`, the intent is still live
+   and still holds the order's only slot, and a second create is refused
+   `ORDER_NOT_PAYABLE`. The order is dead in both directions with no route back through the
+   API. The same state is reachable with no cancel at all, as a plain time-of-check to
+   time-of-use race between the lookup and the insert.
+
+   In PR 2 the damage is an inconsistency, because nothing moves money. **From PR 3 the live
+   intent can be attached, confirmed and reach `SUCCEEDED` against a `CANCELLED` order** —
+   PayMesh collecting for an order the merchant explicitly cancelled. Nothing in the schema,
+   the aggregate or `OrderLookup` prevents it.
+
+   This must be designed before PR 3, not patched during it. The candidate answers all have
+   costs worth weighing in the open: re-read `payable` inside the transaction (narrows the
+   window, does not close it); have Payment take a row lock on the order through the port
+   (closes it, at the price of Payment locking Order's table); refuse to cancel an order
+   that has a live intent (closes it, but Order would have to know Payment exists, which
+   §0.5 forbids); or accept it and reconcile after the fact. **The mirror case — a stuck
+   intent stranding its order — is item 2 above. This is the other direction and neither
+   subsumes the other.**
+
+4. **`payment_state_history` has no reader.** No endpoint exposes a timeline. The table is
    written from PR 2 because a history with a hole is worthless; exposing it is a later,
    separate decision.
-4. **A stranded `IN_PROGRESS` idempotency record still wedges a key** (open item 6), and
+5. **A stranded `IN_PROGRESS` idempotency record still wedges a key** (open item 6), and
    Payment makes it materially worse rather than merely more frequent. With five idempotent
    Payment routes the surface grows, and the merchant's documented escape — retry with a
    fresh key — now runs into `uq_payment_intents_live_per_order` and returns
@@ -1123,6 +1164,6 @@ three bugs in this project.
    no longer works and the error names the wrong problem. It compounds with item 2: neither
    the wedged key nor the stuck intent has a sweeper. **The reaper should move up the
    open-items list on the strength of this**, not wait for table growth to justify it.
-5. **`java-coding-conventions.md` §7 still says business-rule failures live in
+6. **`java-coding-conventions.md` §7 still says business-rule failures live in
    `application`**, which cannot be true for exceptions thrown by an aggregate. Payment adds
    five more such exceptions in `domain`. Fix the doc or acknowledge the exception in it.

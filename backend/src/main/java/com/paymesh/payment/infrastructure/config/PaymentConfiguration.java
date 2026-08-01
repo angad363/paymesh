@@ -88,6 +88,7 @@ public class PaymentConfiguration {
         PaymentIntentRepository paymentIntentRepository,
         PaymentStateHistoryRepository paymentStateHistoryRepository,
         GetPaymentIntentService getPaymentIntentService,
+        OutboxWriter outboxWriter,
         TransactionTemplate transactionTemplate,
         Clock clock
     ) {
@@ -95,6 +96,7 @@ public class PaymentConfiguration {
             paymentIntentRepository,
             paymentStateHistoryRepository,
             getPaymentIntentService,
+            outboxWriter,
             transactionTemplate,
             clock
         );
