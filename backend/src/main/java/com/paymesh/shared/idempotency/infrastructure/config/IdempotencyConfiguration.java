@@ -33,7 +33,9 @@ public class IdempotencyConfiguration {
      */
     private static final List<String> IDEMPOTENT_ROUTES = List.of(
         "POST /api/v1/orders",
-        "POST /api/v1/orders/{orderId}/cancel"
+        "POST /api/v1/orders/{orderId}/cancel",
+        "POST /api/v1/payment-intents",
+        "POST /api/v1/payment-intents/{paymentIntentId}/cancel"
     );
 
     @Bean
