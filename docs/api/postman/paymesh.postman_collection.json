@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "PayMesh API",
-    "description": "PayMesh Payment-as-a-Service API.\n\nSet `baseUrl` (defaults to http://localhost:8080). Run the folders top to bottom: onboarding creates a merchant, Identity & Auth attaches a user and captures a token, and Authenticated access uses it.\n\nCapabilities covered: Identity & Auth, Merchant, Customer, Order.",
+    "description": "PayMesh Payment-as-a-Service API.\n\nSet `baseUrl` (defaults to http://localhost:8080). Run the folders top to bottom: onboarding creates a merchant, Identity & Auth attaches a user and captures a token, and Authenticated access uses it.\n\nCapabilities covered: Identity & Auth, Merchant, Customer, Order, and the shared transactional outbox (ADR-010).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -127,6 +127,18 @@
     },
     {
       "key": "crossCancelKey",
+      "value": ""
+    },
+    {
+      "key": "outboxOrderId",
+      "value": ""
+    },
+    {
+      "key": "outboxOrderKey",
+      "value": ""
+    },
+    {
+      "key": "outboxDuplicateKey",
       "value": ""
     }
   ],
@@ -2590,6 +2602,218 @@
                 "exec": [
                   "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
                   "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('UNAUTHENTICATED'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Outbox (order.created)",
+      "description": "The outbox has no HTTP surface, and that is deliberate: outbox_events is internal platform state that a relay will read, never a resource a merchant can fetch. What can be asserted from outside is the boundary itself -- an order and its order.created event commit together, so an order that is readable proves its event was written, and a create that was refused proves neither row landed.\n\nThe rollback half of the invariant cannot be reached over HTTP (nothing makes the outbox insert fail on demand); it is proved in OutboxTransactionIntegrationTest.leavesNoOrderRowBehindWhenTheOutboxAppendFails. See ADR-010.\n\nRuns top to bottom and depends on the Identity & Auth folder having captured accessToken.",
+      "item": [
+        {
+          "name": "Create an order (order + order.created, one transaction)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchantOrderReference\": \"OUTBOX-9001\",\n  \"amountMinor\": 4200,\n  \"currency\": \"INR\",\n  \"description\": \"An order that announces itself\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{outboxOrderKey}}"
+              }
+            ],
+            "description": "One call, two rows: the order and its order.created event, in a single database transaction (ADR-010). Only the order is visible here."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('outboxOrderKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('opaque prefixed id', () => pm.expect(b.id).to.match(/^ord_[0-9a-f-]{36}$/));",
+                  "pm.test('starts PENDING', () => pm.expect(b.status).to.eql('PENDING'));",
+                  "pm.test('reference stored', () => pm.expect(b.merchantOrderReference).to.eql('OUTBOX-9001'));",
+                  "pm.test('the outbox stays internal: no event fields on the resource', () => {",
+                  "  ['eventId', 'eventType', 'outbox', 'payload', 'publishedAt', 'occurredAt']",
+                  "    .forEach(field => pm.expect(b).to.not.have.property(field));",
+                  "});",
+                  "pm.collectionVariables.set('outboxOrderId', b.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The order is readable, so its event committed with it (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders/{{outboxOrderId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders",
+                "{{outboxOrderId}}"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "The two writes share one commit, so a readable order is proof the event row is there too. If the outbox insert had failed, this would be a 404 -- the order would have rolled back with it."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('the same order came back', () => pm.expect(b.id).to.eql(pm.collectionVariables.get('outboxOrderId')));",
+                  "pm.test('amount survived the commit intact', () => pm.expect(b.amountMinor).to.eql(4200));",
+                  "pm.test('still PENDING: nothing consumes order.created yet', () => pm.expect(b.status).to.eql('PENDING'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A refused create announces nothing (409)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchantOrderReference\": \"OUTBOX-9001\",\n  \"amountMinor\": 4200,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{outboxDuplicateKey}}"
+              }
+            ],
+            "description": "A FRESH Idempotency-Key, so this is a genuinely new request. It is refused before the transaction opens, so neither an order row nor an event row is written -- the next request counts what actually landed."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('outboxDuplicateKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('ORDER_REFERENCE_ALREADY_EXISTS'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Exactly one order carries the reference (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders?limit=100",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "The observable half of 'both or neither': the refused create left no partial order behind, so the reference appears exactly once."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const matches = pm.response.json().data.filter(o => o.merchantOrderReference === 'OUTBOX-9001');",
+                  "pm.test('one order, not two, not zero', () => pm.expect(matches).to.have.lengthOf(1));",
+                  "pm.test('and it is the one that was created', () => pm.expect(matches[0].id).to.eql(pm.collectionVariables.get('outboxOrderId')));"
                 ]
               }
             }

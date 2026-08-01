@@ -10,8 +10,10 @@ import com.paymesh.order.application.OrderRepository;
 import com.paymesh.order.infrastructure.customer.CustomerModuleLookup;
 import com.paymesh.order.infrastructure.persistence.jpa.JpaOrderRepository;
 import com.paymesh.order.infrastructure.persistence.jpa.SpringDataOrderRepository;
+import com.paymesh.shared.outbox.application.OutboxWriter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Clock;
 
@@ -37,13 +39,22 @@ public class OrderConfiguration {
         return new CustomerModuleLookup(getCustomerService);
     }
 
+    /**
+     * The OutboxWriter and the TransactionTemplate are both shared beans, and both are visible here
+     * on purpose: this is where a reviewer can see that creating an order takes a transaction and
+     * emits an event, without opening the service.
+     */
     @Bean
     CreateOrderService createOrderService(
         OrderRepository orderRepository,
         CustomerLookup customerLookup,
+        OutboxWriter outboxWriter,
+        TransactionTemplate transactionTemplate,
         Clock clock
     ) {
-        return new CreateOrderService(orderRepository, customerLookup, clock);
+        return new CreateOrderService(
+            orderRepository, customerLookup, outboxWriter, transactionTemplate, clock
+        );
     }
 
     @Bean

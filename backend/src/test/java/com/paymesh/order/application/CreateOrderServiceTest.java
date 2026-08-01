@@ -2,13 +2,20 @@ package com.paymesh.order.application;
 
 import com.paymesh.order.domain.Order;
 import com.paymesh.order.domain.OrderStatus;
+import com.paymesh.shared.outbox.application.OutboxWriter;
+import com.paymesh.shared.outbox.domain.OutboxEvent;
 import com.paymesh.shared.tenant.MerchantId;
 import org.junit.jupiter.api.Test;
+import org.springframework.transaction.support.SimpleTransactionStatus;
+import org.springframework.transaction.support.TransactionCallback;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -24,8 +31,11 @@ class CreateOrderServiceTest {
 
     private final OrderRepository repository = new InMemoryOrderRepository();
     private final KnownCustomers customers = new KnownCustomers();
-    private final CreateOrderService service =
-        new CreateOrderService(repository, customers, Clock.fixed(NOW, ZoneOffset.UTC));
+    private final ImmediateTransactions transactions = new ImmediateTransactions();
+    private final RecordingOutbox outbox = new RecordingOutbox(transactions);
+    private final CreateOrderService service = new CreateOrderService(
+        repository, customers, outbox, transactions, Clock.fixed(NOW, ZoneOffset.UTC)
+    );
 
     @Test
     void createsAPendingOrderStampedWithTheInjectedClock() {
@@ -63,6 +73,66 @@ class CreateOrderServiceTest {
     @Test
     void rejectsNullCommand() {
         assertThrows(IllegalArgumentException.class, () -> service.create(null));
+    }
+
+    // --- the order.created event ----------------------------------------------
+
+    /**
+     * The append has to happen INSIDE the template's callback, not merely somewhere in the method.
+     * A service that saved and appended outside the wrap would still produce both rows here, so the
+     * recorded flag -- not the event count -- is what this test is for. The durable version of the
+     * same claim is OutboxTransactionIntegrationTest, against a real transaction.
+     */
+    @Test
+    void appendsOrderCreatedInsideTheTransactionThatSavedTheOrder() {
+        Order order = service.create(command(MerchantId.generate(), null, null, 1999, "INR"));
+
+        assertEquals(1, transactions.executions());
+        assertEquals(1, outbox.events().size());
+        assertTrue(outbox.appendedInsideATransaction());
+
+        OutboxEvent event = outbox.events().get(0);
+
+        assertEquals("order.created", event.eventType());
+        assertEquals("ORDER", event.aggregateType());
+        assertEquals(order.orderId().value(), event.aggregateId());
+        assertEquals(order.merchantId(), event.merchantId());
+        assertEquals(1, event.eventVersion());
+        assertEquals(NOW, event.occurredAt());
+        assertTrue(event.eventId().value().startsWith("evt_"));
+    }
+
+    @Test
+    void carriesTheOrderInTheEventPayload() {
+        Order order = service.create(
+            command(MerchantId.generate(), null, "ORDER-7788", 1999, "inr")
+        );
+
+        Map<String, Object> payload = outbox.events().get(0).payload();
+
+        assertEquals(order.orderId().value(), payload.get("orderId"));
+        assertEquals(order.merchantId().value(), payload.get("merchantId"));
+        assertNull(payload.get("customerId"));
+        assertEquals(1999L, payload.get("amountMinor"));
+        assertEquals("INR", payload.get("currency"));
+        assertEquals("ORDER-7788", payload.get("merchantOrderReference"));
+        assertEquals("PENDING", payload.get("status"));
+        assertEquals(NOW.toString(), payload.get("createdAt"));
+    }
+
+    /** A rejected create announces nothing, and never opens a transaction to announce it in. */
+    @Test
+    void announcesNothingWhenTheOrderIsRefused() {
+        MerchantId merchantId = MerchantId.generate();
+        service.create(command(merchantId, null, "ORDER-7788", 1999, "INR"));
+
+        assertThrows(
+            OrderReferenceAlreadyExistsException.class,
+            () -> service.create(command(merchantId, null, "ORDER-7788", 500, "INR"))
+        );
+
+        assertEquals(1, outbox.events().size());
+        assertEquals(1, transactions.executions());
     }
 
     // --- merchant order reference ---------------------------------------------
@@ -195,6 +265,64 @@ class CreateOrderServiceTest {
             Map.of(),
             null
         );
+    }
+
+    /**
+     * Runs the callback straight through and counts the calls. It cannot roll anything back -- a
+     * plain JUnit test has no database to roll back -- so it proves the boundary was *entered*, not
+     * that it holds. Proving it holds needs PostgreSQL, which is OutboxTransactionIntegrationTest's
+     * job.
+     */
+    private static final class ImmediateTransactions extends TransactionTemplate {
+
+        private int executions;
+        private boolean inside;
+
+        int executions() {
+            return executions;
+        }
+
+        boolean inside() {
+            return inside;
+        }
+
+        @Override
+        public <T> T execute(TransactionCallback<T> action) {
+            executions++;
+            inside = true;
+
+            try {
+                return action.doInTransaction(new SimpleTransactionStatus());
+            } finally {
+                inside = false;
+            }
+        }
+    }
+
+    /** Stands in for the outbox, and remembers whether it was called inside a transaction. */
+    private static final class RecordingOutbox implements OutboxWriter {
+
+        private final ImmediateTransactions transactions;
+        private final List<OutboxEvent> events = new ArrayList<>();
+        private boolean appendedInsideATransaction;
+
+        private RecordingOutbox(ImmediateTransactions transactions) {
+            this.transactions = transactions;
+        }
+
+        List<OutboxEvent> events() {
+            return events;
+        }
+
+        boolean appendedInsideATransaction() {
+            return appendedInsideATransaction;
+        }
+
+        @Override
+        public void append(OutboxEvent event) {
+            appendedInsideATransaction = transactions.inside();
+            events.add(event);
+        }
     }
 
     /** Stands in for the customer module across the port. */
