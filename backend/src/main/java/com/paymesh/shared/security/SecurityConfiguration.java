@@ -1,6 +1,7 @@
 package com.paymesh.shared.security;
 
 import com.paymesh.shared.api.ApiErrorResponse;
+import jakarta.servlet.DispatcherType;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpStatus;
@@ -46,6 +47,25 @@ public class SecurityConfiguration {
             .logout(logout -> logout.disable())
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(requests -> requests
+                // THE ERROR DISPATCH IS NOT A SECOND REQUEST TO AUTHORIZE, AND TREATING IT AS ONE
+                // MAKES EVERY FAILURE LIE.
+                //
+                // When a request fails after this chain has already let it through, the container
+                // re-dispatches it to /error, and Boot registers the security chain for the ERROR
+                // dispatch type as well as REQUEST. That second pass sees the path /error, which
+                // matches nothing below except anyRequest().authenticated(), and an anonymous
+                // caller therefore gets 401 UNAUTHENTICATED in place of the answer it earned --
+                // a 415, a 404, or, worst of all, a 500. The original request was already
+                // authorized; re-judging its error page decides nothing and hides everything.
+                //
+                // This is not hypothetical: it reported a constraint-violation 500 on the
+                // provider-callback route as an authentication failure, which is why the Postman
+                // collection's callbacks looked like a filter-ordering problem for a week. See
+                // ErrorDispatchSecurityTest.
+                //
+                // Scoped to ERROR alone. ASYNC re-dispatch carries the security context forward and
+                // needs no exemption, and FORWARD is not in the chain's dispatcher types at all.
+                .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                 // Getting a token cannot itself require a token.
                 .requestMatchers("/api/v1/auth/**").permitAll()
                 // Self-service onboarding: creating a merchant is the signup step that a user
