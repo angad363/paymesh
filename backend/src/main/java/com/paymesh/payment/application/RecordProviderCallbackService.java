@@ -256,7 +256,7 @@ public final class RecordProviderCallbackService {
 
         attempts.save(attempt.recordProviderEvent(
             event.outcome().attemptStatus(),
-            event.providerReference(),
+            referenceToRecord(attempt, event),
             event.failureCode(),
             event.failureMessage(),
             // Stored REDACTED, exactly as the callback row is. SDD 12.6.
@@ -279,6 +279,63 @@ public final class RecordProviderCallbackService {
         ));
 
         outbox.append(announcement(saved, from, event, now));
+    }
+
+    /**
+     * THE PROVIDER REFERENCE NAMES A PAYMENT, NOT A TRY, AND A 3DS CHALLENGE SPLITS ONE PAYMENT
+     * ACROSS TWO TRIES.
+     * <p>
+     * {@code uq_payment_attempts_provider_reference} is unique on {@code (provider,
+     * provider_reference)} across the whole table, which is what makes
+     * {@link PaymentAttemptRepository#findByProviderReference} able to resolve a callback that
+     * carries no intent id. But a provider keeps one reference for one payment: it issues the
+     * reference, asks for 3DS, and reports the outcome on the same reference after the merchant
+     * re-confirms -- and re-confirming opened a second attempt. Writing the reference onto that
+     * second attempt violates the constraint.
+     * <p>
+     * The consequence was not a tidy error. The insert failed, the transaction rolled back, <b>and
+     * the {@code provider_callbacks} row rolled back with it</b>, so the event was never deduplicated
+     * and the provider retried into the same 500 forever. The intent stranded in PROCESSING, the
+     * ADR-015 sweeper eventually recorded it {@code FAILED} for no response, that released the
+     * order's slot, and the merchant could then collect a second time for money the customer had
+     * already paid.
+     * <p>
+     * So the reference is recorded once per payment. If it is already held by another attempt of
+     * <em>this</em> intent, this event is a later chapter of the same payment and the reference is
+     * left where it is -- {@code recordProviderEvent} keeps the value already on the row it is
+     * given, and the intent's reference is found through any of its attempts. If it is held by a
+     * <em>different</em> intent, the provider has reused a reference across two payments, which is
+     * not something to paper over: it fails loudly.
+     */
+    private String referenceToRecord(PaymentAttempt attempt, ProviderEvent event) {
+        String reference = event.providerReference();
+
+        if (reference == null || reference.isBlank()) {
+            return reference;
+        }
+
+        Optional<PaymentAttempt> holder =
+            attempts.findByProviderReference(attempt.provider(), reference);
+
+        if (holder.isEmpty()) {
+            return reference;
+        }
+
+        if (!holder.get().paymentIntentId().equals(attempt.paymentIntentId())) {
+            throw new IllegalStateException(
+                "Provider reference " + reference + " already names payment intent "
+                    + holder.get().paymentIntentId().value()
+                    + " and cannot be reused for " + attempt.paymentIntentId().value()
+            );
+        }
+
+        // Already recorded against this payment, on this attempt or an earlier one. Returning null
+        // leaves the existing value untouched rather than rewriting it.
+        //
+        // Deliberately not written as Optional.map(...).orElse(reference): a mapper that returns
+        // null yields an empty Optional, so orElse would hand the reference straight back and the
+        // guard would do nothing. That exact mistake was made here first and the 3DS test caught it.
+        return null;
     }
 
     /**
