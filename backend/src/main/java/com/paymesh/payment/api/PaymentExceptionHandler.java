@@ -1,0 +1,112 @@
+package com.paymesh.payment.api;
+
+import com.paymesh.payment.application.OrderHasActivePaymentIntentException;
+import com.paymesh.payment.application.OrderNotPayableException;
+import com.paymesh.payment.application.PaymentAmountMismatchException;
+import com.paymesh.payment.application.PaymentIntentNotFoundException;
+import com.paymesh.payment.domain.PaymentIntentNotCancellableException;
+import com.paymesh.shared.api.ApiErrorResponse;
+import com.paymesh.shared.security.NoMerchantScopeException;
+import org.springframework.http.HttpStatus;
+import org.springframework.validation.FieldError;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.ResponseStatus;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+/**
+ * Scoped to the payment intent controller, per the per-feature advice convention. The scoping also
+ * bounds the IllegalArgumentException handler: one raised anywhere else in the application is a bug
+ * and must stay a 500 rather than be reported to the caller as their mistake.
+ */
+@RestControllerAdvice(assignableTypes = PaymentIntentController.class)
+public final class PaymentExceptionHandler {
+
+    /**
+     * Also the answer for another merchant's intent. A 403 would confirm the id exists and turn this
+     * endpoint into an oracle for enumerating other tenants' payments (ADR-007).
+     */
+    @ExceptionHandler(PaymentIntentNotFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    ApiErrorResponse handlePaymentIntentNotFound(PaymentIntentNotFoundException exception) {
+        return ApiErrorResponse.of("PAYMENT_INTENT_NOT_FOUND", exception.getMessage());
+    }
+
+    /**
+     * 422, not 404: the payment-intent route was found, and it is the referenced order inside a
+     * well-formed body that cannot be collected against. ONE CODE FOR THREE CAUSES -- no such order,
+     * another merchant's order, and an order that is not PENDING -- because distinguishing them
+     * would let a caller enumerate another tenant's order ids.
+     */
+    @ExceptionHandler(OrderNotPayableException.class)
+    @ResponseStatus(HttpStatus.UNPROCESSABLE_ENTITY)
+    ApiErrorResponse handleOrderNotPayable(OrderNotPayableException exception) {
+        return ApiErrorResponse.of("ORDER_NOT_PAYABLE", exception.getMessage());
+    }
+
+    /**
+     * The body is well-formed and the order is payable; the amount simply is not the order's. 422
+     * rather than 400 for the same reason: nothing about the request is malformed.
+     */
+    @ExceptionHandler(PaymentAmountMismatchException.class)
+    @ResponseStatus(HttpStatus.UNPROCESSABLE_ENTITY)
+    ApiErrorResponse handlePaymentAmountMismatch(PaymentAmountMismatchException exception) {
+        return ApiErrorResponse.of("PAYMENT_AMOUNT_MISMATCH", exception.getMessage());
+    }
+
+    /**
+     * 409: the order already holds a live intent and retrying the identical request will never
+     * succeed until that one reaches FAILED or CANCELLED. The merchant's route forward is to cancel
+     * it.
+     */
+    @ExceptionHandler(OrderHasActivePaymentIntentException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    ApiErrorResponse handleOrderHasActivePaymentIntent(OrderHasActivePaymentIntentException exception) {
+        return ApiErrorResponse.of("ORDER_HAS_ACTIVE_PAYMENT_INTENT", exception.getMessage());
+    }
+
+    /**
+     * The request was understood and is legal in form; the intent is simply in a state that cannot
+     * reach CANCELLED. 409 rather than 400: retrying the identical request will never succeed.
+     */
+    @ExceptionHandler(PaymentIntentNotCancellableException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    ApiErrorResponse handlePaymentIntentNotCancellable(PaymentIntentNotCancellableException exception) {
+        return ApiErrorResponse.of("PAYMENT_INTENT_NOT_CANCELLABLE", exception.getMessage());
+    }
+
+    /**
+     * Authenticated, but with no single merchant to act for. Authentication succeeded, so this is a
+     * 403 rather than a 401 -- retrying with a fresh token will not help.
+     */
+    @ExceptionHandler(NoMerchantScopeException.class)
+    @ResponseStatus(HttpStatus.FORBIDDEN)
+    ApiErrorResponse handleNoMerchantScope(NoMerchantScopeException exception) {
+        return ApiErrorResponse.of("NO_MERCHANT_SCOPE", exception.getMessage());
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    ApiErrorResponse handleValidationFailure(MethodArgumentNotValidException exception) {
+        Map<String, String> fieldErrors = new LinkedHashMap<>();
+
+        for (FieldError fieldError : exception.getBindingResult().getFieldErrors()) {
+            fieldErrors.putIfAbsent(fieldError.getField(), fieldError.getDefaultMessage());
+        }
+
+        return ApiErrorResponse.validation(fieldErrors);
+    }
+
+    /**
+     * A malformed intent id, an unknown status filter or capture method, a limit below 1, a corrupt
+     * cursor, or a customer that is not the order's.
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    ApiErrorResponse handleInvalidInput(IllegalArgumentException exception) {
+        return ApiErrorResponse.of("INVALID_REQUEST", exception.getMessage());
+    }
+}
