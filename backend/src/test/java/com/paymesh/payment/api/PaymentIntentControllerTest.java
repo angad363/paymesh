@@ -3,6 +3,10 @@ package com.paymesh.payment.api;
 import com.paymesh.TestcontainersConfiguration;
 import com.paymesh.merchant.application.RegisterMerchantCommand;
 import com.paymesh.merchant.application.RegisterMerchantService;
+import com.paymesh.payment.application.RecordProviderCallbackCommand;
+import com.paymesh.payment.application.RecordProviderCallbackService;
+import com.paymesh.payment.domain.ProviderEvent;
+import com.paymesh.payment.domain.ProviderOutcome;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,6 +23,11 @@ import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
 
@@ -53,13 +62,28 @@ class PaymentIntentControllerTest {
     private final MockMvc mockMvc;
     private final RegisterMerchantService merchants;
 
+    /**
+     * Reached directly rather than over HTTP, and only to set up an AUTHORIZED intent.
+     * <p>
+     * The callback route is HMAC-signed and its contract is {@code ProviderCallbackApiTest}'s
+     * subject; recomputing a signature here to reach a precondition would be testing that filter a
+     * second time, badly. Capture's own HTTP contract -- the statuses, the codes, the idempotency --
+     * is what this class is for, and every capture assertion below goes through MockMvc.
+     */
+    private final RecordProviderCallbackService callbacks;
+
     private String merchantId;
     private String otherMerchantId;
 
     @Autowired
-    PaymentIntentControllerTest(MockMvc mockMvc, RegisterMerchantService merchants) {
+    PaymentIntentControllerTest(
+        MockMvc mockMvc,
+        RegisterMerchantService merchants,
+        RecordProviderCallbackService callbacks
+    ) {
         this.mockMvc = mockMvc;
         this.merchants = merchants;
+        this.callbacks = callbacks;
     }
 
     @BeforeEach
@@ -717,7 +741,248 @@ class PaymentIntentControllerTest {
             .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
     }
 
+
+    // --- manual capture (design spec section 5) --------------------------------------------------
+
+    /**
+     * 200 AND NOT 202, WHICH IS THE OPPOSITE OF CONFIRM AND DELIBERATE. Confirm's outcome is
+     * undecided until a callback resolves it; capture's is decided by the time the response is
+     * written. That changes when a real provider makes capture asynchronous, and the status code
+     * changes with it.
+     */
+    @Test
+    void capturesTheFullAuthorizedAmountByDefault() throws Exception {
+        String intentId = authorizedIntent(merchantId, "MANUAL");
+
+        capture(merchantId, intentId, key(), null)
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("SUCCEEDED"))
+            .andExpect(jsonPath("$.capturedAmountMinor").value(ORDER_AMOUNT_MINOR))
+            .andExpect(jsonPath("$.amountMinor").value(ORDER_AMOUNT_MINOR));
+    }
+
+    /**
+     * PARTIAL CAPTURE STILL SUCCEEDS, with captured below authorized. The gap is what will make
+     * {@code orders.PARTIALLY_PAID} reachable through the {@code payment.succeeded} consumer that
+     * does not exist yet.
+     */
+    @Test
+    void capturesLessThanAuthorizedAndStillReportsSucceeded() throws Exception {
+        String intentId = authorizedIntent(merchantId, "MANUAL");
+
+        capture(merchantId, intentId, key(), 500L)
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("SUCCEEDED"))
+            .andExpect(jsonPath("$.capturedAmountMinor").value(500))
+            .andExpect(jsonPath("$.amountMinor").value(ORDER_AMOUNT_MINOR));
+    }
+
+    /**
+     * OVERCAPTURE IS 422, AND THIS TEST IS ALSO THE CHECK CONSTRAINT'S ALARM.
+     * <p>
+     * {@code ck_payment_intents_captured} is the guarantee; the aggregate's check exists so the
+     * merchant gets a readable answer instead of a constraint name. Delete that check and this test
+     * goes red with a 500, because the database takes the refusal instead -- which is the CHECK
+     * working and the API contract broken.
+     */
+    @Test
+    void refusesToCaptureMoreThanTheAuthorizedAmount() throws Exception {
+        String intentId = authorizedIntent(merchantId, "MANUAL");
+
+        capture(merchantId, intentId, key(), ORDER_AMOUNT_MINOR + 1)
+            .andExpect(status().isUnprocessableEntity())
+            .andExpect(jsonPath("$.code").value("CAPTURE_AMOUNT_EXCEEDS_AUTHORIZED"));
+
+        mockMvc.perform(get("/api/v1/payment-intents/{id}", intentId).with(callerFor(merchantId)))
+            .andExpect(jsonPath("$.status").value("AUTHORIZED"))
+            .andExpect(jsonPath("$.capturedAmountMinor").value(0));
+    }
+
+    /** Zero and negative are malformed rather than merely impossible, so they are 400 at the boundary. */
+    @Test
+    void rejectsANonPositiveCaptureAmountAtTheBoundary() throws Exception {
+        String intentId = authorizedIntent(merchantId, "MANUAL");
+
+        capture(merchantId, intentId, key(), 0L).andExpect(status().isBadRequest());
+        capture(merchantId, intentId, key(), -1L).andExpect(status().isBadRequest());
+    }
+
+    /**
+     * 409 FROM A STATE THAT HOLDS NOTHING. Retrying the identical request will never succeed, which
+     * is what separates this from a 400.
+     */
+    @Test
+    void refusesToCaptureAnIntentThatIsNotAuthorized() throws Exception {
+        String intentId = createIntent(merchantId, createOrder(merchantId));
+
+        capture(merchantId, intentId, key(), null)
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("PAYMENT_INTENT_NOT_CAPTURABLE"));
+
+        attach(merchantId, intentId, key(), "CARD").andExpect(status().isOk());
+        confirm(merchantId, intentId, key()).andExpect(status().isAccepted());
+
+        capture(merchantId, intentId, key(), null)
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("PAYMENT_INTENT_NOT_CAPTURABLE"));
+    }
+
+    /** An AUTOMATIC intent is the provider's to capture; the message says which of the two it was. */
+    @Test
+    void refusesToCaptureAnAutomaticIntent() throws Exception {
+        String intentId = authorizedIntent(merchantId, "AUTOMATIC");
+
+        capture(merchantId, intentId, key(), null)
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("PAYMENT_INTENT_NOT_CAPTURABLE"))
+            .andExpect(jsonPath("$.message").value(
+                org.hamcrest.Matchers.containsString("captured by the provider")
+            ));
+    }
+
+    /**
+     * A RETRIED CAPTURE MUST REPLAY, NOT CONFLICT. This is the route on the idempotent list that most
+     * needs to be there: a network retry of a capture that already committed should get the same 200,
+     * not a 409 telling the merchant a collection they asked for once cannot be asked for again.
+     */
+    @Test
+    void replaysACaptureRetriedOnTheSameKey() throws Exception {
+        String intentId = authorizedIntent(merchantId, "MANUAL");
+        String idempotencyKey = key();
+
+        capture(merchantId, intentId, idempotencyKey, null).andExpect(status().isOk());
+
+        capture(merchantId, intentId, idempotencyKey, null)
+            .andExpect(status().isOk())
+            .andExpect(header().string("Idempotency-Replayed", "true"))
+            .andExpect(jsonPath("$.status").value("SUCCEEDED"));
+    }
+
+    /** A genuinely new request to capture an already-captured intent is a conflict, and should be. */
+    @Test
+    void refusesASecondCaptureOnAFreshKey() throws Exception {
+        String intentId = authorizedIntent(merchantId, "MANUAL");
+
+        capture(merchantId, intentId, key(), null).andExpect(status().isOk());
+
+        capture(merchantId, intentId, key(), null)
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("PAYMENT_INTENT_NOT_CAPTURABLE"));
+    }
+
+    @Test
+    void refusesACaptureWithNoIdempotencyKey() throws Exception {
+        String intentId = authorizedIntent(merchantId, "MANUAL");
+
+        mockMvc.perform(post("/api/v1/payment-intents/{id}/capture", intentId)
+                .with(callerFor(merchantId))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{}"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REQUIRED"));
+    }
+
+    /** A pi_ in a path authorizes nothing. 404, never 403 -- the answer must not confirm it exists. */
+    @Test
+    void refusesToCaptureAnotherMerchantsIntent() throws Exception {
+        String intentId = authorizedIntent(merchantId, "MANUAL");
+
+        capture(otherMerchantId, intentId, key(), null)
+            .andExpect(status().isNotFound())
+            .andExpect(jsonPath("$.code").value("PAYMENT_INTENT_NOT_FOUND"));
+
+        mockMvc.perform(get("/api/v1/payment-intents/{id}", intentId).with(callerFor(merchantId)))
+            .andExpect(jsonPath("$.status").value("AUTHORIZED"));
+    }
+
+    /**
+     * AUTHORIZED TO CANCELLED, which ADR-011's slot table requires: a MANUAL intent parked at
+     * AUTHORIZED is a state a merchant can sit in indefinitely, and without this route the order's
+     * only slot is held forever by funds nobody intends to take.
+     */
+    @Test
+    void cancelsAnAuthorizedIntentRatherThanCapturingIt() throws Exception {
+        String intentId = authorizedIntent(merchantId, "MANUAL");
+
+        cancel(merchantId, intentId, key())
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("CANCELLED"))
+            .andExpect(jsonPath("$.capturedAmountMinor").value(0));
+    }
+
+    /** Captured funds cannot be un-captured by cancelling. Reversal belongs to the Refund capability. */
+    @Test
+    void refusesToCancelACapturedIntent() throws Exception {
+        String intentId = authorizedIntent(merchantId, "MANUAL");
+        capture(merchantId, intentId, key(), null).andExpect(status().isOk());
+
+        cancel(merchantId, intentId, key())
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("PAYMENT_INTENT_NOT_CANCELLABLE"));
+    }
+
     // --- helpers ----------------------------------------------------------------------------------
+
+    /**
+     * A capture request. The body is always sent, because an absent {@code amountMinor} and an absent
+     * body are two different things the handler has to survive -- {@code null} here sends {@code {}}.
+     */
+    private ResultActions capture(
+        String merchantId,
+        String intentId,
+        String idempotencyKey,
+        Long amountMinor
+    ) throws Exception {
+        return mockMvc.perform(post("/api/v1/payment-intents/{id}/capture", intentId)
+            .with(callerFor(merchantId))
+            .header("Idempotency-Key", idempotencyKey)
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(amountMinor == null ? "{}" : "{\"amountMinor\": %d}".formatted(amountMinor)));
+    }
+
+    /**
+     * An order, an intent, a method, a confirm and an AUTHORIZED provider outcome -- the precondition
+     * capture needs and the only one that cannot be reached over the merchant-facing API, because
+     * only a provider can authorize.
+     */
+    private String authorizedIntent(String merchantId, String captureMethod) throws Exception {
+        MvcResult created = mockMvc.perform(newIntent(merchantId, key(), """
+                {"orderId": "%s", "amountMinor": %d, "currency": "INR", "captureMethod": "%s"}
+                """.formatted(createOrder(merchantId), ORDER_AMOUNT_MINOR, captureMethod)))
+            .andExpect(status().isCreated())
+            .andReturn();
+
+        String intentId = json(created).get("id").asText();
+
+        attach(merchantId, intentId, key(), "CARD").andExpect(status().isOk());
+        confirm(merchantId, intentId, key()).andExpect(status().isAccepted());
+
+        String eventId = "sim_evt_" + UUID.randomUUID();
+
+        callbacks.record(new RecordProviderCallbackCommand(
+            "SIMULATOR",
+            new ProviderEvent(
+                eventId, Instant.now(), intentId, "sim_pay_" + UUID.randomUUID(),
+                ProviderOutcome.AUTHORIZED, ORDER_AMOUNT_MINOR, null, null, null, null
+            ),
+            payloadHash(eventId)
+        ));
+
+        mockMvc.perform(get("/api/v1/payment-intents/{id}", intentId).with(callerFor(merchantId)))
+            .andExpect(jsonPath("$.status").value("AUTHORIZED"));
+
+        return intentId;
+    }
+
+    /** Stands in for the signature filter's hash of the raw body: 64 hex characters, distinct. */
+    private static String payloadHash(String seed) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest(seed.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+    }
 
     private static String key() {
         return UUID.randomUUID().toString();

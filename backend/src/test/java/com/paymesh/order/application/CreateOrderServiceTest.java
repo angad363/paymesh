@@ -1,23 +1,20 @@
 package com.paymesh.order.application;
 
+import com.paymesh.order.application.Fakes.ImmediateTransactions;
+import com.paymesh.order.application.Fakes.KnownCustomers;
+import com.paymesh.order.application.Fakes.RecordingHistory;
+import com.paymesh.order.application.Fakes.RecordingOutbox;
 import com.paymesh.order.domain.Order;
+import com.paymesh.order.domain.OrderStateChange;
 import com.paymesh.order.domain.OrderStatus;
-import com.paymesh.shared.outbox.application.OutboxWriter;
 import com.paymesh.shared.outbox.domain.OutboxEvent;
 import com.paymesh.shared.tenant.MerchantId;
 import org.junit.jupiter.api.Test;
-import org.springframework.transaction.support.SimpleTransactionStatus;
-import org.springframework.transaction.support.TransactionCallback;
-import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -33,8 +30,9 @@ class CreateOrderServiceTest {
     private final KnownCustomers customers = new KnownCustomers();
     private final ImmediateTransactions transactions = new ImmediateTransactions();
     private final RecordingOutbox outbox = new RecordingOutbox(transactions);
+    private final RecordingHistory history = new RecordingHistory(transactions);
     private final CreateOrderService service = new CreateOrderService(
-        repository, customers, outbox, transactions, Clock.fixed(NOW, ZoneOffset.UTC)
+        repository, history, customers, outbox, transactions, Clock.fixed(NOW, ZoneOffset.UTC)
     );
 
     @Test
@@ -120,6 +118,34 @@ class CreateOrderServiceTest {
         assertEquals(NOW.toString(), payload.get("createdAt"));
     }
 
+    // --- the timeline ------------------------------------------------------------
+
+    /**
+     * THE CREATION ROW, AND ITS {@code fromStatus} IS NULL.
+     * <p>
+     * An order that has just been created came from nowhere. Writing PENDING into both columns
+     * would claim a transition that never happened, and V11's from_status column is nullable for
+     * exactly this row -- mirroring what payment_state_history does for an intent's first row.
+     */
+    @Test
+    void writesTheCreationRowWithNoPreviousStatusInsideTheSameTransaction() {
+        Order order = service.create(command(MerchantId.generate(), null, null, 1999, "INR"));
+
+        assertEquals(1, history.changes().size());
+        assertTrue(history.appendedInsideATransaction());
+
+        OrderStateChange change = history.changes().get(0);
+
+        assertNull(change.fromStatus());
+        assertEquals(OrderStatus.PENDING, change.toStatus());
+        assertEquals(order.orderId(), change.orderId());
+        assertEquals(order.merchantId(), change.merchantId());
+        assertEquals(OrderStateChange.ActorType.MERCHANT, change.actorType());
+        assertEquals(order.merchantId().value(), change.actorId());
+        assertNull(change.reason());
+        assertEquals(NOW, change.occurredAt());
+    }
+
     /** A rejected create announces nothing, and never opens a transaction to announce it in. */
     @Test
     void announcesNothingWhenTheOrderIsRefused() {
@@ -132,6 +158,7 @@ class CreateOrderServiceTest {
         );
 
         assertEquals(1, outbox.events().size());
+        assertEquals(1, history.changes().size());
         assertEquals(1, transactions.executions());
     }
 
@@ -265,84 +292,5 @@ class CreateOrderServiceTest {
             Map.of(),
             null
         );
-    }
-
-    /**
-     * Runs the callback straight through and counts the calls. It cannot roll anything back -- a
-     * plain JUnit test has no database to roll back -- so it proves the boundary was *entered*, not
-     * that it holds. Proving it holds needs PostgreSQL, which is OutboxTransactionIntegrationTest's
-     * job.
-     */
-    private static final class ImmediateTransactions extends TransactionTemplate {
-
-        private int executions;
-        private boolean inside;
-
-        int executions() {
-            return executions;
-        }
-
-        boolean inside() {
-            return inside;
-        }
-
-        @Override
-        public <T> T execute(TransactionCallback<T> action) {
-            executions++;
-            inside = true;
-
-            try {
-                return action.doInTransaction(new SimpleTransactionStatus());
-            } finally {
-                inside = false;
-            }
-        }
-    }
-
-    /** Stands in for the outbox, and remembers whether it was called inside a transaction. */
-    private static final class RecordingOutbox implements OutboxWriter {
-
-        private final ImmediateTransactions transactions;
-        private final List<OutboxEvent> events = new ArrayList<>();
-        private boolean appendedInsideATransaction;
-
-        private RecordingOutbox(ImmediateTransactions transactions) {
-            this.transactions = transactions;
-        }
-
-        List<OutboxEvent> events() {
-            return events;
-        }
-
-        boolean appendedInsideATransaction() {
-            return appendedInsideATransaction;
-        }
-
-        @Override
-        public void append(OutboxEvent event) {
-            appendedInsideATransaction = transactions.inside();
-            events.add(event);
-        }
-    }
-
-    /** Stands in for the customer module across the port. */
-    private static final class KnownCustomers implements CustomerLookup {
-
-        private final Set<String> customers = new HashSet<>();
-        private int lookups;
-
-        void add(MerchantId merchantId, String customerId) {
-            customers.add(merchantId.value() + "/" + customerId);
-        }
-
-        int lookups() {
-            return lookups;
-        }
-
-        @Override
-        public boolean exists(MerchantId merchantId, String customerId) {
-            lookups++;
-            return customers.contains(merchantId.value() + "/" + customerId);
-        }
     }
 }

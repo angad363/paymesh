@@ -2,6 +2,7 @@ package com.paymesh.payment.api;
 
 import com.paymesh.payment.application.AttachPaymentMethodService;
 import com.paymesh.payment.application.CancelPaymentIntentService;
+import com.paymesh.payment.application.CapturePaymentIntentService;
 import com.paymesh.payment.application.ConfirmPaymentIntentCommand;
 import com.paymesh.payment.application.ConfirmPaymentIntentService;
 import com.paymesh.payment.application.CreatePaymentIntentCommand;
@@ -48,6 +49,7 @@ public final class PaymentIntentController {
     private final AttachPaymentMethodService attachPaymentMethodService;
     private final ConfirmPaymentIntentService confirmPaymentIntentService;
     private final CancelPaymentIntentService cancelPaymentIntentService;
+    private final CapturePaymentIntentService capturePaymentIntentService;
 
     public PaymentIntentController(
         CreatePaymentIntentService createPaymentIntentService,
@@ -55,7 +57,8 @@ public final class PaymentIntentController {
         ListPaymentIntentsService listPaymentIntentsService,
         AttachPaymentMethodService attachPaymentMethodService,
         ConfirmPaymentIntentService confirmPaymentIntentService,
-        CancelPaymentIntentService cancelPaymentIntentService
+        CancelPaymentIntentService cancelPaymentIntentService,
+        CapturePaymentIntentService capturePaymentIntentService
     ) {
         this.createPaymentIntentService = createPaymentIntentService;
         this.getPaymentIntentService = getPaymentIntentService;
@@ -63,6 +66,7 @@ public final class PaymentIntentController {
         this.attachPaymentMethodService = attachPaymentMethodService;
         this.confirmPaymentIntentService = confirmPaymentIntentService;
         this.cancelPaymentIntentService = cancelPaymentIntentService;
+        this.capturePaymentIntentService = capturePaymentIntentService;
     }
 
     @PostMapping
@@ -157,9 +161,35 @@ public final class PaymentIntentController {
     }
 
     /**
+     * Collects an authorization the provider is holding: AUTHORIZED to SUCCEEDED.
+     * <p>
+     * 200 AND NOT 202, WHICH IS THE OPPOSITE OF CONFIRM AND DELIBERATE. Confirm answers 202 because
+     * its outcome is genuinely undecided until a callback resolves it. Capture has no such pending
+     * step in this design -- the intent is SUCCEEDED by the time this returns -- so 200 is the honest
+     * answer. That will change when a real provider makes capture asynchronous too (design spec
+     * section 5 calls it a replacement, not an extension), and the status code changes with it.
+     * <p>
+     * The body and its {@code amountMinor} are both optional: no figure means the full authorized
+     * amount. A smaller one is a partial capture, which still reaches SUCCEEDED.
+     */
+    @PostMapping("/{paymentIntentId}/capture")
+    PaymentIntentResponse capture(
+        @PathVariable String paymentIntentId,
+        @Valid @RequestBody(required = false) CapturePaymentIntentRequest request,
+        AuthenticatedCaller caller
+    ) {
+        return PaymentIntentResponse.from(capturePaymentIntentService.capture(
+            caller.requireSingleMerchant(),
+            PaymentIntentId.from(paymentIntentId),
+            request == null ? null : request.amountMinor()
+        ));
+    }
+
+    /**
      * Cancellation is requested as an action, never by writing a status field. It is also how the
      * order's live-intent slot is released (ADR-011), so a merchant who wants to start over calls
-     * this first.
+     * this first -- and from this PR that includes releasing an authorization the merchant has
+     * decided not to collect (AUTHORIZED to CANCELLED).
      */
     @PostMapping("/{paymentIntentId}/cancel")
     PaymentIntentResponse cancel(

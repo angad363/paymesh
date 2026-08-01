@@ -177,7 +177,7 @@ public final class Order {
     }
 
     /**
-     * The only transition reachable in this capability today.
+     * PENDING to CANCELLED, at the merchant's request.
      * <p>
      * Cancelling a PAID order would erase an obligation that money has already settled against, so
      * the aggregate refuses from every state but PENDING. That refusal is also what makes a
@@ -210,6 +210,74 @@ public final class Order {
             createdAt,
             cancelledAt
         );
+    }
+
+    /**
+     * PENDING to EXPIRED, because the merchant's own {@code expiresAt} has passed.
+     * <p>
+     * NO REASON AND NO TIMESTAMP COLUMN OF ITS OWN, unlike cancel. {@code expires_at} already says
+     * why and when this was allowed to happen, and {@code ck_orders_cancellation} refuses a
+     * {@code cancelled_at} on any status but CANCELLED -- an expiry is not a cancellation and must
+     * not borrow its columns. The timeline row in {@code order_state_history} carries the rest.
+     * <p>
+     * <b>The aggregate refuses an order whose expiry has not arrived, and that guard is not
+     * redundant with the sweeper's.</b> The sweeper selects candidates by {@code expires_at} and
+     * re-checks under a row lock, but it is the only caller today and a second one would otherwise
+     * be able to expire a live order by simply not checking. Expiry is a state a merchant cannot
+     * undo, so the rule belongs where every caller must pass through it.
+     *
+     * @param expiredAt the sweep instant. Must be at or after {@code expiresAt}.
+     */
+    public Order expire(Instant expiredAt) {
+        if (status != OrderStatus.PENDING) {
+            throw new OrderNotExpirableException(orderId, status);
+        }
+
+        if (expiredAt == null) {
+            throw new IllegalArgumentException("Expiry timestamp cannot be null");
+        }
+
+        // An order with no expiry never expires. Nothing to compare against, and treating "no
+        // deadline" as "already past" would silently kill every open-ended order on the platform
+        // the first time the sweeper ran.
+        if (expiresAt == null || expiresAt.isAfter(expiredAt)) {
+            throw new OrderNotExpirableException(orderId, status);
+        }
+
+        return new Order(
+            orderId,
+            merchantId,
+            customerId,
+            merchantOrderReference,
+            amountMinor,
+            currency,
+            amountPaidMinor,
+            OrderStatus.EXPIRED,
+            description,
+            metadata,
+            expiresAt,
+            cancellationReason,
+            cancelledAt,
+            version,
+            createdAt,
+            expiredAt
+        );
+    }
+
+    /**
+     * Whether {@code expiredAt} has reached this order's deadline and it is still in a state that
+     * could act on it.
+     * <p>
+     * A QUERY, NOT THE GUARD. It exists so the sweeper can skip an ineligible candidate quietly
+     * instead of catching {@link OrderNotExpirableException} as control flow; {@link #expire} still
+     * enforces the same rule for every caller. The two conditions are stated once here and repeated
+     * there deliberately -- a predicate the aggregate does not itself honour is a comment, not a
+     * rule.
+     */
+    public boolean hasExpiredBy(Instant expiredAt) {
+        return status == OrderStatus.PENDING
+            && expiresAt != null
+            && !expiresAt.isAfter(expiredAt);
     }
 
     private static OrderId requireOrderId(OrderId orderId) {

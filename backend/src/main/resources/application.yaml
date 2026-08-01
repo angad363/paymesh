@@ -129,6 +129,70 @@ paymesh:
     # One secret, one provider. Per-provider secrets and rotation are deferred.
     callback-secret:
 
+  # --- Order expiry sweep (ADR-014) -------------------------------------------
+  # orders.expires_at is a deadline the merchant sets and, until this sweep existed,
+  # nothing ever acted on: the status stayed PENDING forever. This is the job that
+  # moves a passed-deadline order to EXPIRED.
+  orders:
+    expiry-sweep:
+      # true: register the scheduled bean. Off -> the timer does not exist at all
+      # (the bean is @ConditionalOnProperty), rather than running and doing nothing.
+      #
+      # ON BY DEFAULT, because a sweeper that is off by default is a sweeper nobody
+      # remembers to turn on. THE dev PROFILE TURNS IT OFF -- that profile is what
+      # the test suite runs under, and a timer mutating rows underneath a test is a
+      # flake generator. See application-dev.yaml.
+      enabled: true
+      # How long after one sweep FINISHES the next one starts (fixedDelay, not
+      # fixedRate -- this is catch-up work and overlapping runs buy nothing).
+      #
+      # Purely a punctuality knob: it decides how stale an EXPIRED status may be,
+      # not which orders qualify. Five minutes means an order is at most five
+      # minutes late to expire, which no merchant is measuring.
+      interval: 5m
+      # How many expirable orders one sweep may take. Bounded so a backlog drains
+      # over several runs instead of loading the whole platform into memory, and so
+      # the sweep holds a predictable number of short row locks. Each order is its
+      # OWN transaction, so this is not a lock-duration multiplier.
+      batch-size: 200
+
+  # --- PROCESSING timeout (ADR-015) -------------------------------------------
+  # PROCESSING is the one payment-intent state with no local exit: cancel is refused
+  # from it because an in-flight attempt may already have succeeded at the provider,
+  # so the only way out is a callback -- which may never arrive. A lost callback used
+  # to strand the intent and, because an intent holds its order's only live slot, the
+  # order with it. This is the exit.
+  payments:
+    processing-timeout:
+      # true: register the scheduled bean. Same on-by-default/off-in-dev reasoning as
+      # the order sweep above, and for a sharper reason -- the hole this closes is the
+      # largest known one in the payment design.
+      enabled: true
+      # How often the sweep runs. A punctuality knob only; `age` below is what decides
+      # which intents qualify. DO NOT CONFUSE THE TWO.
+      interval: 5m
+      # HOW LONG AN INTENT MAY SIT IN PROCESSING BEFORE THE PLATFORM GIVES UP ON IT.
+      # This is the money-adjacent number in this file and the only one worth arguing
+      # about.
+      #
+      # Timing out writes FAILED, which says "we believe the payment did not happen"
+      # with NO EVIDENCE for that belief -- the attempt may have succeeded at the
+      # provider, which is exactly why cancel is refused from PROCESSING in the first
+      # place. FAILED also releases the order's live-intent slot, so the merchant can
+      # create a second intent and, if the belief was wrong, collect twice.
+      #
+      # So the two directions are NOT symmetrical:
+      #   too short -> real payments recorded as failed, and money potentially taken
+      #                twice from a customer
+      #   too long  -> a stranded order stays stranded a while longer, visibly, with
+      #                a manual route out
+      # One hour is deliberately far beyond any plausible provider round trip. Lower
+      # it only with a reconciliation job in place -- and there is none (SDD 21.4,
+      # 24.1). ADR-015 section 4.
+      age: 1h
+      # How many stranded intents one sweep may take. Each is its own transaction.
+      batch-size: 100
+
 # --- Web server --------------------------------------------------------------
 server:
   # HTTP port. Omit -> defaults to 8080 anyway; pinned for clarity.

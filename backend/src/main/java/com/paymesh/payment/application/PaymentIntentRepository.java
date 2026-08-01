@@ -5,6 +5,7 @@ import com.paymesh.payment.domain.PaymentIntentId;
 import com.paymesh.payment.domain.PaymentIntentStatus;
 import com.paymesh.shared.tenant.MerchantId;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
@@ -81,4 +82,30 @@ public interface PaymentIntentRepository {
         PaymentIntentCursor cursor,
         int limit
     );
+
+    /**
+     * THE SECOND READ IN THIS PORT WITHOUT A MERCHANT, AND IT IS NAMED SO THAT NOBODY REACHES FOR IT
+     * BY ACCIDENT.
+     * <p>
+     * The PROCESSING timeout runs on a timer. It has no caller, no token and therefore no tenant,
+     * and the intents it must find are spread across every merchant -- so the caller-scoped reads
+     * above cannot serve it, and having the scheduler supply a merchant would be exactly the
+     * caller-supplied tenant ADR-007 exists to prevent. Same asymmetry as
+     * {@link #findForProviderCallbackForUpdate(PaymentIntentId)}, for a related reason.
+     * <p>
+     * <b>Tenant-agnostic is not tenant-unsafe.</b> Each returned intent carries its own merchant and
+     * every write that follows is scoped by it. Nothing is written here and nothing is decided from
+     * it: it is a candidate list, re-checked under a row lock before anything moves.
+     * <p>
+     * "Sat in PROCESSING since" is read from {@code updated_at}, which the confirm -- or the
+     * re-confirm after a 3DS challenge -- stamped. It is deliberately NOT
+     * {@code payment_attempts.last_provider_event_at}: that column is ADR-012's monotonic ordering
+     * guard and the timeout must neither read it nor write it.
+     *
+     * @param confirmedBefore intents whose {@code updatedAt} is at or before this instant are
+     *                        returned. The caller computes it as {@code now - age}
+     * @param limit           the batch size, so one sweep cannot load an unbounded backlog
+     * @return PROCESSING intents older than the cutoff, longest-stranded first, across all merchants
+     */
+    List<PaymentIntent> findStrandedInProcessing(Instant confirmedBefore, int limit);
 }

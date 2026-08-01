@@ -37,7 +37,13 @@ public class IdempotencyConfiguration {
         "POST /api/v1/payment-intents",
         "POST /api/v1/payment-intents/{paymentIntentId}/payment-method",
         "POST /api/v1/payment-intents/{paymentIntentId}/confirm",
-        "POST /api/v1/payment-intents/{paymentIntentId}/cancel"
+        "POST /api/v1/payment-intents/{paymentIntentId}/cancel",
+        // Capture is the route on this list that most needs to be here: it is the one that takes
+        // funds. A retried capture whose first attempt already committed must replay the stored
+        // response, not attempt a second collection -- and while the state machine would refuse the
+        // second one anyway (SUCCEEDED is not capturable), a 409 is the wrong answer to a network
+        // retry of a request that worked.
+        "POST /api/v1/payment-intents/{paymentIntentId}/capture"
     );
 
     @Bean

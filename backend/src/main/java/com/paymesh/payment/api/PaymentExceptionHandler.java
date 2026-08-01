@@ -5,7 +5,9 @@ import com.paymesh.payment.application.OrderNotPayableException;
 import com.paymesh.payment.application.PaymentAmountMismatchException;
 import com.paymesh.payment.application.PaymentAttemptAlreadyStartedException;
 import com.paymesh.payment.application.PaymentIntentNotFoundException;
+import com.paymesh.payment.domain.CaptureAmountExceedsAuthorizedException;
 import com.paymesh.payment.domain.PaymentIntentNotCancellableException;
+import com.paymesh.payment.domain.PaymentIntentNotCapturableException;
 import com.paymesh.payment.domain.PaymentIntentNotConfirmableException;
 import com.paymesh.payment.domain.PaymentMethodNotAttachableException;
 import com.paymesh.shared.api.ApiErrorResponse;
@@ -110,6 +112,33 @@ public final class PaymentExceptionHandler {
     @ResponseStatus(HttpStatus.CONFLICT)
     ApiErrorResponse handlePaymentAttemptAlreadyStarted(PaymentAttemptAlreadyStartedException exception) {
         return ApiErrorResponse.of("PAYMENT_ATTEMPT_ALREADY_STARTED", exception.getMessage());
+    }
+
+    /**
+     * The intent is not AUTHORIZED, or it captures automatically and the provider owns the
+     * collection. 409 rather than 400: nothing about the request is malformed, and retrying it
+     * identically will never succeed. The message says which of the two it was.
+     */
+    @ExceptionHandler(PaymentIntentNotCapturableException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    ApiErrorResponse handlePaymentIntentNotCapturable(PaymentIntentNotCapturableException exception) {
+        return ApiErrorResponse.of("PAYMENT_INTENT_NOT_CAPTURABLE", exception.getMessage());
+    }
+
+    /**
+     * 422, not 400 and not 409: the body is well-formed and a capture IS possible on this intent --
+     * the requested figure is simply larger than what was authorized. Same reasoning as
+     * {@code PAYMENT_AMOUNT_MISMATCH}, and a smaller amount would succeed, which is why it is not a
+     * conflict.
+     * <p>
+     * <b>This handler is the message, not the guarantee.</b> {@code ck_payment_intents_captured} is
+     * what makes overcapture impossible; without the aggregate's check the same request would still
+     * fail, just as a 500 naming a PostgreSQL index.
+     */
+    @ExceptionHandler(CaptureAmountExceedsAuthorizedException.class)
+    @ResponseStatus(HttpStatus.UNPROCESSABLE_ENTITY)
+    ApiErrorResponse handleCaptureAmountExceedsAuthorized(CaptureAmountExceedsAuthorizedException exception) {
+        return ApiErrorResponse.of("CAPTURE_AMOUNT_EXCEEDS_AUTHORIZED", exception.getMessage());
     }
 
     /**

@@ -2,6 +2,7 @@ package com.paymesh.order.application;
 
 import com.paymesh.order.domain.Order;
 import com.paymesh.order.domain.OrderId;
+import com.paymesh.order.domain.OrderStateChange;
 import com.paymesh.shared.outbox.application.OutboxWriter;
 import com.paymesh.shared.outbox.domain.EventId;
 import com.paymesh.shared.outbox.domain.OutboxEvent;
@@ -18,6 +19,7 @@ public final class CreateOrderService {
     private static final int ORDER_CREATED_VERSION = 1;
 
     private final OrderRepository orderRepository;
+    private final OrderStateHistoryRepository history;
     private final CustomerLookup customers;
     private final OutboxWriter outbox;
     private final TransactionTemplate transactions;
@@ -25,12 +27,14 @@ public final class CreateOrderService {
 
     public CreateOrderService(
         OrderRepository orderRepository,
+        OrderStateHistoryRepository history,
         CustomerLookup customers,
         OutboxWriter outbox,
         TransactionTemplate transactions,
         Clock clock
     ) {
         this.orderRepository = orderRepository;
+        this.history = history;
         this.customers = customers;
         this.outbox = outbox;
         this.transactions = transactions;
@@ -72,17 +76,33 @@ public final class CreateOrderService {
             throw new OrderReferenceAlreadyExistsException(merchantOrderReference);
         }
 
-        // THE TRANSACTION BOUNDARY, AND IT IS THE POINT (ADR-010). The order and the event
-        // announcing it are one fact: an order that committed without its event would be invisible
-        // to every consumer forever, and an event without its order would announce something that
-        // never happened. Both reads above are deliberately outside -- they take no locks and
-        // holding a transaction open across them buys nothing.
+        // THE TRANSACTION BOUNDARY, AND IT IS THE POINT (ADR-010). The order, its first timeline row
+        // and the event announcing it are one fact: an order that committed without its event would
+        // be invisible to every consumer forever, and an event without its order would announce
+        // something that never happened. Both reads above are deliberately outside -- they take no
+        // locks and holding a transaction open across them buys nothing.
         //
         // Forgetting this wrap compiles and passes every happy-path test. That is the accepted cost
         // of TransactionTemplate over @Transactional, and it is what
         // OutboxTransactionIntegrationTest exists to catch.
         return transactions.execute(status -> {
             Order saved = orderRepository.save(order);
+
+            // NULL -> PENDING. The creation row, written here rather than inferred from created_at
+            // later, so that every order's timeline reads the same way: one row per transition,
+            // starting at the one that brought it into existence. The history row goes AFTER the
+            // save because fk_order_state_history_order needs the order to exist first.
+            history.append(new OrderStateChange(
+                saved.merchantId(),
+                saved.orderId(),
+                null,
+                saved.status(),
+                OrderStateChange.ActorType.MERCHANT,
+                saved.merchantId().value(),
+                null,
+                now
+            ));
+
             outbox.append(orderCreated(saved, now));
             return saved;
         });

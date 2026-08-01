@@ -90,4 +90,32 @@ public interface SpringDataOrderRepository extends JpaRepository<OrderJpaEntity,
         @Param("cursorOrderId") String cursorOrderId,
         Limit limit
     );
+
+    /**
+     * THE ONLY QUERY HERE WITHOUT A merchant_id PREDICATE, and the class javadoc's rule is suspended
+     * for it deliberately rather than by omission.
+     * <p>
+     * The expiry sweeper has no tenant to scope by -- it runs on a timer, across every merchant, and
+     * the merchant is DERIVED from each row it finds. That is the same asymmetry
+     * {@code findForProviderCallbackForUpdate} has on the payment side, and it is safe for the same
+     * reason: nothing is written here, and every write that follows is scoped by the merchant read
+     * off the candidate row.
+     * <p>
+     * <b>Not locking, on purpose.</b> Locking a whole batch would hold rows across the entire sweep
+     * and block merchants creating payment intents against orders the sweeper may not even touch.
+     * The lock is taken per order, inside its own transaction, at the moment of the decision -- see
+     * {@code ExpireOrdersService}.
+     * <p>
+     * Oldest deadline first so a backlog drains in the order it accumulated, and so a batch limit
+     * cannot starve the orders that have been expired longest. Reads straight off
+     * {@code idx_orders_expirable}, which is partial on exactly these two predicates.
+     */
+    @Query("""
+        select o from OrderJpaEntity o
+        where o.status = 'PENDING'
+          and o.expiresAt is not null
+          and o.expiresAt <= :now
+        order by o.expiresAt asc
+        """)
+    List<OrderJpaEntity> findExpirable(@Param("now") Instant now, Limit limit);
 }

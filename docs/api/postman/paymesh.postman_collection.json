@@ -284,6 +284,98 @@
     {
       "key": "cbCancel2Key",
       "value": ""
+    },
+    {
+      "key": "capOrderKey",
+      "value": ""
+    },
+    {
+      "key": "capOrderId",
+      "value": ""
+    },
+    {
+      "key": "capIntentKey",
+      "value": ""
+    },
+    {
+      "key": "capIntentId",
+      "value": ""
+    },
+    {
+      "key": "capAttachKey",
+      "value": ""
+    },
+    {
+      "key": "capEarlyKey",
+      "value": ""
+    },
+    {
+      "key": "capConfirmKey",
+      "value": ""
+    },
+    {
+      "key": "capReference",
+      "value": ""
+    },
+    {
+      "key": "capOverKey",
+      "value": ""
+    },
+    {
+      "key": "capZeroKey",
+      "value": ""
+    },
+    {
+      "key": "capPartialKey",
+      "value": ""
+    },
+    {
+      "key": "capSecondKey",
+      "value": ""
+    },
+    {
+      "key": "capCancelKey",
+      "value": ""
+    },
+    {
+      "key": "capOrder2Key",
+      "value": ""
+    },
+    {
+      "key": "capOrder2Id",
+      "value": ""
+    },
+    {
+      "key": "capIntent2Key",
+      "value": ""
+    },
+    {
+      "key": "capIntent2Id",
+      "value": ""
+    },
+    {
+      "key": "capAttach2Key",
+      "value": ""
+    },
+    {
+      "key": "capConfirm2Key",
+      "value": ""
+    },
+    {
+      "key": "capReference2",
+      "value": ""
+    },
+    {
+      "key": "capCancel2Key",
+      "value": ""
+    },
+    {
+      "key": "capIntent3Key",
+      "value": ""
+    },
+    {
+      "key": "capCrossKey",
+      "value": ""
     }
   ],
   "item": [
@@ -6174,6 +6266,1320 @@
                   "const b = pm.response.json();",
                   "pm.test('CANCELLED', () => pm.expect(b.status).to.eql('CANCELLED'));",
                   "pm.test('captured nothing', () => pm.expect(b.capturedAmountMinor).to.eql(0));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Payment Intents - manual capture",
+      "description": "AUTHORIZED -> SUCCEEDED at the merchant's request, and AUTHORIZED -> CANCELLED when they decide against it (design spec 5, ADR-011). Runs top to bottom and depends on the earlier folders for {{accessToken}}, {{otherAccessToken}} and {{providerCallbackSecret}}.\n\nReaching AUTHORIZED needs a provider callback, because only a provider can authorize -- so two requests here are HMAC-signed against the internal endpoint, with the signature computed in a pre-request script rather than pasted.\n\nThis folder completes the intent state machine: after it every status is reachable except PARTIALLY_REFUNDED and REFUNDED, which belong to the Refund capability.",
+      "item": [
+        {
+          "name": "Setup: an order to authorize and capture (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amountMinor\": 4000,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{capOrderKey}}"
+              }
+            ],
+            "description": "Its own order. Every intent earlier in this collection has already taken and released a slot, and an order holds at most one live intent (ADR-011)."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('capOrderKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('capOrderId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: a MANUAL-capture intent for it (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{capOrderId}}\",\n  \"amountMinor\": 4000,\n  \"currency\": \"INR\",\n  \"captureMethod\": \"MANUAL\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{capIntentKey}}"
+              }
+            ],
+            "description": "captureMethod MANUAL is what makes this intent capturable at all. An AUTOMATIC intent is captured by the provider callback that reports SUCCEEDED, and a manual capture on one is refused 409 -- proved further down."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('capIntentKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('MANUAL', () => pm.expect(b.captureMethod).to.eql('MANUAL'));",
+                  "pm.test('nothing captured yet', () => pm.expect(b.capturedAmountMinor).to.eql(0));",
+                  "pm.collectionVariables.set('capIntentId', b.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: attach a payment method (200)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{capIntentId}}/payment-method",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{capIntentId}}",
+                "payment-method"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentMethodType\": \"CARD\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{capAttachKey}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('capAttachKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('REQUIRES_CONFIRMATION', () => pm.expect(pm.response.json().status).to.eql('REQUIRES_CONFIRMATION'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Capture before there is anything to capture (409)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{capIntentId}}/capture",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{capIntentId}}",
+                "capture"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{capEarlyKey}}"
+              }
+            ],
+            "description": "Capture is legal from AUTHORIZED and nowhere else. 409 rather than 400: the request is well-formed and retrying it identically will never succeed."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('capEarlyKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('the code names the state machine', () => pm.expect(pm.response.json().code).to.eql('PAYMENT_INTENT_NOT_CAPTURABLE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: confirm it (202)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{capIntentId}}/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{capIntentId}}",
+                "confirm"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"returnUrl\": \"https://shop.test/return\",\n  \"device\": \"web\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{capConfirmKey}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('capConfirmKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "pm.test('PROCESSING', () => pm.expect(pm.response.json().status).to.eql('PROCESSING'));",
+                  "pm.collectionVariables.set('capReference', 'sim_pay_' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: the provider authorizes it (200, APPLIED)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/internal/v1/provider-callbacks/SIMULATOR",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "v1",
+                "provider-callbacks",
+                "SIMULATOR"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{callbackBody}}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Signature",
+                "value": "{{callbackSignature}}"
+              }
+            ],
+            "description": "ONLY A PROVIDER CAN AUTHORIZE, so this precondition cannot be reached over the merchant-facing API at all. The signature is computed here, never pasted."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// AUTHORIZED, not SUCCEEDED: the provider is holding the funds and has not moved them.",
+                  "// captured_amount_minor stays 0 -- writing the authorized figure there would make an",
+                  "// uncaptured payment look collected to every reader of that column.",
+                  "const body = JSON.stringify({",
+                  "    eventId: 'sim_evt_' + pm.variables.replaceIn('{{$guid}}'),",
+                  "    occurredAt: new Date().toISOString(),",
+                  "    paymentIntentId: pm.collectionVariables.get('capIntentId'),",
+                  "    providerReference: pm.collectionVariables.get('capReference'),",
+                  "    outcome: 'AUTHORIZED',",
+                  "    authorizedAmountMinor: 4000",
+                  "});",
+                  "const t = Math.floor(Date.now() / 1000);",
+                  "const v1 = CryptoJS.HmacSHA256(",
+                  "    t + '.' + body,",
+                  "    pm.collectionVariables.get('providerCallbackSecret')",
+                  ").toString(CryptoJS.enc.Hex);",
+                  "pm.collectionVariables.set('callbackBody', body);",
+                  "pm.collectionVariables.set('callbackSignature', 't=' + t + ',v1=' + v1);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('applied', () => pm.expect(pm.response.json().outcome).to.eql('APPLIED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The intent is AUTHORIZED and has collected nothing (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{capIntentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{capIntentId}}"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('AUTHORIZED', () => pm.expect(b.status).to.eql('AUTHORIZED'));",
+                  "pm.test('an authorization has captured nothing', () => pm.expect(b.capturedAmountMinor).to.eql(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Capture more than was authorized (422)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{capIntentId}}/capture",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{capIntentId}}",
+                "capture"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amountMinor\": 4001\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{capOverKey}}"
+              }
+            ],
+            "description": "422, not 409: a capture IS possible on this intent and a smaller amount would succeed. ck_payment_intents_captured is the actual guarantee -- the aggregate's check exists so the answer is this and not a 500 naming a PostgreSQL constraint."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('capOverKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable Entity', () => pm.response.to.have.status(422));",
+                  "pm.test('the code names the amount, not the state', () => pm.expect(pm.response.json().code).to.eql('CAPTURE_AMOUNT_EXCEEDS_AUTHORIZED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Capture zero (400)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{capIntentId}}/capture",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{capIntentId}}",
+                "capture"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amountMinor\": 0\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{capZeroKey}}"
+              }
+            ],
+            "description": "Zero is malformed rather than merely impossible, so it is refused at the boundary. A merchant who wants to collect nothing cancels the authorization instead."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('capZeroKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Partial capture (200, SUCCEEDED below the authorized amount)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{capIntentId}}/capture",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{capIntentId}}",
+                "capture"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amountMinor\": 2500\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{capPartialKey}}"
+              }
+            ],
+            "description": "200 and not 202, which is the opposite of confirm and deliberate: capture's outcome is decided by the time the response is written. The intent reaches SUCCEEDED with capturedAmountMinor BELOW amountMinor -- that gap is what will make orders.PARTIALLY_PAID reachable through the payment.succeeded consumer that does not exist yet. SUCCEEDED moves no balance and posts no ledger entry (spec 0.5)."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('capPartialKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('SUCCEEDED', () => pm.expect(b.status).to.eql('SUCCEEDED'));",
+                  "pm.test('captured what was asked for', () => pm.expect(b.capturedAmountMinor).to.eql(2500));",
+                  "pm.test('and less than was authorized', () => pm.expect(b.capturedAmountMinor).to.be.below(b.amountMinor));",
+                  "pm.test('nothing refunded -- Refund does not exist', () => pm.expect(b.refundedAmountMinor).to.eql(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Capture again on the SAME key (200, replayed)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{capIntentId}}/capture",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{capIntentId}}",
+                "capture"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amountMinor\": 2500\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{capPartialKey}}"
+              }
+            ],
+            "description": "A retried capture must REPLAY, not conflict. This is the route on the idempotent list that most needs to be there: a network retry of a collection that already committed should get its own answer back, not a 409."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('replayed, not re-executed', () => pm.expect(pm.response.headers.get('Idempotency-Replayed')).to.eql('true'));",
+                  "pm.test('same captured amount', () => pm.expect(pm.response.json().capturedAmountMinor).to.eql(2500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Capture again on a FRESH key (409)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{capIntentId}}/capture",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{capIntentId}}",
+                "capture"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amountMinor\": 1500\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{capSecondKey}}"
+              }
+            ],
+            "description": "A genuinely new request to collect the rest is refused. Partial capture is one shot in this design -- the intent is SUCCEEDED and no longer capturable -- and the uncollected 1500 stays uncollected."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('capSecondKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('not capturable', () => pm.expect(pm.response.json().code).to.eql('PAYMENT_INTENT_NOT_CAPTURABLE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancel a captured intent (409)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{capIntentId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{capIntentId}}",
+                "cancel"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"second thoughts\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{capCancelKey}}"
+              }
+            ],
+            "description": "Captured funds cannot be un-captured by cancelling. Reversal is the Refund capability's, and it does not exist."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('capCancelKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('not cancellable', () => pm.expect(pm.response.json().code).to.eql('PAYMENT_INTENT_NOT_CANCELLABLE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The order is still PENDING after a successful capture (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders/{{capOrderId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders",
+                "{{capOrderId}}"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "A KNOWN, DOCUMENTED INCONSISTENCY, ASSERTED SO IT IS NEVER FILED AS A BUG. Payment does not write the orders table (spec 0.5) and the payment.succeeded consumer that would move the status does not exist -- there is no relay. An order whose payment succeeded stays PENDING in the API until both land."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('still PENDING', () => pm.expect(b.status).to.eql('PENDING'));",
+                  "pm.test('and nothing was written to amountPaidMinor either', () => pm.expect(b.amountPaidMinor).to.eql(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: a second order, to release rather than collect (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amountMinor\": 4000,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{capOrder2Key}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('capOrder2Key', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('capOrder2Id', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: a MANUAL intent, attached and confirmed (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{capOrder2Id}}\",\n  \"amountMinor\": 4000,\n  \"currency\": \"INR\",\n  \"captureMethod\": \"MANUAL\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{capIntent2Key}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('capIntent2Key', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('capIntent2Id', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: attach to it (200)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{capIntent2Id}}/payment-method",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{capIntent2Id}}",
+                "payment-method"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentMethodType\": \"UPI\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{capAttach2Key}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('capAttach2Key', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: confirm it (202)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{capIntent2Id}}/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{capIntent2Id}}",
+                "confirm"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{capConfirm2Key}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('capConfirm2Key', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "pm.collectionVariables.set('capReference2', 'sim_pay_' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: the provider authorizes it too (200, APPLIED)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/internal/v1/provider-callbacks/SIMULATOR",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "v1",
+                "provider-callbacks",
+                "SIMULATOR"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{callbackBody}}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Signature",
+                "value": "{{callbackSignature}}"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = JSON.stringify({",
+                  "    eventId: 'sim_evt_' + pm.variables.replaceIn('{{$guid}}'),",
+                  "    occurredAt: new Date().toISOString(),",
+                  "    paymentIntentId: pm.collectionVariables.get('capIntent2Id'),",
+                  "    providerReference: pm.collectionVariables.get('capReference2'),",
+                  "    outcome: 'AUTHORIZED',",
+                  "    authorizedAmountMinor: 4000",
+                  "});",
+                  "const t = Math.floor(Date.now() / 1000);",
+                  "const v1 = CryptoJS.HmacSHA256(",
+                  "    t + '.' + body,",
+                  "    pm.collectionVariables.get('providerCallbackSecret')",
+                  ").toString(CryptoJS.enc.Hex);",
+                  "pm.collectionVariables.set('callbackBody', body);",
+                  "pm.collectionVariables.set('callbackSignature', 't=' + t + ',v1=' + v1);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('applied', () => pm.expect(pm.response.json().outcome).to.eql('APPLIED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancel the authorization instead of capturing it (200)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{capIntent2Id}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{capIntent2Id}}",
+                "cancel"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"out of stock after all\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{capCancel2Key}}"
+              }
+            ],
+            "description": "AUTHORIZED -> CANCELLED, which ADR-011's slot table REQUIRES. A MANUAL intent parked at AUTHORIZED is a state a merchant can sit in indefinitely; without this route the order's only live slot is held forever by funds nobody intends to take, and a slot that cannot be released kills the order."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('capCancel2Key', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('CANCELLED', () => pm.expect(b.status).to.eql('CANCELLED'));",
+                  "pm.test('and nothing was collected', () => pm.expect(b.capturedAmountMinor).to.eql(0));",
+                  "pm.test('the cancellation is stamped', () => pm.expect(b.cancelledAt).to.not.be.null);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The order's slot is free again (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{capOrder2Id}}\",\n  \"amountMinor\": 4000,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{capIntent3Key}}"
+              }
+            ],
+            "description": "THE CANCEL ACTUALLY RELEASED THE SLOT, proved rather than assumed: uq_payment_intents_live_per_order excludes exactly FAILED and CANCELLED, so this create would be refused 409 if the previous request had not really freed it."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('capIntent3Key', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.test('a fresh collection may be started', () => pm.expect(pm.response.json().status).to.eql('REQUIRES_PAYMENT_METHOD'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cross-tenant: capture another merchant's intent (404, not 403)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{capIntentId}}/capture",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{capIntentId}}",
+                "capture"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherAccessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{capCrossKey}}"
+              }
+            ],
+            "description": "A pi_ in a path authorizes nothing. 404 rather than 403, because a 403 would confirm the id exists and turn this endpoint into an oracle for enumerating another tenant's payments (ADR-007)."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('capCrossKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('as if it never existed', () => pm.expect(pm.response.json().code).to.eql('PAYMENT_INTENT_NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Capture with no Idempotency-Key (400)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{capIntentId}}/capture",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{capIntentId}}",
+                "capture"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "Capture is a registered idempotent route, so the header is mandatory. It is the route on that list that takes funds."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('the key is required', () => pm.expect(pm.response.json().code).to.eql('IDEMPOTENCY_KEY_REQUIRED'));"
                 ]
               }
             }

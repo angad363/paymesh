@@ -630,4 +630,147 @@ class PaymentIntentTest {
             NOW
         );
     }
+
+    // --- manual capture ------------------------------------------------------------------
+
+    /** AUTHORIZED to SUCCEEDED. The one path to SUCCEEDED that no provider asked for. */
+    @Test
+    void capturesTheFullAuthorizedAmount() {
+        PaymentIntent captured = authorizedManual().capture(1999, NOW.plusSeconds(60));
+
+        assertEquals(PaymentIntentStatus.SUCCEEDED, captured.status());
+        assertEquals(1999L, captured.capturedAmountMinor());
+        assertEquals(1999L, captured.amountMinor());
+        assertEquals(NOW.plusSeconds(60), captured.updatedAt());
+    }
+
+    /**
+     * PARTIAL CAPTURE STILL SUCCEEDS, with captured below authorized. That gap is what makes
+     * {@code orders.PARTIALLY_PAID} reachable later, and both CHECK constraints still hold on the
+     * row it produces: captured > 0, and captured <= amount.
+     */
+    @Test
+    void capturesLessThanAuthorizedAndStillReachesSucceeded() {
+        PaymentIntent captured = authorizedManual().capture(500, NOW);
+
+        assertEquals(PaymentIntentStatus.SUCCEEDED, captured.status());
+        assertEquals(500L, captured.capturedAmountMinor());
+        assertEquals(1999L, captured.amountMinor());
+    }
+
+    /** Overcapture is a number that must not exist. The CHECK says so too; this is the message. */
+    @Test
+    void refusesToCaptureMoreThanAuthorized() {
+        assertThrows(
+            CaptureAmountExceedsAuthorizedException.class,
+            () -> authorizedManual().capture(2000, NOW)
+        );
+    }
+
+    @Test
+    void refusesToCaptureZeroOrLess() {
+        assertThrows(IllegalArgumentException.class, () -> authorizedManual().capture(0, NOW));
+        assertThrows(IllegalArgumentException.class, () -> authorizedManual().capture(-1, NOW));
+    }
+
+    @Test
+    void refusesToCaptureWithNoTimestamp() {
+        assertThrows(IllegalArgumentException.class, () -> authorizedManual().capture(1999, null));
+    }
+
+    /**
+     * AN AUTOMATIC INTENT IS THE PROVIDER'S TO CAPTURE. Allowing it here would put two collectors on
+     * one authorization -- the merchant, and the SUCCEEDED callback on its way.
+     */
+    @Test
+    void refusesToCaptureAnAutomaticIntent() {
+        PaymentIntent automatic = intent(
+            MerchantId.generate(), null, 1999, "INR", CaptureMethod.AUTOMATIC
+        ).attach(PaymentMethodType.CARD, NOW).confirm(NOW).authorize(NOW);
+
+        assertThrows(
+            PaymentIntentNotCapturableException.class, () -> automatic.capture(1999, NOW)
+        );
+    }
+
+    /** Capture is legal from AUTHORIZED and from nowhere else. */
+    @Test
+    void refusesToCaptureFromEveryOtherState() {
+        for (PaymentIntentStatus status : PaymentIntentStatus.values()) {
+            if (status == PaymentIntentStatus.AUTHORIZED) {
+                continue;
+            }
+
+            assertThrows(
+                PaymentIntentNotCapturableException.class,
+                () -> reconstitutedWith(status).capture(1999, NOW),
+                "capture must be refused from " + status
+            );
+        }
+    }
+
+    // --- AUTHORIZED joins the cancellable set (ADR-011's slot table) ----------------------
+
+    /**
+     * A MANUAL intent parked at AUTHORIZED is a state a customer can abandon indefinitely, and
+     * ADR-011's slot table requires every such state to have a route to CANCELLED. Without it the
+     * order's only slot is held forever by funds nobody intends to take.
+     */
+    @Test
+    void cancelsAnAuthorizedIntentToReleaseTheOrdersSlot() {
+        PaymentIntent cancelled = authorizedManual().cancel("out of stock", NOW.plusSeconds(60));
+
+        assertEquals(PaymentIntentStatus.CANCELLED, cancelled.status());
+        assertEquals("out of stock", cancelled.cancellationReason());
+        assertEquals(NOW.plusSeconds(60), cancelled.cancelledAt());
+        assertEquals(0L, cancelled.capturedAmountMinor());
+    }
+
+    /** Captured funds cannot be un-captured by cancelling. Refunding is the Refund capability's. */
+    @Test
+    void refusesToCancelACapturedIntent() {
+        PaymentIntent captured = authorizedManual().capture(1999, NOW);
+
+        assertThrows(
+            PaymentIntentNotCancellableException.class, () -> captured.cancel("oops", NOW)
+        );
+    }
+
+    /**
+     * PROCESSING STAYS UNCANCELLABLE, and widening the set for AUTHORIZED must not have widened it
+     * here by accident. An in-flight attempt may already have succeeded at the provider, so a local
+     * cancel could erase a payment that really happened -- strictly worse than a stuck order
+     * (ADR-011 section 5). The PROCESSING timeout is the exit, and it is a FAILED, not a cancel.
+     */
+    @Test
+    void stillRefusesToCancelAProcessingIntent() {
+        assertThrows(
+            PaymentIntentNotCancellableException.class,
+            () -> reconstitutedWith(PaymentIntentStatus.PROCESSING).cancel("give up", NOW)
+        );
+    }
+
+    /**
+     * THE TWO REFUND STATES STAY UNREACHABLE. There is no aggregate method that produces either, so
+     * this loop is a standing check that one was not added: {@code capture} is the last transition
+     * this design adds, and after it every other status has a path while these two must not.
+     */
+    @Test
+    void reachesNoRefundStateFromAnyTransitionTheAggregateOffers() {
+        PaymentIntent authorized = authorizedManual();
+
+        assertEquals(PaymentIntentStatus.SUCCEEDED, authorized.capture(1999, NOW).status());
+        assertEquals(PaymentIntentStatus.CANCELLED, authorized.cancel(null, NOW).status());
+        assertEquals(
+            PaymentIntentStatus.FAILED,
+            reconstitutedWith(PaymentIntentStatus.PROCESSING).fail("x", "y", NOW).status()
+        );
+    }
+
+    private static PaymentIntent authorizedManual() {
+        return intent(MerchantId.generate(), null, 1999, "INR", CaptureMethod.MANUAL)
+            .attach(PaymentMethodType.CARD, NOW)
+            .confirm(NOW)
+            .authorize(NOW);
+    }
 }

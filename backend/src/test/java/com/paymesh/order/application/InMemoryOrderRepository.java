@@ -5,6 +5,7 @@ import com.paymesh.order.domain.OrderId;
 import com.paymesh.order.domain.OrderStatus;
 import com.paymesh.shared.tenant.MerchantId;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -61,6 +62,26 @@ final class InMemoryOrderRepository implements OrderRepository {
                 .comparing(Order::createdAt)
                 .thenComparing((Order order) -> order.orderId().value())
                 .reversed())
+            .limit(limit)
+            .toList();
+    }
+
+    /**
+     * NO TENANT PREDICATE, matching the real query. That is not an omission in the double: the
+     * expiry sweeper runs on a timer with no tenant and derives one from each row it finds, so a
+     * double that filtered by merchant here would be testing a rule the production code does not
+     * have -- and would hide a sweeper that only ever saw one merchant's orders.
+     * <p>
+     * The predicate and the ordering match the JPQL exactly (PENDING, a non-null expiry at or before
+     * {@code now}, oldest deadline first), so a service test that relies on the batch order or on an
+     * ineligible row being excluded fails here too rather than only against PostgreSQL.
+     */
+    @Override
+    public List<Order> findExpirable(Instant now, int limit) {
+        return orders.stream()
+            .filter(order -> order.status() == OrderStatus.PENDING)
+            .filter(order -> order.expiresAt() != null && !order.expiresAt().isAfter(now))
+            .sorted(Comparator.comparing(Order::expiresAt))
             .limit(limit)
             .toList();
     }

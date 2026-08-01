@@ -5,6 +5,7 @@ import com.paymesh.order.domain.OrderId;
 import com.paymesh.order.domain.OrderStatus;
 import com.paymesh.shared.tenant.MerchantId;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
@@ -49,4 +50,28 @@ public interface OrderRepository {
      * implementation that orders by timestamp alone will skip or repeat rows that share one.
      */
     List<Order> findPage(MerchantId merchantId, OrderStatus status, OrderCursor cursor, int limit);
+
+    /**
+     * THE ONE READ IN THIS PORT THAT DOES NOT TAKE A MERCHANT, AND IT IS NAMED SO THAT NOBODY
+     * REACHES FOR IT BY ACCIDENT.
+     * <p>
+     * The expiry sweeper runs on a timer. It has no caller, no token and therefore no tenant, and
+     * the work it does is spread across every merchant on the platform -- so the caller-scoped reads
+     * above cannot serve it, and adding a merchant argument would mean the scheduler inventing one.
+     * A tenant taken from anywhere but a verified token is exactly what ADR-007 exists to prevent,
+     * and there is no token here to take it from.
+     * <p>
+     * <b>Tenant-agnostic is not tenant-unsafe.</b> Each returned order carries its own merchant, and
+     * the sweeper scopes every write that follows -- the locking re-read, the live-intent question,
+     * the history row, the event -- by that merchant. Nothing is written by this method and nothing
+     * is decided from it: it is a candidate list, re-checked under a row lock before anything moves.
+     * <p>
+     * <b>Not for any other caller.</b> Every merchant-facing path uses one of the reads above, where
+     * the merchant argument is the authorization.
+     *
+     * @param now   the sweep instant; orders whose {@code expiresAt} is at or before it are returned
+     * @param limit the batch size, so one sweep cannot load an unbounded backlog into memory
+     * @return PENDING orders past their expiry, oldest deadline first, across all merchants
+     */
+    List<Order> findExpirable(Instant now, int limit);
 }

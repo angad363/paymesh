@@ -157,4 +157,31 @@ public interface SpringDataPaymentIntentRepository extends JpaRepository<Payment
         @Param("cursorPaymentIntentId") String cursorPaymentIntentId,
         Limit limit
     );
+
+    /**
+     * THE SECOND QUERY HERE WITHOUT A merchant_id PREDICATE, and like the first it is deliberate
+     * rather than forgotten.
+     * <p>
+     * The PROCESSING timeout runs on a timer with no token and no tenant, across every merchant, and
+     * derives the merchant from each row it finds. Nothing is written here; every write that follows
+     * is scoped by that derived merchant.
+     * <p>
+     * <b>Not locking, on purpose.</b> Locking a whole batch would hold rows for the length of the
+     * sweep and block provider callbacks for intents this sweep may not even touch -- and a blocked
+     * callback is the very thing the timeout exists to compensate for. The lock is taken per intent,
+     * inside its own transaction, at the moment of the decision.
+     * <p>
+     * Longest-stranded first so a backlog drains in the order it accumulated. Reads straight off
+     * {@code idx_payment_intents_processing_since}, which is partial on exactly this status.
+     */
+    @Query("""
+        select p from PaymentIntentJpaEntity p
+        where p.status = 'PROCESSING'
+          and p.updatedAt <= :confirmedBefore
+        order by p.updatedAt asc
+        """)
+    List<PaymentIntentJpaEntity> findStrandedInProcessing(
+        @Param("confirmedBefore") Instant confirmedBefore,
+        Limit limit
+    );
 }

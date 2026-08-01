@@ -1038,5 +1038,10 @@ class PaymentIntentIntegrationTest {
         ) {
             return delegate.findPage(merchantId, status, orderId, cursor, limit);
         }
+
+        @Override
+        public List<PaymentIntent> findStrandedInProcessing(Instant confirmedBefore, int limit) {
+            return delegate.findStrandedInProcessing(confirmedBefore, limit);
+        }
     }
 }

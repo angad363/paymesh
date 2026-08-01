@@ -1,8 +1,10 @@
 package com.paymesh.payment.infrastructure.config;
 
 import com.paymesh.order.application.GetOrderService;
+import com.paymesh.order.application.PaymentActivityLookup;
 import com.paymesh.payment.application.AttachPaymentMethodService;
 import com.paymesh.payment.application.CancelPaymentIntentService;
+import com.paymesh.payment.application.CapturePaymentIntentService;
 import com.paymesh.payment.application.ConfirmPaymentIntentService;
 import com.paymesh.payment.application.CreatePaymentIntentService;
 import com.paymesh.payment.application.GetPaymentIntentService;
@@ -13,7 +15,9 @@ import com.paymesh.payment.application.PaymentIntentRepository;
 import com.paymesh.payment.application.PaymentStateHistoryRepository;
 import com.paymesh.payment.application.ProviderCallbackRepository;
 import com.paymesh.payment.application.RecordProviderCallbackService;
+import com.paymesh.payment.application.TimeOutProcessingPaymentsService;
 import com.paymesh.payment.infrastructure.order.OrderModuleLookup;
+import com.paymesh.payment.infrastructure.order.PaymentActivityAdapter;
 import com.paymesh.payment.infrastructure.persistence.jpa.JpaPaymentAttemptRepository;
 import com.paymesh.payment.infrastructure.persistence.jpa.JpaPaymentIntentRepository;
 import com.paymesh.payment.infrastructure.persistence.jpa.JpaPaymentStateHistoryRepository;
@@ -23,7 +27,9 @@ import com.paymesh.payment.infrastructure.persistence.jpa.SpringDataPaymentInten
 import com.paymesh.payment.infrastructure.persistence.jpa.SpringDataPaymentStateHistoryRepository;
 import com.paymesh.payment.infrastructure.persistence.jpa.SpringDataProviderCallbackRepository;
 import com.paymesh.payment.infrastructure.provider.ProviderCallbackSignatureFilter;
+import com.paymesh.payment.infrastructure.schedule.ProcessingTimeoutSweeper;
 import com.paymesh.shared.outbox.application.OutboxWriter;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.security.autoconfigure.web.servlet.SecurityFilterProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
@@ -45,7 +51,7 @@ import java.time.Clock;
  * file instead of spread through the application layer.
  */
 @Configuration
-@EnableConfigurationProperties(ProviderProperties.class)
+@EnableConfigurationProperties({ProviderProperties.class, ProcessingTimeoutProperties.class})
 public class PaymentConfiguration {
 
     @Bean
@@ -199,6 +205,94 @@ public class PaymentConfiguration {
 
         registration.setOrder(SecurityFilterProperties.DEFAULT_FILTER_ORDER + 1);
         return registration;
+    }
+
+    /**
+     * MANUAL capture: AUTHORIZED to SUCCEEDED, at the merchant's request.
+     * <p>
+     * It takes the {@code OrderLookup} port, and that is not copy-paste from confirm. Capture is
+     * where the funds are actually taken on a MANUAL intent, so it is the transition ADR-013's
+     * payability re-read has to be on -- see the service's {@code requireStillPayable}.
+     */
+    @Bean
+    CapturePaymentIntentService capturePaymentIntentService(
+        PaymentIntentRepository paymentIntentRepository,
+        PaymentStateHistoryRepository paymentStateHistoryRepository,
+        GetPaymentIntentService getPaymentIntentService,
+        OrderLookup orderLookup,
+        OutboxWriter outboxWriter,
+        TransactionTemplate transactionTemplate,
+        Clock clock
+    ) {
+        return new CapturePaymentIntentService(
+            paymentIntentRepository,
+            paymentStateHistoryRepository,
+            getPaymentIntentService,
+            orderLookup,
+            outboxWriter,
+            transactionTemplate,
+            clock
+        );
+    }
+
+    /**
+     * THE BEAN THAT ANSWERS ORDER'S QUESTION, DECLARED ON THIS SIDE OF THE BOUNDARY (ADR-014).
+     * <p>
+     * The bean type is {@code com.paymesh.order.application.PaymentActivityLookup} -- Order's own
+     * interface -- so Order's sweeper can inject it by type without {@code OrderConfiguration} or
+     * anything else under {@code com.paymesh.order} naming a Payment class. Payment already imports
+     * Order; Order still imports nothing of Payment, and
+     * {@code ModuleBoundaryTest.orderNeverImportsPayment} keeps its empty allowlist.
+     * <p>
+     * Required, not optional. If Payment is extracted and nothing replaces this, the context fails
+     * to start -- correct, because a sweeper that cannot ask whether an order is being paid must not
+     * run, and a silently absent implementation would expire live orders in production while every
+     * test in the Order module stayed green.
+     */
+    @Bean
+    PaymentActivityLookup paymentActivityLookup(PaymentIntentRepository paymentIntentRepository) {
+        return new PaymentActivityAdapter(paymentIntentRepository);
+    }
+
+    /**
+     * The PROCESSING timeout's logic. Declared unconditionally, even when the timer below is off: it
+     * is an ordinary object, it starts nothing, and a test or an operator running a single sweep by
+     * hand should not have to enable a scheduler to do it.
+     */
+    @Bean
+    TimeOutProcessingPaymentsService timeOutProcessingPaymentsService(
+        PaymentIntentRepository paymentIntentRepository,
+        PaymentStateHistoryRepository paymentStateHistoryRepository,
+        OutboxWriter outboxWriter,
+        TransactionTemplate transactionTemplate,
+        Clock clock,
+        ProcessingTimeoutProperties properties
+    ) {
+        return new TimeOutProcessingPaymentsService(
+            paymentIntentRepository,
+            paymentStateHistoryRepository,
+            outboxWriter,
+            transactionTemplate,
+            clock,
+            properties.age(),
+            properties.batchSize()
+        );
+    }
+
+    /**
+     * The timer. With the bean absent there is no {@code @Scheduled} method to register, so switching
+     * {@code paymesh.payments.processing-timeout.enabled} off genuinely stops the job. It defaults
+     * ON, because the hole it closes is the largest known one in the design; the dev profile turns it
+     * off because that is the profile the test suite runs under.
+     */
+    @Bean
+    @ConditionalOnProperty(
+        prefix = "paymesh.payments.processing-timeout", name = "enabled", matchIfMissing = true
+    )
+    ProcessingTimeoutSweeper processingTimeoutSweeper(
+        TimeOutProcessingPaymentsService timeOutProcessingPaymentsService
+    ) {
+        return new ProcessingTimeoutSweeper(timeOutProcessingPaymentsService);
     }
 
     @Bean
