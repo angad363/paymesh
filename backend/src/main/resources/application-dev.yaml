@@ -53,3 +53,8 @@ paymesh:
   payments:
     processing-timeout:
       enabled: false
+    abandoned-intents:
+      # Off under dev for the same reason as the sweep above: this is the profile the
+      # test suite runs under, and a timer firing mid-test is a flake nobody can
+      # reproduce. The service is a plain class, so tests drive it directly.
+      enabled: false

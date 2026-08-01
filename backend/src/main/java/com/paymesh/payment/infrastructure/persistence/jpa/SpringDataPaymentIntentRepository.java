@@ -184,4 +184,22 @@ public interface SpringDataPaymentIntentRepository extends JpaRepository<Payment
         @Param("confirmedBefore") Instant confirmedBefore,
         Limit limit
     );
+
+    /**
+     * Checkouts nobody came back to. Oldest first, so a backlog drains in the order it accumulated.
+     * <p>
+     * The status list is exactly the two states that precede a provider ever being told anything, so
+     * a cancellation here cannot contradict a payment that happened. It deliberately stops short of
+     * PROCESSING, which ADR-015 owns and which cannot be cancelled at all.
+     */
+    @Query("""
+        select p from PaymentIntentJpaEntity p
+        where p.status in ('REQUIRES_PAYMENT_METHOD', 'REQUIRES_CONFIRMATION')
+          and p.updatedAt <= :untouchedBefore
+        order by p.updatedAt asc
+        """)
+    List<PaymentIntentJpaEntity> findAbandonedBeforeConfirmation(
+        @Param("untouchedBefore") Instant untouchedBefore,
+        Limit limit
+    );
 }

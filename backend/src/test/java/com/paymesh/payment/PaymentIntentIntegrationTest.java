@@ -1043,5 +1043,10 @@ class PaymentIntentIntegrationTest {
         public List<PaymentIntent> findStrandedInProcessing(Instant confirmedBefore, int limit) {
             return delegate.findStrandedInProcessing(confirmedBefore, limit);
         }
+
+        @Override
+        public List<PaymentIntent> findAbandonedBeforeConfirmation(Instant untouchedBefore, int limit) {
+            return delegate.findAbandonedBeforeConfirmation(untouchedBefore, limit);
+        }
     }
 }

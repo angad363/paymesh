@@ -3,6 +3,7 @@ package com.paymesh.payment.infrastructure.config;
 import com.paymesh.order.application.GetOrderService;
 import com.paymesh.order.application.PaymentActivityLookup;
 import com.paymesh.payment.application.AttachPaymentMethodService;
+import com.paymesh.payment.application.CancelAbandonedPaymentIntentsService;
 import com.paymesh.payment.application.CancelPaymentIntentService;
 import com.paymesh.payment.application.CapturePaymentIntentService;
 import com.paymesh.payment.application.ConfirmPaymentIntentService;
@@ -27,6 +28,7 @@ import com.paymesh.payment.infrastructure.persistence.jpa.SpringDataPaymentInten
 import com.paymesh.payment.infrastructure.persistence.jpa.SpringDataPaymentStateHistoryRepository;
 import com.paymesh.payment.infrastructure.persistence.jpa.SpringDataProviderCallbackRepository;
 import com.paymesh.payment.infrastructure.provider.ProviderCallbackSignatureFilter;
+import com.paymesh.payment.infrastructure.schedule.AbandonedIntentSweeper;
 import com.paymesh.payment.infrastructure.schedule.ProcessingTimeoutSweeper;
 import com.paymesh.shared.outbox.application.OutboxWriter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -51,7 +53,11 @@ import java.time.Clock;
  * file instead of spread through the application layer.
  */
 @Configuration
-@EnableConfigurationProperties({ProviderProperties.class, ProcessingTimeoutProperties.class})
+@EnableConfigurationProperties({
+    ProviderProperties.class,
+    ProcessingTimeoutProperties.class,
+    AbandonedIntentProperties.class
+})
 public class PaymentConfiguration {
 
     @Bean
@@ -293,6 +299,40 @@ public class PaymentConfiguration {
         TimeOutProcessingPaymentsService timeOutProcessingPaymentsService
     ) {
         return new ProcessingTimeoutSweeper(timeOutProcessingPaymentsService);
+    }
+
+    /**
+     * Releases the order slot an abandoned checkout is holding.
+     * <p>
+     * Declared separately from the PROCESSING timeout on purpose. The two sweeps rhyme and their
+     * safety arguments are opposites -- one can record a real payment as failed, the other cannot
+     * touch a payment that was ever sent anywhere -- so they get their own ages, their own switches
+     * and their own beans. A single knob would apply one argument's reasoning to the other.
+     */
+    @Bean
+    CancelAbandonedPaymentIntentsService cancelAbandonedPaymentIntentsService(
+        PaymentIntentRepository paymentIntentRepository,
+        CancelPaymentIntentService cancelPaymentIntentService,
+        Clock clock,
+        AbandonedIntentProperties properties
+    ) {
+        return new CancelAbandonedPaymentIntentsService(
+            paymentIntentRepository,
+            cancelPaymentIntentService,
+            clock,
+            properties.age(),
+            properties.batchSize()
+        );
+    }
+
+    @Bean
+    @ConditionalOnProperty(
+        prefix = "paymesh.payments.abandoned-intents", name = "enabled", matchIfMissing = true
+    )
+    AbandonedIntentSweeper abandonedIntentSweeper(
+        CancelAbandonedPaymentIntentsService cancelAbandonedPaymentIntentsService
+    ) {
+        return new AbandonedIntentSweeper(cancelAbandonedPaymentIntentsService);
     }
 
     @Bean
