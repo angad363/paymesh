@@ -30,6 +30,22 @@ public interface PaymentIntentRepository {
     Optional<PaymentIntent> findByPaymentIntentId(MerchantId merchantId, PaymentIntentId paymentIntentId);
 
     /**
+     * The same read, holding a row lock until the caller's transaction ends (SELECT ... FOR UPDATE).
+     * <p>
+     * EVERY TRANSITION USES THIS, and a plain read would be wrong for all of them. Two concurrent
+     * writers that both read an intent and both decide from what they read end up racing on the
+     * optimistic {@code version}, and the loser gets an "unexpected row count" failure -- a 500 for
+     * a double-clicked confirm. Under the lock the second one waits, re-reads the winner's committed
+     * state, and is refused by the state machine with an answer that names the real situation
+     * ("cannot be confirmed while it is PROCESSING").
+     * <p>
+     * MUST be called inside a transaction. Reads that only read use {@link #findByPaymentIntentId}.
+     */
+    Optional<PaymentIntent> findByPaymentIntentIdForUpdate(
+        MerchantId merchantId, PaymentIntentId paymentIntentId
+    );
+
+    /**
      * One page of the merchant's intents, newest first, starting strictly after {@code cursor} and
      * ordered by {@code (createdAt, paymentIntentId)} descending. The tiebreak is part of the
      * contract: an implementation that orders by timestamp alone will skip or repeat rows that

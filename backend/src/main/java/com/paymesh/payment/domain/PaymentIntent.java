@@ -42,18 +42,21 @@ public final class PaymentIntent {
     /**
      * The states a merchant may cancel from today.
      * <p>
-     * It grows with the state machine: REQUIRES_CONFIRMATION when attach lands, REQUIRES_ACTION and
-     * AUTHORIZED after that. <b>Every state a customer can strand an intent in must end up in this
+     * It grows with the state machine: REQUIRES_ACTION and AUTHORIZED join when the provider states
+     * become reachable. <b>Every state a customer can strand an intent in must end up in this
      * set</b>, because {@code uq_payment_intents_live_per_order} frees an order's slot only on
      * FAILED or CANCELLED -- an uncancellable state is a dead order, which is worse than the
      * overpayment the index prevents.
      * <p>
      * PROCESSING is the deliberate exception and will never be added: an in-flight attempt may
      * already have succeeded at the provider, so cancelling locally could erase a payment that
-     * really happened.
+     * really happened -- money taken from a customer with no record of it on this side, which is
+     * strictly worse than a stuck order (ADR-011 section 5).
      */
-    private static final Set<PaymentIntentStatus> CANCELLABLE =
-        Set.of(PaymentIntentStatus.REQUIRES_PAYMENT_METHOD);
+    private static final Set<PaymentIntentStatus> CANCELLABLE = Set.of(
+        PaymentIntentStatus.REQUIRES_PAYMENT_METHOD,
+        PaymentIntentStatus.REQUIRES_CONFIRMATION
+    );
 
     private static final int CUSTOMER_REFERENCE_MAX_LENGTH = 40;
     private static final int ORDER_REFERENCE_MAX_LENGTH = 40;
@@ -68,6 +71,7 @@ public final class PaymentIntent {
     private final long amountMinor;
     private final String currency;
     private final CaptureMethod captureMethod;
+    private final PaymentMethodType paymentMethodType;
     private final PaymentIntentStatus status;
     private final long capturedAmountMinor;
     private final long refundedAmountMinor;
@@ -89,6 +93,7 @@ public final class PaymentIntent {
         long amountMinor,
         String currency,
         CaptureMethod captureMethod,
+        PaymentMethodType paymentMethodType,
         PaymentIntentStatus status,
         long capturedAmountMinor,
         long refundedAmountMinor,
@@ -109,6 +114,7 @@ public final class PaymentIntent {
         this.amountMinor = amountMinor;
         this.currency = currency;
         this.captureMethod = captureMethod;
+        this.paymentMethodType = paymentMethodType;
         this.status = status;
         this.capturedAmountMinor = capturedAmountMinor;
         this.refundedAmountMinor = refundedAmountMinor;
@@ -143,6 +149,9 @@ public final class PaymentIntent {
             requireAmount(amountMinor),
             requireCurrency(currency),
             captureMethod == null ? CaptureMethod.AUTOMATIC : captureMethod,
+            // No method until one is attached, which is also what
+            // ck_payment_intents_method_known tolerates in exactly this state.
+            null,
             PaymentIntentStatus.REQUIRES_PAYMENT_METHOD,
             0,
             0,
@@ -174,6 +183,7 @@ public final class PaymentIntent {
         long amountMinor,
         String currency,
         CaptureMethod captureMethod,
+        PaymentMethodType paymentMethodType,
         PaymentIntentStatus status,
         long capturedAmountMinor,
         long refundedAmountMinor,
@@ -195,6 +205,7 @@ public final class PaymentIntent {
             amountMinor,
             currency,
             captureMethod,
+            paymentMethodType,
             status,
             capturedAmountMinor,
             refundedAmountMinor,
@@ -211,8 +222,97 @@ public final class PaymentIntent {
     }
 
     /**
-     * The only transition reachable in this PR.
+     * REQUIRES_PAYMENT_METHOD to REQUIRES_CONFIRMATION.
      * <p>
+     * Attaching records the KIND of instrument, never the instrument (see {@link PaymentMethodType}).
+     * It moves no money and calls nothing.
+     * <p>
+     * Legal from exactly one state. Re-attaching to change a chosen method is not supported and is
+     * refused rather than quietly allowed: past this point the intent may already have an attempt
+     * in flight, and a method that disagrees with what the provider was actually asked for is worse
+     * than no record at all. A merchant who chose wrongly cancels and starts again -- which is
+     * available precisely because REQUIRES_CONFIRMATION is cancellable.
+     */
+    public PaymentIntent attach(PaymentMethodType paymentMethodType, Instant attachedAt) {
+        if (status != PaymentIntentStatus.REQUIRES_PAYMENT_METHOD) {
+            throw new PaymentMethodNotAttachableException(paymentIntentId, status);
+        }
+
+        if (paymentMethodType == null) {
+            throw new IllegalArgumentException("Payment method type cannot be null");
+        }
+
+        if (attachedAt == null) {
+            throw new IllegalArgumentException("Attach timestamp cannot be null");
+        }
+
+        return withStatus(
+            paymentMethodType, PaymentIntentStatus.REQUIRES_CONFIRMATION, attachedAt
+        );
+    }
+
+    /**
+     * REQUIRES_CONFIRMATION to PROCESSING.
+     * <p>
+     * This is the money-moving transition -- the one after which PayMesh believes a collection is
+     * under way -- even though nothing is called: the outcome is genuinely undecided until a
+     * provider callback resolves it, which is why the endpoint answers 202 and why PROCESSING has
+     * no local cancel.
+     * <p>
+     * Confirming from REQUIRES_PAYMENT_METHOD is refused, not implied. An intent with no method
+     * attached has nothing to be collected with, and inferring a default here would pick an
+     * instrument on the merchant's behalf.
+     * <p>
+     * REQUIRES_ACTION will also become confirmable when the state exists; it does not yet, and
+     * adding it now would make a state reachable before the PR that owns it.
+     */
+    public PaymentIntent confirm(Instant confirmedAt) {
+        if (status != PaymentIntentStatus.REQUIRES_CONFIRMATION) {
+            throw new PaymentIntentNotConfirmableException(paymentIntentId, status);
+        }
+
+        if (confirmedAt == null) {
+            throw new IllegalArgumentException("Confirmation timestamp cannot be null");
+        }
+
+        return withStatus(paymentMethodType, PaymentIntentStatus.PROCESSING, confirmedAt);
+    }
+
+    /**
+     * The forward transitions that change nothing but the status, the method and the clock. Kept in
+     * one place so a new transition cannot accidentally drop a field on the way through -- the
+     * failure mode of copying a nineteen-argument constructor call.
+     */
+    private PaymentIntent withStatus(
+        PaymentMethodType methodType,
+        PaymentIntentStatus newStatus,
+        Instant updatedAt
+    ) {
+        return new PaymentIntent(
+            paymentIntentId,
+            merchantId,
+            orderId,
+            customerId,
+            amountMinor,
+            currency,
+            captureMethod,
+            methodType,
+            newStatus,
+            capturedAmountMinor,
+            refundedAmountMinor,
+            failureCode,
+            failureMessage,
+            cancellationReason,
+            cancelledAt,
+            description,
+            metadata,
+            version,
+            createdAt,
+            updatedAt
+        );
+    }
+
+    /**
      * Cancelling is also what releases the order's live-intent slot, so refusing it from a state
      * that has no other exit would strand the order permanently. The set of cancellable states is
      * therefore widened by every PR that adds a state a customer can sit in -- see
@@ -238,6 +338,7 @@ public final class PaymentIntent {
             amountMinor,
             currency,
             captureMethod,
+            paymentMethodType,
             PaymentIntentStatus.CANCELLED,
             capturedAmountMinor,
             refundedAmountMinor,
@@ -407,6 +508,11 @@ public final class PaymentIntent {
 
     public CaptureMethod captureMethod() {
         return captureMethod;
+    }
+
+    /** Null until a method is attached, and null forever on an intent cancelled before that. */
+    public PaymentMethodType paymentMethodType() {
+        return paymentMethodType;
     }
 
     public PaymentIntentStatus status() {

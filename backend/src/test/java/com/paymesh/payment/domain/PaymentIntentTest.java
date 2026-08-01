@@ -194,7 +194,195 @@ class PaymentIntentTest {
         ));
     }
 
+    // --- attach ------------------------------------------------------------------
+
+    @Test
+    void attachesAPaymentMethodAndAwaitsConfirmation() {
+        Instant attachedAt = NOW.plusSeconds(30);
+
+        PaymentIntent attached = intent(MerchantId.generate(), null, 1999, "INR", null)
+            .attach(PaymentMethodType.UPI, attachedAt);
+
+        assertEquals(PaymentIntentStatus.REQUIRES_CONFIRMATION, attached.status());
+        assertEquals(PaymentMethodType.UPI, attached.paymentMethodType());
+        assertEquals(attachedAt, attached.updatedAt());
+        assertEquals(NOW, attached.createdAt());
+    }
+
+    /** Immutability: attaching produces a new aggregate and leaves the original untouched. */
+    @Test
+    void leavesTheOriginalIntentUnchangedWhenAMethodIsAttached() {
+        PaymentIntent original = intent(MerchantId.generate(), null, 1999, "INR", null);
+
+        PaymentIntent attached = original.attach(PaymentMethodType.CARD, NOW);
+
+        assertNotSame(original, attached);
+        assertEquals(PaymentIntentStatus.REQUIRES_PAYMENT_METHOD, original.status());
+        assertNull(original.paymentMethodType());
+    }
+
+    /**
+     * RE-ATTACHING IS REFUSED, NOT QUIETLY ALLOWED. Past this point the intent may already have an
+     * attempt in flight, and a stored method that disagrees with what the provider was actually
+     * asked for is worse than no record. A merchant who chose wrongly cancels and starts again.
+     */
+    @Test
+    void refusesToAttachASecondPaymentMethod() {
+        PaymentIntent attached = intent(MerchantId.generate(), null, 1999, "INR", null)
+            .attach(PaymentMethodType.CARD, NOW);
+
+        assertThrows(
+            PaymentMethodNotAttachableException.class,
+            () -> attached.attach(PaymentMethodType.WALLET, NOW.plusSeconds(1))
+        );
+    }
+
+    @Test
+    void refusesToAttachToAProcessingIntent() {
+        PaymentIntent processing = reconstitutedWith(PaymentIntentStatus.PROCESSING);
+
+        assertThrows(
+            PaymentMethodNotAttachableException.class,
+            () -> processing.attach(PaymentMethodType.CARD, NOW)
+        );
+    }
+
+    @Test
+    void refusesToAttachToACancelledIntent() {
+        PaymentIntent cancelled = intent(MerchantId.generate(), null, 1999, "INR", null)
+            .cancel(null, NOW);
+
+        assertThrows(
+            PaymentMethodNotAttachableException.class,
+            () -> cancelled.attach(PaymentMethodType.CARD, NOW.plusSeconds(1))
+        );
+    }
+
+    @Test
+    void rejectsAnAttachWithNoMethodTypeOrNoTimestamp() {
+        PaymentIntent intent = intent(MerchantId.generate(), null, 1999, "INR", null);
+
+        assertThrows(IllegalArgumentException.class, () -> intent.attach(null, NOW));
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> intent.attach(PaymentMethodType.CARD, null)
+        );
+    }
+
+    // --- confirm ------------------------------------------------------------------
+
+    @Test
+    void confirmsAnIntentThatHasAMethodAttached() {
+        Instant confirmedAt = NOW.plusSeconds(90);
+
+        PaymentIntent processing = intent(MerchantId.generate(), null, 1999, "INR", null)
+            .attach(PaymentMethodType.CARD, NOW.plusSeconds(30))
+            .confirm(confirmedAt);
+
+        assertEquals(PaymentIntentStatus.PROCESSING, processing.status());
+        // The method survives the transition. An intent in PROCESSING with no method would violate
+        // ck_payment_intents_method_known, and losing it here is the failure a hand-copied
+        // constructor call produces.
+        assertEquals(PaymentMethodType.CARD, processing.paymentMethodType());
+        assertEquals(confirmedAt, processing.updatedAt());
+        assertEquals(1999L, processing.amountMinor());
+        assertEquals(0L, processing.capturedAmountMinor());
+    }
+
+    /**
+     * ATTACH IS A GENUINE PREREQUISITE. Confirming without a method would have to pick an
+     * instrument on the merchant's behalf, so it is refused rather than defaulted.
+     */
+    @Test
+    void refusesToConfirmAnIntentWithNoPaymentMethod() {
+        PaymentIntent intent = intent(MerchantId.generate(), null, 1999, "INR", null);
+
+        assertThrows(PaymentIntentNotConfirmableException.class, () -> intent.confirm(NOW));
+    }
+
+    @Test
+    void refusesToConfirmAnIntentThatIsAlreadyProcessing() {
+        PaymentIntent processing = intent(MerchantId.generate(), null, 1999, "INR", null)
+            .attach(PaymentMethodType.CARD, NOW)
+            .confirm(NOW.plusSeconds(1));
+
+        assertThrows(
+            PaymentIntentNotConfirmableException.class,
+            () -> processing.confirm(NOW.plusSeconds(2))
+        );
+    }
+
+    @Test
+    void refusesToConfirmACancelledIntent() {
+        PaymentIntent cancelled = intent(MerchantId.generate(), null, 1999, "INR", null)
+            .attach(PaymentMethodType.CARD, NOW)
+            .cancel("changed mind", NOW.plusSeconds(1));
+
+        assertThrows(
+            PaymentIntentNotConfirmableException.class,
+            () -> cancelled.confirm(NOW.plusSeconds(2))
+        );
+    }
+
+    @Test
+    void rejectsAConfirmationWithNoTimestamp() {
+        PaymentIntent attached = intent(MerchantId.generate(), null, 1999, "INR", null)
+            .attach(PaymentMethodType.CARD, NOW);
+
+        assertThrows(IllegalArgumentException.class, () -> attached.confirm(null));
+    }
+
+    /**
+     * THE STATES THIS PR DOES NOT OWN STAY UNREACHABLE. Neither transition can produce SUCCEEDED,
+     * FAILED, AUTHORIZED or REQUIRES_ACTION -- those belong to provider callbacks -- and the only
+     * forward move from PROCESSING is none at all.
+     */
+    @Test
+    void reachesOnlyTheStatesThisStepOwns() {
+        PaymentIntent intent = intent(MerchantId.generate(), null, 1999, "INR", null);
+        PaymentIntent attached = intent.attach(PaymentMethodType.CARD, NOW);
+        PaymentIntent processing = attached.confirm(NOW.plusSeconds(1));
+
+        assertEquals(PaymentIntentStatus.REQUIRES_PAYMENT_METHOD, intent.status());
+        assertEquals(PaymentIntentStatus.REQUIRES_CONFIRMATION, attached.status());
+        assertEquals(PaymentIntentStatus.PROCESSING, processing.status());
+
+        assertThrows(
+            PaymentIntentNotConfirmableException.class,
+            () -> processing.confirm(NOW.plusSeconds(2))
+        );
+        assertThrows(
+            PaymentMethodNotAttachableException.class,
+            () -> processing.attach(PaymentMethodType.CARD, NOW.plusSeconds(2))
+        );
+        assertThrows(
+            PaymentIntentNotCancellableException.class,
+            () -> processing.cancel(null, NOW.plusSeconds(2))
+        );
+    }
+
     // --- cancellation ----------------------------------------------------------
+
+    /**
+     * THE SLOT-RELEASE ROUTE OUT OF REQUIRES_CONFIRMATION (ADR-011 section 3). Without it, a
+     * merchant who attaches a method and then abandons the checkout has an intent that holds the
+     * order's only slot forever, and a stuck intent is a stuck order.
+     */
+    @Test
+    void cancelsAnIntentAwaitingConfirmation() {
+        Instant cancelledAt = NOW.plusSeconds(60);
+
+        PaymentIntent cancelled = intent(MerchantId.generate(), null, 1999, "INR", null)
+            .attach(PaymentMethodType.NET_BANKING, NOW.plusSeconds(30))
+            .cancel("abandoned the checkout", cancelledAt);
+
+        assertEquals(PaymentIntentStatus.CANCELLED, cancelled.status());
+        assertEquals("abandoned the checkout", cancelled.cancellationReason());
+        assertEquals(cancelledAt, cancelled.cancelledAt());
+        // The method it died holding, kept rather than cleared: what a merchant chose before
+        // abandoning is exactly what an investigation into an abandoned checkout wants.
+        assertEquals(PaymentMethodType.NET_BANKING, cancelled.paymentMethodType());
+    }
 
     @Test
     void cancelsAnIntentThatIsStillAwaitingAPaymentMethod() {
@@ -321,6 +509,13 @@ class PaymentIntentTest {
             1999,
             "INR",
             CaptureMethod.AUTOMATIC,
+            // Past REQUIRES_PAYMENT_METHOD a method is always known, and
+            // ck_payment_intents_method_known says so; CANCELLED is the one state that may have
+            // reached the end without one, and null is the honest value for both.
+            status == PaymentIntentStatus.REQUIRES_PAYMENT_METHOD
+                || status == PaymentIntentStatus.CANCELLED
+                ? null
+                : PaymentMethodType.CARD,
             status,
             0,
             0,

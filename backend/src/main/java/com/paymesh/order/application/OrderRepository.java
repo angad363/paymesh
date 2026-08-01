@@ -30,6 +30,20 @@ public interface OrderRepository {
     Optional<Order> findByOrderId(MerchantId merchantId, OrderId orderId);
 
     /**
+     * The same read, holding a row lock until the caller's transaction ends (SELECT ... FOR UPDATE).
+     * <p>
+     * It exists because a plain read is a check, not a lock: a caller that reads an order's status,
+     * decides something on the strength of it and then writes is racing anything that moves the
+     * order in between. Payment's create path is the caller -- it must not open a collection against
+     * an order that is being cancelled underneath it -- and it reaches this through its own
+     * {@code OrderLookup} port, never through this interface (ADR-008).
+     * <p>
+     * MUST be called inside a transaction; the lock is meaningless without one and the provider
+     * will say so. Use {@link #findByOrderId} for every read that is only a read.
+     */
+    Optional<Order> findByOrderIdForUpdate(MerchantId merchantId, OrderId orderId);
+
+    /**
      * One page of the merchant's orders, newest first, starting strictly after {@code cursor} and
      * ordered by {@code (createdAt, orderId)} descending. The tiebreak is part of the contract: an
      * implementation that orders by timestamp alone will skip or repeat rows that share one.

@@ -9,6 +9,7 @@ import com.paymesh.payment.application.OrderLookup;
 import com.paymesh.shared.tenant.MerchantId;
 
 import java.util.Optional;
+import java.util.function.BiFunction;
 
 /**
  * THE ONLY CLASS IN {@code com.paymesh.payment} THAT IMPORTS {@code com.paymesh.order}, apart from
@@ -37,6 +38,28 @@ public final class OrderModuleLookup implements OrderLookup {
 
     @Override
     public Optional<PayableOrder> find(MerchantId merchantId, String orderId) {
+        return lookUp(merchantId, orderId, orders::getById);
+    }
+
+    /**
+     * The locking read, delegated to Order's own {@code SELECT ... FOR UPDATE}.
+     * <p>
+     * Payment does not reach into {@code orders} to lock it: the statement is issued by Order's
+     * application layer, over Order's repository, against Order's entity. What crosses the boundary
+     * is the request to hold a row still, not knowledge of how that row is stored. Payment importing
+     * {@code SpringDataOrderRepository} or {@code OrderJpaEntity} to add a lock would be the same
+     * shortcut with none of the safety, and {@code ModuleBoundaryTest} refuses it.
+     */
+    @Override
+    public Optional<PayableOrder> findForUpdate(MerchantId merchantId, String orderId) {
+        return lookUp(merchantId, orderId, orders::getByIdForUpdate);
+    }
+
+    private Optional<PayableOrder> lookUp(
+        MerchantId merchantId,
+        String orderId,
+        BiFunction<MerchantId, OrderId, Order> read
+    ) {
         OrderId parsed;
 
         try {
@@ -49,7 +72,7 @@ public final class OrderModuleLookup implements OrderLookup {
         }
 
         try {
-            Order order = orders.getById(merchantId, parsed);
+            Order order = read.apply(merchantId, parsed);
 
             return Optional.of(new PayableOrder(
                 order.orderId().value(),

@@ -53,40 +53,7 @@ public final class CreatePaymentIntentService {
             throw new IllegalArgumentException("Order identifier is required");
         }
 
-        // Everything the intent needs about the order is resolved BEFORE the aggregate is built, so
-        // there is exactly one PaymentIntent.create call and no second pass to correct a field.
-        //
-        // No such order, another merchant's order, and an order that cannot be paid are one answer.
-        // Distinguishing them would confirm which ids exist under another tenant.
-        OrderLookup.PayableOrder order = orders
-            .find(command.merchantId(), orderId)
-            .filter(OrderLookup.PayableOrder::payable)
-            .orElseThrow(() -> new OrderNotPayableException(orderId));
-
-        requireExactAmount(command, order);
-
         Instant now = Instant.now(clock);
-
-        PaymentIntent intent = PaymentIntent.create(
-            PaymentIntentId.generate(),
-            command.merchantId(),
-            orderId,
-            requireCustomerMatchesOrder(command, order),
-            command.amountMinor(),
-            command.currency(),
-            command.captureMethod(),
-            command.description(),
-            command.metadata(),
-            now
-        );
-
-        // A CHECK, NOT A LOCK. Two concurrent creates can both pass it; the partial unique index
-        // uq_payment_intents_live_per_order is what makes the second one lose, and the adapter
-        // translates its violation into this same exception. This call only buys a friendlier
-        // message on the common, uncontended path -- deleting it must leave every test green.
-        if (paymentIntents.existsLiveForOrder(command.merchantId(), orderId)) {
-            throw new OrderHasActivePaymentIntentException(orderId);
-        }
 
         // ONE TRANSACTION, THREE WRITES, AND THAT IS THE POINT (ADR-010). The intent, the first row
         // of its timeline and the event announcing it are one fact. An intent whose creation is
@@ -94,9 +61,50 @@ public final class CreatePaymentIntentService {
         // no holes, and an intent committed without its event is invisible to every consumer
         // forever.
         //
+        // THE ORDER IS READ INSIDE IT, AND WITH A LOCK (ADR-013). Payability used to be read out
+        // here, which made it a time-of-check to time-of-use race: an order cancelled between the
+        // lookup and the insert left a live intent against a cancelled order, holding the order's
+        // only slot with no route back through the API. The FOR UPDATE read holds the row still
+        // until this transaction ends, so a concurrent cancel waits and then loses -- or commits
+        // first and is seen.
+        //
         // Forgetting this wrap compiles and passes every happy-path test -- the accepted cost of
         // TransactionTemplate over @Transactional, which cannot be used on a final class.
         return transactions.execute(status -> {
+            // No such order, another merchant's order, and an order that cannot be paid are one
+            // answer. Distinguishing them would confirm which ids exist under another tenant.
+            OrderLookup.PayableOrder order = orders
+                .findForUpdate(command.merchantId(), orderId)
+                .filter(OrderLookup.PayableOrder::payable)
+                .orElseThrow(() -> new OrderNotPayableException(orderId));
+
+            requireExactAmount(command, order);
+
+            // Everything the intent needs about the order is resolved BEFORE the aggregate is
+            // built, so there is exactly one PaymentIntent.create call and no second pass to
+            // correct a field.
+            PaymentIntent intent = PaymentIntent.create(
+                PaymentIntentId.generate(),
+                command.merchantId(),
+                orderId,
+                requireCustomerMatchesOrder(command, order),
+                command.amountMinor(),
+                command.currency(),
+                command.captureMethod(),
+                command.description(),
+                command.metadata(),
+                now
+            );
+
+            // A CHECK, NOT A LOCK. Two concurrent creates can both pass it; the partial unique
+            // index uq_payment_intents_live_per_order is what makes the second one lose, and the
+            // adapter translates its violation into this same exception. This call only buys a
+            // friendlier message on the common, uncontended path -- deleting it must leave every
+            // test green.
+            if (paymentIntents.existsLiveForOrder(command.merchantId(), orderId)) {
+                throw new OrderHasActivePaymentIntentException(orderId);
+            }
+
             PaymentIntent saved = paymentIntents.save(intent);
 
             history.append(new PaymentStateChange(

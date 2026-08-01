@@ -4,22 +4,14 @@ import com.paymesh.payment.domain.CaptureMethod;
 import com.paymesh.payment.domain.PaymentIntent;
 import com.paymesh.payment.domain.PaymentIntentStatus;
 import com.paymesh.payment.domain.PaymentStateChange;
-import com.paymesh.shared.outbox.application.OutboxWriter;
 import com.paymesh.shared.outbox.domain.OutboxEvent;
 import com.paymesh.shared.tenant.MerchantId;
 import org.junit.jupiter.api.Test;
-import org.springframework.transaction.support.SimpleTransactionStatus;
-import org.springframework.transaction.support.TransactionCallback;
-import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -33,10 +25,10 @@ class CreatePaymentIntentServiceTest {
     private static final String CUSTOMER_ID = "cus_22222222-2222-4222-8222-222222222222";
 
     private final InMemoryPaymentIntentRepository repository = new InMemoryPaymentIntentRepository();
-    private final RecordingHistory history = new RecordingHistory();
-    private final KnownOrders orders = new KnownOrders();
-    private final ImmediateTransactions transactions = new ImmediateTransactions();
-    private final RecordingOutbox outbox = new RecordingOutbox(transactions);
+    private final Fakes.ImmediateTransactions transactions = new Fakes.ImmediateTransactions();
+    private final Fakes.RecordingHistory history = new Fakes.RecordingHistory(transactions);
+    private final Fakes.KnownOrders orders = new Fakes.KnownOrders();
+    private final Fakes.RecordingOutbox outbox = new Fakes.RecordingOutbox(transactions);
     private final CreatePaymentIntentService service = new CreatePaymentIntentService(
         repository, history, orders, outbox, transactions, Clock.fixed(NOW, ZoneOffset.UTC)
     );
@@ -323,7 +315,15 @@ class CreatePaymentIntentServiceTest {
         assertNull(payload.get("customerId"));
     }
 
-    /** A rejected create announces nothing, and never opens a transaction to announce it in. */
+    /**
+     * A rejected create announces nothing.
+     * <p>
+     * It does now open a transaction to reach that conclusion, and that changed with ADR-013: the
+     * order is read under a row lock INSIDE the transaction, so the amount comparison that refuses
+     * this request happens there too. The transaction opens and rolls back with nothing in it, which
+     * is what the two counts above assert -- a refusal that had written a row before deciding would
+     * fail here.
+     */
     @Test
     void announcesNothingWhenTheIntentIsRefused() {
         MerchantId merchantId = MerchantId.generate();
@@ -336,7 +336,7 @@ class CreatePaymentIntentServiceTest {
 
         assertEquals(0, outbox.events().size());
         assertEquals(0, history.changes().size());
-        assertEquals(0, transactions.executions());
+        assertEquals(1, transactions.executions());
     }
 
     private static CreatePaymentIntentCommand command(
@@ -350,106 +350,5 @@ class CreatePaymentIntentServiceTest {
         return new CreatePaymentIntentCommand(
             merchantId, orderId, customerId, amountMinor, currency, captureMethod, null, Map.of()
         );
-    }
-
-    /**
-     * Runs the callback straight through and counts the calls. It cannot roll anything back -- a
-     * plain JUnit test has no database to roll back -- so it proves the boundary was *entered*, not
-     * that it holds. Proving it holds needs PostgreSQL.
-     */
-    private static final class ImmediateTransactions extends TransactionTemplate {
-
-        private int executions;
-        private boolean inside;
-
-        int executions() {
-            return executions;
-        }
-
-        boolean inside() {
-            return inside;
-        }
-
-        @Override
-        public <T> T execute(TransactionCallback<T> action) {
-            executions++;
-            inside = true;
-
-            try {
-                return action.doInTransaction(new SimpleTransactionStatus());
-            } finally {
-                inside = false;
-            }
-        }
-    }
-
-    private static final class RecordingOutbox implements OutboxWriter {
-
-        private final ImmediateTransactions transactions;
-        private final List<OutboxEvent> events = new ArrayList<>();
-        private boolean appendedInsideATransaction;
-
-        private RecordingOutbox(ImmediateTransactions transactions) {
-            this.transactions = transactions;
-        }
-
-        List<OutboxEvent> events() {
-            return events;
-        }
-
-        boolean appendedInsideATransaction() {
-            return appendedInsideATransaction;
-        }
-
-        @Override
-        public void append(OutboxEvent event) {
-            appendedInsideATransaction = transactions.inside();
-            events.add(event);
-        }
-    }
-
-    private final class RecordingHistory implements PaymentStateHistoryRepository {
-
-        private final List<PaymentStateChange> changes = new ArrayList<>();
-        private boolean appendedInsideATransaction;
-
-        List<PaymentStateChange> changes() {
-            return changes;
-        }
-
-        boolean appendedInsideATransaction() {
-            return appendedInsideATransaction;
-        }
-
-        @Override
-        public void append(PaymentStateChange change) {
-            appendedInsideATransaction = transactions.inside();
-            changes.add(change);
-        }
-    }
-
-    /** Stands in for the order module across the port. */
-    private static final class KnownOrders implements OrderLookup {
-
-        private final Map<String, PayableOrder> orders = new HashMap<>();
-
-        void add(
-            MerchantId merchantId,
-            String orderId,
-            String customerId,
-            long amountMinor,
-            String currency,
-            boolean payable
-        ) {
-            orders.put(
-                merchantId.value() + "/" + orderId,
-                new PayableOrder(orderId, customerId, amountMinor, currency, payable)
-            );
-        }
-
-        @Override
-        public Optional<PayableOrder> find(MerchantId merchantId, String orderId) {
-            return Optional.ofNullable(orders.get(merchantId.value() + "/" + orderId));
-        }
     }
 }

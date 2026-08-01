@@ -3,8 +3,11 @@ package com.paymesh.payment.api;
 import com.paymesh.payment.application.OrderHasActivePaymentIntentException;
 import com.paymesh.payment.application.OrderNotPayableException;
 import com.paymesh.payment.application.PaymentAmountMismatchException;
+import com.paymesh.payment.application.PaymentAttemptAlreadyStartedException;
 import com.paymesh.payment.application.PaymentIntentNotFoundException;
 import com.paymesh.payment.domain.PaymentIntentNotCancellableException;
+import com.paymesh.payment.domain.PaymentIntentNotConfirmableException;
+import com.paymesh.payment.domain.PaymentMethodNotAttachableException;
 import com.paymesh.shared.api.ApiErrorResponse;
 import com.paymesh.shared.security.NoMerchantScopeException;
 import org.springframework.http.HttpStatus;
@@ -76,6 +79,37 @@ public final class PaymentExceptionHandler {
     @ResponseStatus(HttpStatus.CONFLICT)
     ApiErrorResponse handlePaymentIntentNotCancellable(PaymentIntentNotCancellableException exception) {
         return ApiErrorResponse.of("PAYMENT_INTENT_NOT_CANCELLABLE", exception.getMessage());
+    }
+
+    /**
+     * The intent is past the point of choosing an instrument. 409 rather than 400: nothing about the
+     * request is malformed, and retrying it identically will never succeed.
+     */
+    @ExceptionHandler(PaymentMethodNotAttachableException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    ApiErrorResponse handlePaymentMethodNotAttachable(PaymentMethodNotAttachableException exception) {
+        return ApiErrorResponse.of("PAYMENT_METHOD_NOT_ATTACHABLE", exception.getMessage());
+    }
+
+    /**
+     * Most often: no payment method has been attached yet. 409, and the route forward is a real one
+     * -- attach, then confirm.
+     */
+    @ExceptionHandler(PaymentIntentNotConfirmableException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    ApiErrorResponse handlePaymentIntentNotConfirmable(PaymentIntentNotConfirmableException exception) {
+        return ApiErrorResponse.of("PAYMENT_INTENT_NOT_CONFIRMABLE", exception.getMessage());
+    }
+
+    /**
+     * Two confirms raced and this one lost to {@code uq_payment_attempts_intent_number}. 409 rather
+     * than 500: the collection the caller asked for is already under way, which is something they
+     * can act on.
+     */
+    @ExceptionHandler(PaymentAttemptAlreadyStartedException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    ApiErrorResponse handlePaymentAttemptAlreadyStarted(PaymentAttemptAlreadyStartedException exception) {
+        return ApiErrorResponse.of("PAYMENT_ATTEMPT_ALREADY_STARTED", exception.getMessage());
     }
 
     /**

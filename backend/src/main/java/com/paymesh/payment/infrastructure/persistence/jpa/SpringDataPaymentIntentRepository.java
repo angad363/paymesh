@@ -1,7 +1,9 @@
 package com.paymesh.payment.infrastructure.persistence.jpa;
 
+import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -21,6 +23,26 @@ public interface SpringDataPaymentIntentRepository extends JpaRepository<Payment
 
     Optional<PaymentIntentJpaEntity> findByMerchantIdAndPaymentIntentId(
         String merchantId, String paymentIntentId
+    );
+
+    /**
+     * The same row, locked until the caller's transaction ends: {@code SELECT ... FOR UPDATE}.
+     * <p>
+     * PESSIMISTIC RATHER THAN OPTIMISTIC, and SDD 23.3 lists exactly this class of decision for it.
+     * Optimistic control lets both writers proceed and fails the loser at flush time with a message
+     * about row counts; the lock makes the loser WAIT, read the winner's result, and be refused by
+     * the state machine instead. Both prevent the double write. Only one of them can explain itself.
+     * <p>
+     * Still merchant-leading, like every other method here: a lock is not an authorization.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+        select p from PaymentIntentJpaEntity p
+        where p.merchantId = :merchantId and p.paymentIntentId = :paymentIntentId
+        """)
+    Optional<PaymentIntentJpaEntity> findForUpdateByMerchantIdAndPaymentIntentId(
+        @Param("merchantId") String merchantId,
+        @Param("paymentIntentId") String paymentIntentId
     );
 
     /**

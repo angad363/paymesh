@@ -172,6 +172,30 @@
     {
       "key": "secondCancelIntentKey",
       "value": ""
+    },
+    {
+      "key": "confirmOrderId",
+      "value": ""
+    },
+    {
+      "key": "confirmIntentId",
+      "value": ""
+    },
+    {
+      "key": "guardOrderId",
+      "value": ""
+    },
+    {
+      "key": "guardIntentId",
+      "value": ""
+    },
+    {
+      "key": "attachedBody",
+      "value": ""
+    },
+    {
+      "key": "confirmedBody",
+      "value": ""
     }
   ],
   "item": [
@@ -3477,6 +3501,1100 @@
                   "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
                   "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('IDEMPOTENCY_KEY_REQUIRED'));",
                   "pm.test('refused before the handler, so no intent came back', () => pm.expect(pm.response.json()).to.not.have.property('id'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Payment Intents - attach, confirm and the ADR-013 guard",
+      "item": [
+        {
+          "name": "Setup: an order to attach and confirm against (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amountMinor\": 2500,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{confirmOrderKey}}"
+              }
+            ],
+            "description": "Its own order, because the intents earlier in this collection have already been cancelled and an order holds at most one live intent (ADR-011)."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('confirmOrderKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('confirmOrderId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: a payment intent for it (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{confirmOrderId}}\",\n  \"amountMinor\": 2500,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{confirmIntentKey}}"
+              }
+            ],
+            "description": "Starts at REQUIRES_PAYMENT_METHOD with no payment method: paymentMethodType is null until one is attached, and nothing defaults it."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('confirmIntentKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('starts REQUIRES_PAYMENT_METHOD', () => pm.expect(b.status).to.eql('REQUIRES_PAYMENT_METHOD'));",
+                  "pm.test('no method until one is attached', () => pm.expect(b.paymentMethodType).to.be.oneOf([null, undefined]));",
+                  "pm.collectionVariables.set('confirmIntentId', b.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Confirm before attaching (409)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{confirmIntentId}}/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{confirmIntentId}}",
+                "confirm"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{earlyConfirmKey}}"
+              }
+            ],
+            "description": "Attach is a genuine prerequisite, not a convention. An intent with no instrument has nothing to be collected with, and inferring a default would pick one on the merchant's behalf."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('earlyConfirmKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('code names the state machine', () => pm.expect(pm.response.json().code).to.eql('PAYMENT_INTENT_NOT_CONFIRMABLE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Attach a payment method (200)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{confirmIntentId}}/payment-method",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{confirmIntentId}}",
+                "payment-method"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentMethodType\": \"CARD\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{attachKey}}"
+              }
+            ],
+            "description": "A method TYPE, not a token. payment_method_tokens exists (V3) and nothing can write to it until the Provider Simulator does, so requiring a token would make this endpoint uncallable. No PAN, no expiry, no holder name reaches PayMesh (SDD 12.6)."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('attachKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('now REQUIRES_CONFIRMATION', () => pm.expect(b.status).to.eql('REQUIRES_CONFIRMATION'));",
+                  "pm.test('the type is recorded', () => pm.expect(b.paymentMethodType).to.eql('CARD'));",
+                  "pm.test('attaching collects nothing', () => pm.expect(b.capturedAmountMinor).to.eql(0));",
+                  "pm.test('no instrument data echoed back', () => { const t = pm.response.text(); pm.expect(t).to.not.include('token'); pm.expect(t).to.not.include('pan'); });",
+                  "pm.collectionVariables.set('attachedBody', pm.response.text());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Attach again on the SAME key (200, replayed)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{confirmIntentId}}/payment-method",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{confirmIntentId}}",
+                "payment-method"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentMethodType\": \"CARD\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{attachKey}}"
+              }
+            ],
+            "description": "The same key never reaches the state machine at all: the stored response comes back, byte for byte, with Idempotency-Replayed: true."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('replayed, not re-executed', () => pm.expect(pm.response.headers.get('Idempotency-Replayed')).to.eql('true'));",
+                  "pm.test('identical body', () => pm.expect(pm.response.text()).to.eql(pm.collectionVariables.get('attachedBody')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Attach again on a FRESH key (409)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{confirmIntentId}}/payment-method",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{confirmIntentId}}",
+                "payment-method"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentMethodType\": \"UPI\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{reattachKey}}"
+              }
+            ],
+            "description": "A genuinely new request, so it meets the state machine. Re-attaching is refused rather than quietly allowed: past this point an attempt may be in flight, and a stored method that disagrees with what the provider was asked for is worse than none. Cancel and start again."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('reattachKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('PAYMENT_METHOD_NOT_ATTACHABLE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Attach an unknown method type (400)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{confirmIntentId}}/payment-method",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{confirmIntentId}}",
+                "payment-method"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentMethodType\": \"CRYPTO\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{badMethodKey}}"
+              }
+            ],
+            "description": "CARD, UPI, NET_BANKING or WALLET. Refused at the boundary, and the error names the field rather than a Java type."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('badMethodKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "const b = pm.response.json();",
+                  "pm.test('code', () => pm.expect(b.code).to.eql('VALIDATION_FAILED'));",
+                  "pm.test('names the field', () => pm.expect(b.fieldErrors).to.have.property('paymentMethodType'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Confirm the payment intent (202)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{confirmIntentId}}/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{confirmIntentId}}",
+                "confirm"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"returnUrl\": \"https://shop.example/checkout/return?session=SECRET\",\n  \"device\": \"web\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{confirmKey}}"
+              }
+            ],
+            "description": "202 AND NOT 200, even though nothing asynchronous is invoked: the intent is PROCESSING and the outcome is undecided until a provider callback resolves it. There is no outbound call anywhere in Payment yet. The returnUrl's query string is stripped before it is stored on the attempt -- it routinely carries a session token and that row is a durable audit record."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('confirmKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted -- the work is started, not finished', () => pm.response.to.have.status(202));",
+                  "const b = pm.response.json();",
+                  "pm.test('now PROCESSING', () => pm.expect(b.status).to.eql('PROCESSING'));",
+                  "pm.test('the method survives the transition', () => pm.expect(b.paymentMethodType).to.eql('CARD'));",
+                  "pm.test('confirming captures nothing -- the Ledger is not involved', () => { pm.expect(b.capturedAmountMinor).to.eql(0); pm.expect(b.refundedAmountMinor).to.eql(0); });",
+                  "pm.test('same intent, not a new one', () => pm.expect(b.id).to.eql(pm.collectionVariables.get('confirmIntentId')));",
+                  "pm.collectionVariables.set('confirmedBody', pm.response.text());"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Confirm again on the SAME key (202, replayed)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{confirmIntentId}}/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{confirmIntentId}}",
+                "confirm"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"returnUrl\": \"https://shop.example/checkout/return?session=SECRET\",\n  \"device\": \"web\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{confirmKey}}"
+              }
+            ],
+            "description": "A network retry must cost nothing -- and must not open a second attempt against the same intent."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "pm.test('replayed, not re-executed', () => pm.expect(pm.response.headers.get('Idempotency-Replayed')).to.eql('true'));",
+                  "pm.test('identical body', () => pm.expect(pm.response.text()).to.eql(pm.collectionVariables.get('confirmedBody')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Confirm again on a FRESH key (409)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{confirmIntentId}}/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{confirmIntentId}}",
+                "confirm"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{reconfirmKey}}"
+              }
+            ],
+            "description": "A genuinely new request meets the state machine, which refuses it: PROCESSING is not confirmable."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('reconfirmKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('PAYMENT_INTENT_NOT_CONFIRMABLE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancel a PROCESSING intent (409, deliberately)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{confirmIntentId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{confirmIntentId}}",
+                "cancel"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"too late\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{cancelProcessingKey}}"
+              }
+            ],
+            "description": "THE ONE STATE WITH NO CANCEL, and it is a named deferral rather than an oversight (ADR-011 section 5). An in-flight attempt may already have succeeded at the provider, so cancelling locally could erase a payment that really happened -- money taken from a customer with no record of it here, which is strictly worse than a stuck order. The full answer is a PROCESSING timeout plus provider reconciliation, and neither is in scope."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('cancelProcessingKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('PAYMENT_INTENT_NOT_CANCELLABLE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: a second order (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amountMinor\": 2500,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{guardOrderKey}}"
+              }
+            ],
+            "description": "For the ADR-013 walkthrough below: an order that will be cancelled out from under a live intent."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('guardOrderKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('guardOrderId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: an intent for it, with a method attached (200)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{guardOrderId}}\",\n  \"amountMinor\": 2500,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{guardIntentKey}}"
+              }
+            ],
+            "description": "Created while the order was payable, which is the only time Payment used to check."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('guardIntentKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('guardIntentId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: attach a method to it (200)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{guardIntentId}}/payment-method",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{guardIntentId}}",
+                "payment-method"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentMethodType\": \"UPI\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{guardAttachKey}}"
+              }
+            ],
+            "description": "Attach is not guarded by the order re-read: it commits PayMesh to nothing."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('guardAttachKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('now REQUIRES_CONFIRMATION', () => pm.expect(pm.response.json().status).to.eql('REQUIRES_CONFIRMATION'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancel the ORDER out from under the live intent (200)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders/{{guardOrderId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders",
+                "{{guardOrderId}}",
+                "cancel"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"sold out\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{guardOrderCancelKey}}"
+              }
+            ],
+            "description": "Nothing stops this, and nothing should: Order.cancel checks only that the order is PENDING and must never learn that Payment exists (design section 0.5). The order is now CANCELLED with a live intent still attached to it."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('guardOrderCancelKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('order is CANCELLED', () => pm.expect(pm.response.json().status).to.eql('CANCELLED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Confirm against the cancelled order (422)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{guardIntentId}}/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{guardIntentId}}",
+                "confirm"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{guardConfirmKey}}"
+              }
+            ],
+            "description": "ADR-013, AND THE MOST IMPORTANT REQUEST IN THIS FOLDER. Confirm re-reads the order's payability inside its own transaction and refuses. Without it PayMesh would collect for an order the merchant explicitly cancelled. ORDER_NOT_PAYABLE is one code for three causes -- no such order, not yours, not payable -- because splitting them would let a caller enumerate another tenant's order ids."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('guardConfirmKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable Entity', () => pm.response.to.have.status(422));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('ORDER_NOT_PAYABLE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancel the intent awaiting confirmation (200)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{guardIntentId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{guardIntentId}}",
+                "cancel"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"order was cancelled\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{guardIntentCancelKey}}"
+              }
+            ],
+            "description": "The route out of REQUIRES_CONFIRMATION, new in this PR (ADR-011's slot-release table). Without it an abandoned checkout would hold the order's only slot forever, and a stuck intent is a stuck order. The method it died holding is kept, not cleared."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('guardIntentCancelKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('now CANCELLED', () => pm.expect(b.status).to.eql('CANCELLED'));",
+                  "pm.test('the method it died holding is kept', () => pm.expect(b.paymentMethodType).to.eql('UPI'));",
+                  "pm.test('cancellation is timestamped', () => pm.expect(b.cancelledAt).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Attach with no Idempotency-Key (400)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{confirmIntentId}}/payment-method",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{confirmIntentId}}",
+                "payment-method"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentMethodType\": \"CARD\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "Both new writes are registered in IdempotencyConfiguration.IDEMPOTENT_ROUTES as path templates, so both require the header."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('IDEMPOTENCY_KEY_REQUIRED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Confirm with no Idempotency-Key (400)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{confirmIntentId}}/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{confirmIntentId}}",
+                "confirm"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "Same registry, same answer."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('code', () => pm.expect(pm.response.json().code).to.eql('IDEMPOTENCY_KEY_REQUIRED'));"
                 ]
               }
             }

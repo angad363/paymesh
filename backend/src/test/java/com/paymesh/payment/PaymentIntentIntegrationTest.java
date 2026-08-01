@@ -6,20 +6,31 @@ import com.paymesh.customer.domain.Customer;
 import com.paymesh.customer.domain.CustomerId;
 import com.paymesh.merchant.application.MerchantRepository;
 import com.paymesh.merchant.domain.Merchant;
+import com.paymesh.order.application.CancelOrderService;
 import com.paymesh.order.application.OrderRepository;
 import com.paymesh.order.domain.Order;
 import com.paymesh.order.domain.OrderId;
+import com.paymesh.payment.application.AttachPaymentMethodService;
 import com.paymesh.payment.application.CancelPaymentIntentService;
+import com.paymesh.payment.application.ConfirmPaymentIntentCommand;
+import com.paymesh.payment.application.ConfirmPaymentIntentService;
 import com.paymesh.payment.application.CreatePaymentIntentCommand;
 import com.paymesh.payment.application.CreatePaymentIntentService;
+import com.paymesh.payment.application.GetPaymentIntentService;
 import com.paymesh.payment.application.OrderHasActivePaymentIntentException;
 import com.paymesh.payment.application.OrderLookup;
+import com.paymesh.payment.application.OrderNotPayableException;
+import com.paymesh.payment.application.PaymentAttemptRepository;
 import com.paymesh.payment.application.PaymentIntentCursor;
 import com.paymesh.payment.application.PaymentIntentRepository;
 import com.paymesh.payment.application.PaymentStateHistoryRepository;
+import com.paymesh.payment.domain.PaymentAttemptId;
 import com.paymesh.payment.domain.PaymentIntent;
 import com.paymesh.payment.domain.PaymentIntentId;
+import com.paymesh.payment.domain.PaymentIntentNotCancellableException;
+import com.paymesh.payment.domain.PaymentIntentNotConfirmableException;
 import com.paymesh.payment.domain.PaymentIntentStatus;
+import com.paymesh.payment.domain.PaymentMethodType;
 import com.paymesh.shared.outbox.application.OutboxWriter;
 import com.paymesh.shared.tenant.MerchantId;
 import org.junit.jupiter.api.Test;
@@ -86,7 +97,22 @@ class PaymentIntentIntegrationTest {
     private CreatePaymentIntentService createPaymentIntentService;
 
     @Autowired
+    private AttachPaymentMethodService attachPaymentMethodService;
+
+    @Autowired
+    private ConfirmPaymentIntentService confirmPaymentIntentService;
+
+    @Autowired
     private CancelPaymentIntentService cancelPaymentIntentService;
+
+    @Autowired
+    private GetPaymentIntentService getPaymentIntentService;
+
+    @Autowired
+    private CancelOrderService cancelOrderService;
+
+    @Autowired
+    private PaymentAttemptRepository attempts;
 
     @Autowired
     private PaymentIntentRepository paymentIntents;
@@ -463,6 +489,296 @@ class PaymentIntentIntegrationTest {
         assertThat(cancelled.get("published_at")).isNull();
     }
 
+    // --- attach and confirm -----------------------------------------------------------
+
+    /**
+     * Confirm's whole footprint, counted: the attempt, the moved intent, one more timeline row and
+     * one more event. Attach's is counted alongside it, so the two transitions together are exactly
+     * three history rows and three events and not one more of either.
+     */
+    @Test
+    void writesTheAttemptTheTransitionItsHistoryRowAndItsEventWhenAnIntentIsConfirmed() {
+        MerchantId merchantId = existingMerchant();
+        String orderId = existingOrder(merchantId, null);
+        PaymentIntent intent = createPaymentIntentService.create(command(merchantId, orderId));
+
+        attachPaymentMethodService.attach(
+            merchantId, intent.paymentIntentId(), PaymentMethodType.CARD
+        );
+        PaymentIntent processing = confirmPaymentIntentService.confirm(new ConfirmPaymentIntentCommand(
+            merchantId, intent.paymentIntentId(), "https://shop.test/return?session=SECRET", "web"
+        ));
+
+        assertThat(processing.status()).isEqualTo(PaymentIntentStatus.PROCESSING);
+
+        List<Map<String, Object>> attempts = jdbc.queryForList("""
+            select payment_attempt_id, payment_intent_id, attempt_number, provider, status,
+                   amount_minor, currency, provider_reference, response_payload,
+                   request_payload ->> 'returnUrl' as return_url,
+                   request_payload ->> 'device'    as device
+              from payment_attempts
+             where merchant_id = ?
+            """, merchantId.value());
+
+        assertThat(attempts).as("exactly one attempt per confirmation").hasSize(1);
+        assertThat(attempts.get(0))
+            .containsEntry("payment_intent_id", intent.paymentIntentId().value())
+            .containsEntry("attempt_number", 1)
+            .containsEntry("provider", "SIMULATOR")
+            .containsEntry("status", "PROCESSING")
+            .containsEntry("amount_minor", ORDER_AMOUNT_MINOR)
+            .containsEntry("currency", "INR")
+            // The query string is gone. It routinely carries a session token, and this row is a
+            // durable audit record.
+            .containsEntry("return_url", "https://shop.test/return")
+            .containsEntry("device", "web");
+        assertThat(attempts.get(0).get("provider_reference"))
+            .as("nothing has answered, because nothing was called")
+            .isNull();
+        assertThat(attempts.get(0).get("response_payload")).isNull();
+        assertThat(attempts.get(0).get("payment_attempt_id").toString()).startsWith("pat_");
+
+        List<Map<String, Object>> timeline = jdbc.queryForList("""
+            select from_status, to_status
+              from payment_state_history
+             where merchant_id = ?
+             order by occurred_at, payment_state_history_id
+            """, merchantId.value());
+
+        assertThat(timeline).as("create, attach, confirm -- one row each").hasSize(3);
+        assertThat(timeline.get(1))
+            .containsEntry("from_status", "REQUIRES_PAYMENT_METHOD")
+            .containsEntry("to_status", "REQUIRES_CONFIRMATION");
+        assertThat(timeline.get(2))
+            .containsEntry("from_status", "REQUIRES_CONFIRMATION")
+            .containsEntry("to_status", "PROCESSING");
+
+        assertThat(eventTypes(merchantId))
+            .as("one event per transition, in order")
+            .containsExactly("payment.created", "payment.method_attached", "payment.processing");
+    }
+
+    /**
+     * THE TRANSACTION BOUNDARY FOR CONFIRM, from the far end. The attempt row and the moved intent
+     * are both flushed before the outbox append runs, so at the moment of failure they genuinely
+     * exist in the session. A happy-path test cannot tell four separate transactions from one.
+     */
+    @Test
+    void leavesNoAttemptOrTransitionBehindWhenTheConfirmOutboxAppendFails() {
+        MerchantId merchantId = existingMerchant();
+        String orderId = existingOrder(merchantId, null);
+        PaymentIntent intent = createPaymentIntentService.create(command(merchantId, orderId));
+        attachPaymentMethodService.attach(
+            merchantId, intent.paymentIntentId(), PaymentMethodType.CARD
+        );
+
+        ConfirmPaymentIntentService sabotaged = new ConfirmPaymentIntentService(
+            paymentIntents,
+            attempts,
+            history,
+            getPaymentIntentService,
+            orderLookup,
+            event -> {
+                throw new IllegalStateException("outbox is down");
+            },
+            transactionTemplate,
+            clock
+        );
+
+        assertThatThrownBy(() -> sabotaged.confirm(new ConfirmPaymentIntentCommand(
+            merchantId, intent.paymentIntentId(), null, null
+        )))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessage("outbox is down");
+
+        assertThat(attemptCount(merchantId)).as("no collection may start without its event").isZero();
+        assertThat(getPaymentIntentService.getById(merchantId, intent.paymentIntentId()).status())
+            .as("the intent must not be left believing it is collecting")
+            .isEqualTo(PaymentIntentStatus.REQUIRES_CONFIRMATION);
+        // Creation and attach wrote one each; the rolled-back confirm added neither.
+        assertThat(historyCount(merchantId)).isEqualTo(2);
+        assertThat(eventTypes(merchantId))
+            .containsExactly("payment.created", "payment.method_attached");
+    }
+
+    /**
+     * A DOUBLE-CLICKED CONFIRM, RUN FOR REAL. Exactly one attempt exists afterwards, which is the
+     * property that matters: two attempts would be two collections opened against one obligation.
+     * <p>
+     * WHICH mechanism refuses the loser is worth being precise about, because it changed during this
+     * PR. Confirm takes a row lock on the intent, so the second caller waits, re-reads PROCESSING and
+     * is refused by the state machine -- a 409 that names the situation. Without the lock the two
+     * raced on the intent's optimistic version instead and the loser got an "unexpected row count"
+     * 500, nondeterministically: whether it collided on the attempt-number index or on the version
+     * depended on which side of the winner's commit its count query landed. A user-facing 500 that
+     * only appears under load is exactly the kind of thing that is discovered in production.
+     * <p>
+     * {@code uq_payment_attempts_intent_number} is now the backstop rather than the arbiter, and it
+     * is proved directly by the raw-SQL test below.
+     */
+    @Test
+    void producesExactlyOneAttemptWhenTwoConfirmsRace() throws Exception {
+        MerchantId merchantId = existingMerchant();
+        String orderId = existingOrder(merchantId, null);
+        PaymentIntent intent = createPaymentIntentService.create(command(merchantId, orderId));
+        attachPaymentMethodService.attach(
+            merchantId, intent.paymentIntentId(), PaymentMethodType.CARD
+        );
+
+        List<Throwable> failures = inParallel(2, () -> {
+            try {
+                confirmPaymentIntentService.confirm(new ConfirmPaymentIntentCommand(
+                    merchantId, intent.paymentIntentId(), null, null
+                ));
+                return null;
+            } catch (RuntimeException exception) {
+                return (Throwable) exception;
+            }
+        });
+
+        assertThat(attemptCount(merchantId)).as("an intent starts collecting once").isOne();
+        assertThat(failures.stream().filter(failure -> failure != null).toList())
+            .as("the loser is told why, and it is not a 500")
+            .singleElement()
+            .isInstanceOf(PaymentIntentNotConfirmableException.class);
+        assertThat(eventTypes(merchantId))
+            .as("the loser announces nothing")
+            .containsExactly("payment.created", "payment.method_attached", "payment.processing");
+    }
+
+    /**
+     * THE BACKSTOP, PROVED DIRECTLY. With confirm serializing on the intent's row lock, no code path
+     * can reach a duplicate attempt number any more -- which is exactly when a constraint quietly
+     * stops being tested. This insert goes round the application entirely, so what answers is
+     * {@code uq_payment_attempts_intent_number} and nothing else.
+     * <p>
+     * It matters beyond today: the callback PR makes a second attempt legitimate
+     * (REQUIRES_ACTION, then confirm again), and the number is only unique if the database says so.
+     */
+    @Test
+    void refusesTwoRawAttemptsSharingAnAttemptNumber() {
+        MerchantId merchantId = existingMerchant();
+        String orderId = existingOrder(merchantId, null);
+        PaymentIntent intent = createPaymentIntentService.create(command(merchantId, orderId));
+
+        assertThat(rawAttempt(merchantId, intent.paymentIntentId(), 1)).isOne();
+        assertThat(rawAttempt(merchantId, intent.paymentIntentId(), 2))
+            .as("a different number is fine -- an intent may be retried")
+            .isOne();
+
+        assertThatThrownBy(() -> rawAttempt(merchantId, intent.paymentIntentId(), 2))
+            .isInstanceOf(DataIntegrityViolationException.class)
+            .hasMessageContaining("uq_payment_attempts_intent_number");
+
+        assertThat(attemptCount(merchantId)).isEqualTo(2);
+    }
+
+    /**
+     * ADR-013, END TO END AND THROUGH THE REAL ORDER MODULE. The order is cancelled after the intent
+     * was created -- which nothing prevents, because Order is not allowed to know Payment exists --
+     * and confirm must refuse. Without this check PayMesh would collect for an order the merchant
+     * explicitly cancelled, which is the whole reason the guard is here rather than left to review.
+     */
+    @Test
+    void refusesToConfirmAgainstAnOrderCancelledAfterTheIntentWasCreated() {
+        MerchantId merchantId = existingMerchant();
+        String orderId = existingOrder(merchantId, null);
+        PaymentIntent intent = createPaymentIntentService.create(command(merchantId, orderId));
+        attachPaymentMethodService.attach(
+            merchantId, intent.paymentIntentId(), PaymentMethodType.CARD
+        );
+
+        cancelOrderService.cancel(merchantId, OrderId.from(orderId), "sold out");
+
+        assertThatThrownBy(() -> confirmPaymentIntentService.confirm(new ConfirmPaymentIntentCommand(
+            merchantId, intent.paymentIntentId(), null, null
+        )))
+            .isInstanceOf(OrderNotPayableException.class)
+            .hasMessageContaining(orderId);
+
+        assertThat(attemptCount(merchantId)).as("a refused confirm starts nothing").isZero();
+        assertThat(getPaymentIntentService.getById(merchantId, intent.paymentIntentId()).status())
+            .isEqualTo(PaymentIntentStatus.REQUIRES_CONFIRMATION);
+    }
+
+    /**
+     * The route out of REQUIRES_CONFIRMATION, and the reason ADR-011's table needed a row for it:
+     * an abandoned checkout must be able to release the order's only slot, or the order is dead.
+     */
+    @Test
+    void cancelsAnIntentAwaitingConfirmationAndFreesTheOrder() {
+        MerchantId merchantId = existingMerchant();
+        String orderId = existingOrder(merchantId, null);
+        PaymentIntent intent = createPaymentIntentService.create(command(merchantId, orderId));
+        attachPaymentMethodService.attach(
+            merchantId, intent.paymentIntentId(), PaymentMethodType.WALLET
+        );
+
+        cancelPaymentIntentService.cancel(merchantId, intent.paymentIntentId(), "abandoned");
+
+        assertThat(createPaymentIntentService.create(command(merchantId, orderId)).status())
+            .as("the slot is released, so the order can be collected again")
+            .isEqualTo(PaymentIntentStatus.REQUIRES_PAYMENT_METHOD);
+    }
+
+    /**
+     * PROCESSING IS UNCANCELLABLE AND MUST STAY SO (ADR-011 section 5): an in-flight attempt may
+     * already have succeeded at the provider, so cancelling locally could erase a payment that
+     * really happened. Asserted here as well as in the domain test because this is the state a real
+     * confirm actually produces.
+     */
+    @Test
+    void refusesToCancelAnIntentItHasConfirmed() {
+        MerchantId merchantId = existingMerchant();
+        String orderId = existingOrder(merchantId, null);
+        PaymentIntent intent = createPaymentIntentService.create(command(merchantId, orderId));
+        attachPaymentMethodService.attach(
+            merchantId, intent.paymentIntentId(), PaymentMethodType.CARD
+        );
+        confirmPaymentIntentService.confirm(new ConfirmPaymentIntentCommand(
+            merchantId, intent.paymentIntentId(), null, null
+        ));
+
+        assertThatThrownBy(
+            () -> cancelPaymentIntentService.cancel(merchantId, intent.paymentIntentId(), "too late")
+        ).isInstanceOf(PaymentIntentNotCancellableException.class);
+
+        assertThat(getPaymentIntentService.getById(merchantId, intent.paymentIntentId()).status())
+            .isEqualTo(PaymentIntentStatus.PROCESSING);
+    }
+
+    /**
+     * THE GUARANTEE, not the check, for the attempts table. The composite key on
+     * (merchant_id, payment_intent_id) is what stops one merchant's attempt hanging off another
+     * merchant's intent; a foreign key on payment_intent_id alone would have accepted this row.
+     */
+    @Test
+    void refusesARawAttemptNamingAnotherMerchantsIntent() {
+        MerchantId owner = existingMerchant();
+        MerchantId outsider = existingMerchant();
+        PaymentIntent intentOfOwner = createPaymentIntentService.create(
+            command(owner, existingOrder(owner, null))
+        );
+
+        assertThatThrownBy(() -> jdbc.update("""
+            INSERT INTO payment_attempts (
+                payment_attempt_id, merchant_id, payment_intent_id, attempt_number, provider,
+                status, amount_minor, currency, version, created_at, updated_at
+            ) VALUES (?, ?, ?, 1, 'SIMULATOR', 'PROCESSING', ?, 'INR', 0, ?, ?)
+            """,
+            PaymentAttemptId.generate().value(),
+            outsider.value(),
+            intentOfOwner.paymentIntentId().value(),
+            ORDER_AMOUNT_MINOR,
+            Timestamp.from(CREATED_AT),
+            Timestamp.from(CREATED_AT)
+        ))
+            .isInstanceOf(DataIntegrityViolationException.class)
+            .hasMessageContaining("fk_payment_attempts_intent");
+
+        assertThat(attemptCount(outsider)).isZero();
+    }
+
     // --- paging --------------------------------------------------------------------
 
     /**
@@ -588,6 +904,37 @@ class PaymentIntentIntegrationTest {
         return count("select count(*) from payment_intents where merchant_id = ?", merchantId);
     }
 
+    /** An attempt written with no Java between the insert and the constraints. */
+    private int rawAttempt(MerchantId merchantId, PaymentIntentId intentId, int attemptNumber) {
+        return jdbc.update("""
+            INSERT INTO payment_attempts (
+                payment_attempt_id, merchant_id, payment_intent_id, attempt_number, provider,
+                status, amount_minor, currency, version, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'SIMULATOR', 'PROCESSING', ?, 'INR', 0, ?, ?)
+            """,
+            PaymentAttemptId.generate().value(),
+            merchantId.value(),
+            intentId.value(),
+            attemptNumber,
+            ORDER_AMOUNT_MINOR,
+            Timestamp.from(CREATED_AT),
+            Timestamp.from(CREATED_AT)
+        );
+    }
+
+    private long attemptCount(MerchantId merchantId) {
+        return count("select count(*) from payment_attempts where merchant_id = ?", merchantId);
+    }
+
+    /** Every event this merchant has, oldest first: the counts and the order are both assertions. */
+    private List<String> eventTypes(MerchantId merchantId) {
+        return jdbc.queryForList(
+            "select event_type from outbox_events where merchant_id = ? order by occurred_at, event_id",
+            String.class,
+            merchantId.value()
+        );
+    }
+
     private long historyCount(MerchantId merchantId) {
         return count("select count(*) from payment_state_history where merchant_id = ?", merchantId);
     }
@@ -664,6 +1011,14 @@ class PaymentIntentIntegrationTest {
             PaymentIntentId paymentIntentId
         ) {
             return delegate.findByPaymentIntentId(merchantId, paymentIntentId);
+        }
+
+        @Override
+        public Optional<PaymentIntent> findByPaymentIntentIdForUpdate(
+            MerchantId merchantId,
+            PaymentIntentId paymentIntentId
+        ) {
+            return delegate.findByPaymentIntentIdForUpdate(merchantId, paymentIntentId);
         }
 
         @Override
