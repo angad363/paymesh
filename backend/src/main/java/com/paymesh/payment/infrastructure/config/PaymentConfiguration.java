@@ -11,17 +11,26 @@ import com.paymesh.payment.application.OrderLookup;
 import com.paymesh.payment.application.PaymentAttemptRepository;
 import com.paymesh.payment.application.PaymentIntentRepository;
 import com.paymesh.payment.application.PaymentStateHistoryRepository;
+import com.paymesh.payment.application.ProviderCallbackRepository;
+import com.paymesh.payment.application.RecordProviderCallbackService;
 import com.paymesh.payment.infrastructure.order.OrderModuleLookup;
 import com.paymesh.payment.infrastructure.persistence.jpa.JpaPaymentAttemptRepository;
 import com.paymesh.payment.infrastructure.persistence.jpa.JpaPaymentIntentRepository;
 import com.paymesh.payment.infrastructure.persistence.jpa.JpaPaymentStateHistoryRepository;
+import com.paymesh.payment.infrastructure.persistence.jpa.JpaProviderCallbackRepository;
 import com.paymesh.payment.infrastructure.persistence.jpa.SpringDataPaymentAttemptRepository;
 import com.paymesh.payment.infrastructure.persistence.jpa.SpringDataPaymentIntentRepository;
 import com.paymesh.payment.infrastructure.persistence.jpa.SpringDataPaymentStateHistoryRepository;
+import com.paymesh.payment.infrastructure.persistence.jpa.SpringDataProviderCallbackRepository;
+import com.paymesh.payment.infrastructure.provider.ProviderCallbackSignatureFilter;
 import com.paymesh.shared.outbox.application.OutboxWriter;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.security.autoconfigure.web.servlet.SecurityFilterProperties;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.ObjectMapper;
 
 import java.time.Clock;
 
@@ -36,6 +45,7 @@ import java.time.Clock;
  * file instead of spread through the application layer.
  */
 @Configuration
+@EnableConfigurationProperties(ProviderProperties.class)
 public class PaymentConfiguration {
 
     @Bean
@@ -135,6 +145,60 @@ public class PaymentConfiguration {
             transactionTemplate,
             clock
         );
+    }
+
+    @Bean
+    ProviderCallbackRepository providerCallbackRepository(
+        SpringDataProviderCallbackRepository springDataProviderCallbackRepository
+    ) {
+        return new JpaProviderCallbackRepository(springDataProviderCallbackRepository);
+    }
+
+    @Bean
+    RecordProviderCallbackService recordProviderCallbackService(
+        PaymentIntentRepository paymentIntentRepository,
+        PaymentAttemptRepository paymentAttemptRepository,
+        PaymentStateHistoryRepository paymentStateHistoryRepository,
+        ProviderCallbackRepository providerCallbackRepository,
+        OutboxWriter outboxWriter,
+        TransactionTemplate transactionTemplate,
+        Clock clock
+    ) {
+        return new RecordProviderCallbackService(
+            paymentIntentRepository,
+            paymentAttemptRepository,
+            paymentStateHistoryRepository,
+            providerCallbackRepository,
+            outboxWriter,
+            transactionTemplate,
+            clock
+        );
+    }
+
+    /**
+     * The signature check, in front of the callback controller.
+     * <p>
+     * Ordered after Spring Security's chain, like the idempotency filter, and for a related reason:
+     * the security chain is what declares the route {@code permitAll()}, and a filter running before
+     * it would be verifying signatures on requests the chain might still reject. It only inspects
+     * {@code /internal/v1/provider-callbacks/**} -- see the filter's {@code shouldNotFilter}.
+     * <p>
+     * Constructed here rather than declared as its own {@code @Bean} so Boot cannot also
+     * auto-register it and run it twice, which would consume the request body before the controller.
+     */
+    @Bean
+    FilterRegistrationBean<ProviderCallbackSignatureFilter> providerCallbackSignatureFilterRegistration(
+        ProviderProperties providerProperties,
+        ObjectMapper objectMapper,
+        Clock clock
+    ) {
+        FilterRegistrationBean<ProviderCallbackSignatureFilter> registration =
+            new FilterRegistrationBean<>(new ProviderCallbackSignatureFilter(
+                providerProperties.callbackSecret(), objectMapper, clock
+            ));
+
+        registration.setOrder(SecurityFilterProperties.DEFAULT_FILTER_ORDER + 1);
+        return registration;
     }
 
     @Bean

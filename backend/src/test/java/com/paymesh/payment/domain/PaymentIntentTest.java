@@ -500,6 +500,106 @@ class PaymentIntentTest {
         );
     }
 
+    // --- the provider transitions ---------------------------------------------------
+
+    @Test
+    void movesFromProcessingToEachOutcomeAProviderCanReport() {
+        PaymentIntent processing = reconstitutedWith(PaymentIntentStatus.PROCESSING);
+
+        assertEquals(
+            PaymentIntentStatus.AUTHORIZED, processing.authorize(NOW).status()
+        );
+        assertEquals(
+            PaymentIntentStatus.REQUIRES_ACTION, processing.requireAction(NOW).status()
+        );
+        assertEquals(
+            PaymentIntentStatus.SUCCEEDED, processing.succeed(1999, NOW).status()
+        );
+        assertEquals(
+            PaymentIntentStatus.FAILED, processing.fail("do_not_honour", "Declined", NOW).status()
+        );
+    }
+
+    /**
+     * A SUCCEEDED intent that captured nothing is a contradiction the schema also refuses
+     * (ck_payment_intents_succeeded_captured), and a payment record that cannot say how much it
+     * took is not a record.
+     */
+    @Test
+    void recordsWhatWasCapturedWhenAPaymentSucceeds() {
+        PaymentIntent succeeded = reconstitutedWith(PaymentIntentStatus.PROCESSING).succeed(1999, NOW);
+
+        assertEquals(1999L, succeeded.capturedAmountMinor());
+    }
+
+    /** Authorizing holds funds and captures nothing. Writing the figure here would say otherwise. */
+    @Test
+    void capturesNothingWhenAPaymentIsMerelyAuthorized() {
+        PaymentIntent authorized = reconstitutedWith(PaymentIntentStatus.PROCESSING).authorize(NOW);
+
+        assertEquals(0L, authorized.capturedAmountMinor());
+    }
+
+    /** The backstop behind the service's amount check: a provider cannot change what is owed. */
+    @Test
+    void refusesToCaptureMoreThanTheIntentIsWorth() {
+        PaymentIntent processing = reconstitutedWith(PaymentIntentStatus.PROCESSING);
+
+        assertThrows(IllegalArgumentException.class, () -> processing.succeed(2000, NOW));
+        assertThrows(IllegalArgumentException.class, () -> processing.succeed(0, NOW));
+    }
+
+    /**
+     * TERMINAL STATES ABSORB, which is one of the two out-of-order mechanisms (ADR-012). A late
+     * callback landing on a finished payment must change nothing -- and the callback path turns this
+     * refusal into a 200 IGNORED_TERMINAL rather than a 409, because a provider retries on non-2xx.
+     */
+    @Test
+    void refusesAProviderOutcomeFromEveryStateButProcessing() {
+        for (PaymentIntentStatus status : PaymentIntentStatus.values()) {
+            if (status == PaymentIntentStatus.PROCESSING) {
+                continue;
+            }
+
+            PaymentIntent intent = reconstitutedWith(status);
+
+            assertThrows(
+                ProviderOutcomeNotApplicableException.class,
+                () -> intent.succeed(1999, NOW),
+                "SUCCEEDED must not be reachable from " + status
+            );
+            assertThrows(
+                ProviderOutcomeNotApplicableException.class,
+                () -> intent.authorize(NOW),
+                "AUTHORIZED must not be reachable from " + status
+            );
+        }
+    }
+
+    /**
+     * The 3DS loop. Confirming again from REQUIRES_ACTION is what makes the state machine cyclic,
+     * and it is why the monotonic event clock exists: inside this cycle a stale REQUIRES_ACTION is a
+     * LEGAL transition that the state machine cannot refuse on its own.
+     */
+    @Test
+    void confirmsAgainFromRequiresAction() {
+        PaymentIntent parked = reconstitutedWith(PaymentIntentStatus.REQUIRES_ACTION);
+
+        assertEquals(PaymentIntentStatus.PROCESSING, parked.confirm(NOW).status());
+    }
+
+    /**
+     * ADR-011's slot table requires this row. A customer who abandons a 3DS challenge is ordinary
+     * behaviour; without a cancel the intent holds the order's only slot forever and the order is
+     * dead in both directions.
+     */
+    @Test
+    void cancelsAnIntentParkedAtRequiresAction() {
+        PaymentIntent parked = reconstitutedWith(PaymentIntentStatus.REQUIRES_ACTION);
+
+        assertEquals(PaymentIntentStatus.CANCELLED, parked.cancel("abandoned", NOW).status());
+    }
+
     private static PaymentIntent reconstitutedWith(PaymentIntentStatus status) {
         return PaymentIntent.reconstitute(
             PaymentIntentId.generate(),

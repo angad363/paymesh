@@ -46,6 +46,26 @@ public interface PaymentIntentRepository {
     );
 
     /**
+     * THE ONE READ IN THIS PORT THAT DOES NOT TAKE A MERCHANT, AND IT IS NAMED SO THAT NOBODY
+     * REACHES FOR IT BY ACCIDENT.
+     * <p>
+     * A provider callback has no merchant to scope by. It arrives on a shared-secret endpoint with
+     * no bearer token, names an intent, and the merchant is <b>derived</b> from the row it finds --
+     * the same asymmetry that makes {@code pk_provider_callbacks} not merchant-leading. Requiring a
+     * merchant here would mean taking one from the caller, and a caller-supplied tenant on an
+     * endpoint that moves payments to SUCCEEDED is precisely the thing ADR-007 exists to prevent.
+     * <p>
+     * <b>Not for any other caller.</b> Every merchant-facing path uses
+     * {@link #findByPaymentIntentIdForUpdate(MerchantId, PaymentIntentId)}, where the merchant
+     * argument is the authorization and an id in a path proves nothing.
+     * <p>
+     * Locking, and MUST be called inside a transaction: the lock is what orders two <em>different</em>
+     * callbacks for one intent, while the primary key orders two identical ones. Neither does the
+     * other's job (ADR-012).
+     */
+    Optional<PaymentIntent> findForProviderCallbackForUpdate(PaymentIntentId paymentIntentId);
+
+    /**
      * One page of the merchant's intents, newest first, starting strictly after {@code cursor} and
      * ordered by {@code (createdAt, paymentIntentId)} descending. The tiebreak is part of the
      * contract: an implementation that orders by timestamp alone will skip or repeat rows that

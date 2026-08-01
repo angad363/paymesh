@@ -1022,6 +1022,13 @@ class PaymentIntentIntegrationTest {
         }
 
         @Override
+        public Optional<PaymentIntent> findForProviderCallbackForUpdate(
+            PaymentIntentId paymentIntentId
+        ) {
+            return delegate.findForProviderCallbackForUpdate(paymentIntentId);
+        }
+
+        @Override
         public List<PaymentIntent> findPage(
             MerchantId merchantId,
             PaymentIntentStatus status,

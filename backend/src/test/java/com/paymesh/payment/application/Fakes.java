@@ -10,10 +10,13 @@ import org.springframework.transaction.support.SimpleTransactionStatus;
 import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -179,6 +182,54 @@ final class Fakes {
         @Override
         public void append(PaymentAttempt attempt) {
             appendedInsideATransaction = transactions.inside();
+            attempts.add(attempt);
+        }
+
+        @Override
+        public Optional<PaymentAttempt> findLatest(
+            MerchantId merchantId,
+            PaymentIntentId paymentIntentId
+        ) {
+            return attempts.stream()
+                .filter(attempt -> attempt.merchantId().equals(merchantId)
+                    && attempt.paymentIntentId().equals(paymentIntentId))
+                .max(Comparator.comparingInt(PaymentAttempt::attemptNumber));
+        }
+
+        @Override
+        public Optional<PaymentAttempt> findByProviderReference(
+            String provider,
+            String providerReference
+        ) {
+            return attempts.stream()
+                .filter(attempt -> attempt.provider().equals(provider)
+                    && providerReference.equals(attempt.providerReference()))
+                .findFirst();
+        }
+
+        /**
+         * The MAXIMUM across the intent's attempts, matching the real query rather than the easier
+         * "latest attempt's column". The difference is the bug the real one exists to avoid, so a
+         * double that took the shortcut would let a service test pass against behaviour PostgreSQL
+         * does not have.
+         */
+        @Override
+        public Optional<Instant> lastProviderEventAt(
+            MerchantId merchantId,
+            PaymentIntentId paymentIntentId
+        ) {
+            return attempts.stream()
+                .filter(attempt -> attempt.merchantId().equals(merchantId)
+                    && attempt.paymentIntentId().equals(paymentIntentId))
+                .map(PaymentAttempt::lastProviderEventAt)
+                .filter(Objects::nonNull)
+                .max(Comparator.naturalOrder());
+        }
+
+        @Override
+        public void save(PaymentAttempt attempt) {
+            attempts.removeIf(stored ->
+                stored.paymentAttemptId().equals(attempt.paymentAttemptId()));
             attempts.add(attempt);
         }
     }

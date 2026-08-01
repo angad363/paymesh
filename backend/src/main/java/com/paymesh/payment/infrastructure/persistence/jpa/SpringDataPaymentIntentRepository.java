@@ -46,6 +46,27 @@ public interface SpringDataPaymentIntentRepository extends JpaRepository<Payment
     );
 
     /**
+     * The same lock, with NO MERCHANT PREDICATE. The one query in this interface without one.
+     * <p>
+     * A provider callback arrives on a shared-secret endpoint with no bearer token, names an intent,
+     * and the merchant is DERIVED from the row it finds -- the same asymmetry that makes
+     * {@code pk_provider_callbacks} not merchant-leading. Requiring a merchant here would mean
+     * taking one from the caller, and a caller-supplied tenant on an endpoint that moves payments to
+     * SUCCEEDED is exactly what ADR-007 exists to prevent. The derived merchant is then what every
+     * write in the callback transaction scopes by.
+     * <p>
+     * Named so a merchant-facing caller cannot reach for it by mistake. Nothing but the callback
+     * path may use it.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+        select p from PaymentIntentJpaEntity p where p.paymentIntentId = :paymentIntentId
+        """)
+    Optional<PaymentIntentJpaEntity> findForProviderCallbackForUpdate(
+        @Param("paymentIntentId") String paymentIntentId
+    );
+
+    /**
      * Whether the order already holds an intent occupying its slot. The excluded statuses are the
      * ones that release it, and they are supplied by the caller so this method and
      * {@code uq_payment_intents_live_per_order} cannot drift apart silently -- the adapter holds

@@ -7,6 +7,9 @@ import com.paymesh.payment.domain.PaymentIntentId;
 import com.paymesh.shared.tenant.MerchantId;
 import org.springframework.dao.DataIntegrityViolationException;
 
+import java.time.Instant;
+import java.util.Optional;
+
 /**
  * PostgreSQL-backed implementation of the application's PaymentAttemptRepository port.
  * Everything JPA stays on this side of the interface; the services see only domain types.
@@ -42,23 +45,7 @@ public final class JpaPaymentAttemptRepository implements PaymentAttemptReposito
     @Override
     public void append(PaymentAttempt attempt) {
         try {
-            attempts.saveAndFlush(new PaymentAttemptJpaEntity(
-                attempt.paymentAttemptId().value(),
-                attempt.merchantId().value(),
-                attempt.paymentIntentId().value(),
-                attempt.attemptNumber(),
-                attempt.provider(),
-                attempt.status().name(),
-                attempt.amountMinor(),
-                attempt.currency(),
-                // Absent request details are stored as SQL NULL rather than an empty JSON object,
-                // so "the merchant sent none" and "the merchant sent {}" do not become two
-                // spellings of the same thing in the column.
-                attempt.requestPayload().isEmpty() ? null : attempt.requestPayload(),
-                attempt.version(),
-                attempt.createdAt(),
-                attempt.updatedAt()
-            ));
+            attempts.saveAndFlush(PaymentAttemptJpaMapper.toEntity(attempt));
         } catch (DataIntegrityViolationException exception) {
             // Narrowed BY CONSTRAINT NAME, like JpaPaymentIntentRepository. The other integrity
             // failure reachable on this insert is fk_payment_attempts_intent, and reporting an
@@ -70,5 +57,40 @@ public final class JpaPaymentAttemptRepository implements PaymentAttemptReposito
 
             throw exception;
         }
+    }
+
+    @Override
+    public Optional<PaymentAttempt> findLatest(MerchantId merchantId, PaymentIntentId paymentIntentId) {
+        return attempts
+            .findFirstByMerchantIdAndPaymentIntentIdOrderByAttemptNumberDesc(
+                merchantId.value(), paymentIntentId.value()
+            )
+            .map(PaymentAttemptJpaMapper::toDomain);
+    }
+
+    @Override
+    public Optional<PaymentAttempt> findByProviderReference(String provider, String providerReference) {
+        return attempts
+            .findByProviderAndProviderReference(provider, providerReference)
+            .map(PaymentAttemptJpaMapper::toDomain);
+    }
+
+    @Override
+    public Optional<Instant> lastProviderEventAt(
+        MerchantId merchantId,
+        PaymentIntentId paymentIntentId
+    ) {
+        return attempts.maxProviderEventAt(merchantId.value(), paymentIntentId.value());
+    }
+
+    /**
+     * Flushed for the same reason {@code append} is: a version conflict or a violated CHECK should
+     * fail at the line that caused it. The optimistic version is not what serializes two callbacks
+     * -- the intent's row lock is -- so a conflict here means that lock was bypassed, and failing
+     * loudly rather than silently retrying is the point.
+     */
+    @Override
+    public void save(PaymentAttempt attempt) {
+        attempts.saveAndFlush(PaymentAttemptJpaMapper.toEntity(attempt));
     }
 }
