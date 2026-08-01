@@ -31,6 +31,54 @@ event in one transaction, on an idempotency layer and an outbox that already exi
 
 ---
 
+## How the pieces fit
+
+One authenticated write, end to end. Worth reading once before touching any capability,
+because every layer below answers a different question and conflating two of them is how
+this shape usually fails.
+
+| # | Step | What it decides | Tenant check here? |
+|---|---|---|---|
+| 1 | **Spring Security filter chain** (`SecurityConfiguration`) | *Who is calling.* `BearerTokenAuthenticationFilter` verifies the HS256 access token and populates the `SecurityContext`. No token, bad signature, expired → `401`. | **No.** The edge cannot see which row is being touched, so it cannot answer tenancy (ADR-007). |
+| 2 | **`IdempotencyFilter`** | *Has this exact request already run.* Ordered deliberately **after** security, because the record's key is `merchant + endpoint template + Idempotency-Key` and the merchant does not exist until the token is verified. Missing header on a registered route → `400`; same key + different body hash → `409`; `COMPLETED` → the stored response is replayed with `Idempotency-Replayed: true`. | Indirectly — the key is *scoped by* merchant, so two tenants cannot collide on one key. |
+| 3 | **Controller** (`OrderController`, `PaymentIntentController`, …) | *Which tenant is this.* The `AuthenticatedCaller` argument resolver hands the handler the caller's roles, and `caller.requireSingleMerchant()` reduces them to exactly one `MerchantId`. | **Yes — this is where the tenant is *derived*.** It is never read from a request body; no write request record has a `merchantId` field. |
+| 4 | **Application service** | *Is this allowed, and what changes.* Takes the `MerchantId` as an argument and passes it into every repository call. A cross-module read goes through the consumer's own port (`CustomerLookup`, `OrderLookup`), which is merchant-scoped too — so another tenant's row is simply *not found*, and the caller gets the same answer as for a row that never existed. | **Yes — every query is scoped, including through the ports.** |
+| 5 | **Transaction boundary** (`TransactionTemplate`, inside the service) | *What commits together.* The aggregate row, its state-history row where one exists, and the `outbox_events` row. All or nothing — an event can never survive a rolled-back state change, and a committed state change can never lose its event (ADR-010). | Inherited from step 4; nothing inside re-derives the tenant. |
+| 6 | **PostgreSQL** | *The last word.* Composite tenant foreign keys, unique constraints and the partial unique index. | **Yes, and this is the only one that cannot be bypassed.** Everything above it is a pre-check that exists to turn a violation into a readable `409`/`422` instead of a `500`. |
+| 7 | **Response, back through the filter** | The status and body are stored against the idempotency record, which is marked `COMPLETED`. If the handler threw, or the status is 5xx, the record is **deleted** so a retry is a real retry. | — |
+
+The load-bearing property of that list: **steps 3–5 are advisory and step 6 is not.** The
+integration tests prove this by bypassing the application pre-checks entirely and staying
+green.
+
+---
+
+## What of the SDD is implemented
+
+The SDD describes ~15 services across 31 sections. This is what the code actually covers.
+
+| Capability / piece | SDD sections | State |
+|---|---|---|
+| Identity & Access | §8 (all), §8.6 token lifetimes | Built. No API keys, no OAuth2/OIDC, no denylist. |
+| Merchant | §9 (all) | Built. Registration only; no team roles, API keys or webhook setup (§9.3). |
+| Customer | §10, and §10.6's hash/display split | Built in the encrypted *shape*; encryption itself deferred (ADR-006). No payment-method endpoints. |
+| Order | §11.1–§11.3, §11.6 | Built. **§11.4's `order_state_history` is missing**; §11.5's events are written to the outbox but never published. |
+| Payment | §12.1 (partially), §12.2–§12.3, §12.5–§12.6 | Core built. **§12.4 confirm is not implemented**; 2 of the 10 §12.1 states are reachable. |
+| Idempotency & concurrency | §23.1–§23.2 | Built in PostgreSQL. §23.3's Redis accelerator: not built, deliberately. |
+| Events / outbox | §22.1 outbox shape, §24 durability | Table and in-transaction write only. **§22.2–§22.4 (Kafka topics, contracts, consumers) do not exist.** |
+| API Gateway / Edge | §7 | Not built. Its concerns (rate limiting, API keys, HMAC) are absent. |
+| Provider Simulator | §13 | Not started — next after Payment. |
+| Risk & Fraud | §14 | Not started. |
+| Ledger | §15 | Not started — deliberately last in Phase 1. |
+| Refund | §16 | Not started. |
+| Settlement, Webhook, Notification/Reporting/Audit, AI Ops | §17–§20 | Not started. |
+| End-to-end workflows | §21 | Only the create-order → create-intent prefix exists; §21.4 reconciliation is absent. |
+| Security & privacy | §25 | Partial: authn, tenant isolation, secret guards. No encryption at rest, no key management, no audit trail beyond `security_events`. |
+| Observability | §26 | `/actuator/health` and `/actuator/info`. No OpenTelemetry, metrics, or structured correlation ids. |
+| Deployment / IaC | §27 | Not started. `infrastructure/` and `scripts/` are empty. |
+
+---
+
 ## What is built
 
 ### Merchant — `com.paymesh.merchant`
@@ -112,7 +160,7 @@ Properties worth not breaking:
   the third vanishes while every page still looks well-formed. Regression test
   verified by removing the tiebreak.
 - **Two independent dedup rules, deliberately.** `Idempotency-Key` replays a response;
-  `uq_orders_merchant_order_ref` catches a genuine double-submit that arrives with a
+  `uq_orders_merchant_ref` catches a genuine double-submit that arrives with a
   *fresh* key. Neither subsumes the other. Verified by deleting the application's
   pre-check entirely and confirming every integration test stayed green — the
   constraint is the guard, the pre-check only buys a friendlier message.
@@ -198,7 +246,10 @@ attacker-controlled JSON before the dedup decision, and a normalisation bug ther
 replays the *wrong* response. Failing closed on a spurious 409 is strictly safer.
 
 Routes are opt-in via `IdempotentRoutes`; the layer is inert until a route registers.
-Order's two writes are the only registered routes today.
+Four routes are registered today, all in `IdempotencyConfiguration`: Order's two writes
+and Payment's two. `POST /api/v1/merchants` stays out because it is unauthenticated and so
+has no merchant to scope a key by; `POST /api/v1/customers` stays out because it creates
+no financial effect.
 
 ---
 
@@ -276,14 +327,40 @@ different decisions. When citing one, say which source you mean.
    Today the damage is an inconsistency, because nothing moves money. **Once attach and
    confirm land, that live intent can reach `SUCCEEDED` against a `CANCELLED` order** —
    collecting for an order the merchant explicitly cancelled. Nothing in the schema, the
-   aggregate or the `OrderLookup` port prevents it. **This needs designing before the confirm
-   PR, not patching during it**; the candidates and their costs are written up in the design
-   spec's §7 item 3. It is the mirror of item 2 below and neither subsumes the other.
-2. **`payment_method_tokens` has the flaw Order just fixed.** `V3` gives it two
-   single-column foreign keys, so a token can name another merchant's customer. It is
-   inert today — nothing maps or writes that table — but the fix is now a one-line
-   composite FK, because `uq_customers_merchant_customer` already exists. Do it before
-   anything writes payment methods.
+   aggregate or the `OrderLookup` port prevents it. It is the mirror of item 2 below and
+   neither subsumes the other.
+
+   **Decided (2 August 2026): guard the transition, not the order.** The fix ships with the
+   attach+confirm PR and has two halves:
+
+   - **`confirm` re-reads the order's payability inside its own transaction and refuses if
+     the order is no longer `PENDING`.** Confirm is the moment money starts moving, so it is
+     the transition that has to be defensible; create is not. A stale `payable` read at
+     create costs an inconsistency, a stale one at confirm costs a collection.
+   - **Create takes a row lock on the order through the `OrderLookup` port**, closing the
+     plain time-of-check-to-time-of-use race between the lookup and the insert.
+
+   **Rejected: making `Order.cancel` refuse when a live intent exists.** It closes the hole
+   cleanly and it is the wrong shape — Order would have to know Payment exists, which the
+   module boundary forbids (ADR-008, design spec §0.5). The consequence of the decision is
+   accepted openly: a cancelled order can still be *holding* a live intent, and the intent
+   must be cancelled separately. What can no longer happen is that intent succeeding.
+
+   The candidates and their full costs remain written up in the design spec's §7 item 3.
+2. **`PROCESSING` is a payment-intent state with no exit, and a stuck intent is a stuck
+   order.** An intent holds its order's only live slot (ADR-011). Cancel is refused from
+   `PROCESSING` by design, because an in-flight attempt may already have succeeded at the
+   provider, so the only way out is a callback that may never arrive. A lost callback
+   therefore strands the order and recovery is manual. A `PROCESSING` timeout plus provider
+   reconciliation (SDD §21.4, §24.1) is the real answer; the timeout is now in scope (see
+   *The remaining scope*), reconciliation is not. This is the mirror of item 1 — that one is
+   the order dying under a live intent, this one is the intent dying with the order attached
+   — and neither subsumes the other.
+
+   *(This slot previously held "`payment_method_tokens` has the flaw Order just fixed".
+   **Resolved** by `V6__fix_payment_method_tokens_tenant_foreign_key.sql` (#30): the
+   single-column customer FK is now composite on `(merchant_id, customer_id)`, landed before
+   anything writes the table.)*
 3. **`POST /api/v1/merchants` is unauthenticated by design** and has no rate limit.
    It is the obvious abuse vector: an open write endpoint that creates rows.
 4. **Authorization is binary per tenant.** Holding any role at a merchant grants
@@ -347,10 +424,34 @@ order may hold **only one** live payment intent (ADR-011), and the outbox landed
 **before** Payment rather than with it (ADR-010) — which was the right call, because
 Payment's create path needed it on day one.
 
-**One thing must be settled before the confirm PR, not during it:** open item 1 — an order
-can be cancelled out from under a live intent. Today that is an inconsistency; the moment
-confirm exists it becomes a payment collected against a cancelled order. The candidate
-fixes and their costs are in the design spec's §7 item 3.
+The question that had to be settled before the confirm PR now is: open item 1, an order
+cancelled out from under a live intent. The answer is recorded there — guard the *confirm*
+transition by re-reading payability inside its transaction, plus a row lock at create.
+Order stays unaware that Payment exists.
+
+### The remaining scope of Phase 1's Payment work, stated exactly
+
+Decided 2 August 2026, so that nothing is discovered mid-PR:
+
+| # | Work | Migration |
+|---|---|---|
+| 1 | Attach a payment method + confirm, including the open item 1 guard | `V9`, `payment_attempts` |
+| 2 | Provider callbacks | `V10`, `provider_callbacks`, ADR-012 |
+| 3 | Manual capture | — |
+| 4 | `order_state_history` (SDD §11.4), open item 9 | a further migration |
+| 5 | Order expiry sweeper (open item 10) | — |
+| 6 | `PROCESSING` timeout, so a lost callback cannot strand an order permanently (open item 2) | — |
+
+**Explicitly not in that scope: the outbox relay.** No Kafka, no relay, no consumer. Every
+`order.created`, `payment.created`, `payment.cancelled`, `payment.succeeded` and
+`payment.failed` row will be written correctly and published nowhere.
+
+The direct consequence, stated so it is never filed as a bug: **`orders.status` will still
+never reach `PAID`.** Payment does not write the `orders` table (design spec §0.5) and the
+consumer that would move the status does not exist. An order whose payment has succeeded
+stays `PENDING` in the API. That is a known, documented inconsistency for the whole of the
+remaining Payment work — correct by design, visibly wrong to anyone reading the API, and
+resolved only when the relay and an Order consumer land.
 
 After Payment: **Provider Simulator** → **Ledger** → **Refund**. The Ledger is
 deliberately last in Phase 1 and last to be extracted. It is the financial source of
