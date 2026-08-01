@@ -170,6 +170,19 @@ because nothing else in the build will notice.
   overwrite of an event a consumer is about to dedup against. That is the outcome
   worth having, and `event_id` is a random UUID, so this is a correctness argument
   rather than a live risk. Trading the SELECT back for the UPDATEs is not an option.
+
+  **What the no-op costs, since the comparison above only beats it against an
+  overwrite.** The shape it replaced would have collided *loudly* on the primary
+  key. A silent no-op means a producer bug that re-appends a **different** payload
+  under a reused id loses the second event with no error anywhere — the failure the
+  relay and a consumer's dedup would never see. That is accepted here because no
+  path reuses an id: `EventId.generate()` is called per `append`, a retry re-enters
+  the producer and mints a fresh one, and the alternative failed the whole money-
+  moving transaction to protect against it. The upgrade path, if a second producer
+  ever makes id reuse plausible, is `EntityManager.persist` in `JpaOutboxWriter`
+  instead of `repository.save`: it keeps `@Immutable`, drops the merge's SELECT, and
+  restores the loud primary-key collision. It is not done now because there is one
+  producer and nothing to protect against yet.
 - The outbox lives in `com.paymesh.shared.outbox` for the same reason the
   idempotency layer does: it governs every capability and belongs to none. Built
   inside `com.paymesh.payment` it would be platform code shaped to one caller.
