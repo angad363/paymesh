@@ -59,8 +59,12 @@ public record OrderStateChange(
      * <p>
      * TWO VALUES, NOT PAYMENT'S THREE. There is no PROVIDER here: a provider callback never touches
      * an order, because Payment does not write the {@code orders} table at all (design spec 0.5).
-     * When {@code orders.status} eventually moves on a successful payment it will be an Order-owned
-     * consumer of {@code payment.succeeded} doing it, which is SYSTEM.
+     * <p>
+     * That prediction has now been kept rather than merely made. {@code orders.status} moves on a
+     * successful payment from ADR-016, and the row it writes is <b>SYSTEM with a null actor</b> --
+     * an Order-owned consumer of {@code payment.succeeded} acting on Order's own table, not the
+     * provider reaching across the boundary. Admitting PROVIDER here would make that violation
+     * spellable, which is why {@code ck_order_state_history_actor} does not either.
      */
     public enum ActorType {
         MERCHANT,

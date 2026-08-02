@@ -401,6 +401,121 @@ class OrderTest {
             .isInstanceOf(OrderNotCancellableException.class);
     }
 
+    // --- markPaid: the transition V5 declared and nothing could reach until ADR-016 -----------
+
+    private static final Instant PAID_AT = CREATED_AT.plusSeconds(600);
+
+    /**
+     * THE FULL-PAYMENT CASE. Captured equals the order's own amount, so the obligation is met.
+     * <p>
+     * <b>Sabotage that must turn this red:</b> make {@code markPaid} always choose PARTIALLY_PAID.
+     */
+    @Test
+    void marksAnOrderPaidWhenTheCapturedAmountMeetsItInFull() {
+        Order paid = order(1999, "INR").markPaid(1999, PAID_AT);
+
+        assertThat(paid.status()).isEqualTo(OrderStatus.PAID);
+        assertThat(paid.amountPaidMinor()).isEqualTo(1999L);
+        assertThat(paid.updatedAt()).isEqualTo(PAID_AT);
+    }
+
+    /**
+     * THE PARTIAL CASE, AND IT IS THE ONE WORTH BREAKING THINGS OVER. A manual capture may collect
+     * less than was authorized, and an order marked fully PAID on the strength of a smaller
+     * collection is a debt the platform has silently forgiven.
+     * <p>
+     * <b>Sabotage that must turn this red:</b> compare {@code capturedAmountMinor} against anything
+     * but this order's own {@code amountMinor}.
+     */
+    @Test
+    void marksAnOrderPartiallyPaidWhenTheCapturedAmountFallsShort() {
+        Order partial = order(1999, "INR").markPaid(1500, PAID_AT);
+
+        assertThat(partial.status()).isEqualTo(OrderStatus.PARTIALLY_PAID);
+        assertThat(partial.amountPaidMinor()).isEqualTo(1500L);
+    }
+
+    /** One minor unit short is short. Rounding a near miss up to PAID is how a ledger stops adding up. */
+    @Test
+    void treatsOneMinorUnitShortAsPartiallyPaid() {
+        assertThat(order(1999, "INR").markPaid(1998, PAID_AT).status())
+            .isEqualTo(OrderStatus.PARTIALLY_PAID);
+    }
+
+    /**
+     * PENDING ONLY. A cancelled order handed a successful payment must not be resurrected -- the
+     * merchant said they did not want it -- and a paid one must not be paid twice.
+     * <p>
+     * This refusal is NOT redundant with the {@code processed_events} inbox: that stops the same
+     * event being applied twice, this stops a different event describing the same collection from
+     * double-applying. Neither subsumes the other.
+     */
+    @Test
+    void refusesToRecordAPaymentAgainstAnOrderThatIsNotPending() {
+        Order cancelled = order(1999, "INR").cancel("changed my mind", PAID_AT);
+
+        assertThatThrownBy(() -> cancelled.markPaid(1999, PAID_AT))
+            .isInstanceOf(OrderPaymentNotApplicableException.class)
+            .hasMessageContaining("CANCELLED");
+
+        Order alreadyPaid = order(1999, "INR").markPaid(1999, PAID_AT);
+
+        assertThatThrownBy(() -> alreadyPaid.markPaid(1999, PAID_AT))
+            .isInstanceOf(OrderPaymentNotApplicableException.class)
+            .hasMessageContaining("PAID");
+    }
+
+    /**
+     * {@code ck_orders_amount_paid} is the guarantee; this is the readable failure. An order can
+     * never be paid more than it asks for, whatever a payment claims it collected.
+     */
+    @Test
+    void refusesAPaymentLargerThanTheOrder() {
+        assertThatThrownBy(() -> order(1999, "INR").markPaid(2000, PAID_AT))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("2000");
+    }
+
+    /** A succeeded payment that collected nothing is a contradiction, not a state to represent. */
+    @Test
+    void refusesAPaymentOfZeroOrLess() {
+        assertThatThrownBy(() -> order(1999, "INR").markPaid(0, PAID_AT))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> order(1999, "INR").markPaid(-1, PAID_AT))
+            .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /**
+     * {@code ck_orders_cancellation} refuses a {@code cancelled_at} on any status but CANCELLED, so
+     * a paid order carrying one would be rejected by the database rather than merely look odd.
+     */
+    @Test
+    void leavesTheCancellationColumnsAloneWhenAnOrderIsPaid() {
+        Order paid = order(1999, "INR").markPaid(1999, PAID_AT);
+
+        assertThat(paid.cancelledAt()).isNull();
+        assertThat(paid.cancellationReason()).isNull();
+    }
+
+    /** A paid order is finished. Cancelling it would erase an obligation money has settled against. */
+    @Test
+    void refusesToCancelAPaidOrder() {
+        Order paid = order(1999, "INR").markPaid(1999, PAID_AT);
+
+        assertThatThrownBy(() -> paid.cancel("too late", PAID_AT.plusSeconds(60)))
+            .isInstanceOf(OrderNotCancellableException.class);
+    }
+
+    /** Neither does a paid order expire: {@code expire} takes PENDING and nothing else. */
+    @Test
+    void refusesToExpireAPaidOrder() {
+        Instant expiresAt = CREATED_AT.plusSeconds(3600);
+        Order paid = orderExpiringAt(expiresAt).markPaid(1999, PAID_AT);
+
+        assertThatThrownBy(() -> paid.expire(expiresAt.plusSeconds(1)))
+            .isInstanceOf(OrderNotExpirableException.class);
+    }
+
     private static Order orderExpiringAt(Instant expiresAt) {
         return Order.create(
             OrderId.generate(),

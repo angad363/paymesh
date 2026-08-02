@@ -28,9 +28,12 @@ import java.util.Map;
  * an overwrite of an event a consumer is about to dedup against, which is the outcome worth having.
  * (event_id is a random UUID; this is a correctness argument, not a live risk.)
  * <p>
- * {@code published_at} is deliberately unmapped. There is no relay, so nothing in this codebase
- * reads or writes it; the column exists so the relay needs no migration, and mapping a field no
- * code touches would only invite someone to set it.
+ * {@code published_at} is STILL deliberately unmapped, and now for a sharper reason than "no relay
+ * exists". The relay exists (ADR-016), but this entity is {@code @Immutable}: Hibernate would never
+ * flush a change to the field, so a mapped-and-assigned {@code publishedAt} would look like it
+ * worked and silently do nothing. The relay therefore claims rows with a native query -- extra
+ * columns in a native result are simply ignored -- and stamps them with a native UPDATE, which
+ * bypasses entity state management entirely. See {@code SpringDataOutboxRepository}.
  */
 @Entity
 @Immutable
@@ -88,5 +91,40 @@ public class OutboxEventJpaEntity {
         this.eventVersion = eventVersion;
         this.payload = payload;
         this.occurredAt = occurredAt;
+    }
+
+    // Read-only accessors, added for the relay's claim query. There are no setters and there will
+    // not be: the table is append-only and the entity is @Immutable.
+
+    public String eventId() {
+        return eventId;
+    }
+
+    public String merchantId() {
+        return merchantId;
+    }
+
+    public String aggregateType() {
+        return aggregateType;
+    }
+
+    public String aggregateId() {
+        return aggregateId;
+    }
+
+    public String eventType() {
+        return eventType;
+    }
+
+    public int eventVersion() {
+        return eventVersion;
+    }
+
+    public Map<String, Object> payload() {
+        return payload;
+    }
+
+    public Instant occurredAt() {
+        return occurredAt;
     }
 }

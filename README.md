@@ -6,7 +6,7 @@ balances, settlements and webhooks. It exists to model the parts of a payment pl
 that are genuinely hard (retries, duplicate delivery, tenant isolation, state machines,
 auditability) rather than the parts that are CRUD.
 
-It is a single Spring Boot application, Java 21, PostgreSQL, Flyway. Five of Phase 1's
+It is a single Spring Boot application, Java 21, PostgreSQL, Flyway. Six of Phase 1's
 eight capabilities are built.
 
 ## What this is not
@@ -41,18 +41,21 @@ tests bypass it and still pass, because the constraint is the guard.
 
 ## Current status
 
-Six of Phase 1's eight capabilities are built. **Payment is feature-complete** — create, attach,
-confirm, provider callbacks, capture and cancel, with order expiry and stranded-payment sweeps
-behind them — and the **Provider Simulator** now drives it end to end without a hand-signed request.
-**813 tests, 0 failures. Thirteen Flyway migrations (V1–V13). Sixteen ADRs.**
+Six of Phase 1's eight capabilities are built, and **Payment is feature-complete**:
+create, attach, confirm, provider callbacks, capture and cancel, with order expiry and
+stranded-payment sweeps behind them. **Domain events are now delivered**: the outbox has a
+relay, an in-process dispatcher and a `processed_events` inbox, and Order consumes
+`payment.succeeded` ([ADR-016](docs/decisions/ADR-016-in-process-event-dispatch-before-kafka.md)).
+The **Provider Simulator** drives the whole loop end to end without a hand-signed request.
+**872 tests, 0 failures. Fourteen Flyway migrations (V1–V14). Seventeen ADRs.**
 
 | Capability | State | What is missing |
 |---|---|---|
 | **Merchant** | Built | Registration is unauthenticated and unrated-limited |
 | **Identity & Access** | Built | Authorization is binary per tenant; access tokens are not revocable before expiry |
 | **Customer** | Built | PII is **plaintext** — stored in the encrypted *shape*, not encrypted ([ADR-006](docs/decisions/ADR-006-defer-customer-pii-encryption.md)) |
-| **Order** | Built | `PENDING → CANCELLED` is the only reachable transition; no `order_state_history`, no expiry sweeper |
-| **Payment** | Core built | Attach payment method, confirm, provider callbacks and manual capture are three more PRs |
+| **Order** | Built | Every status is now reachable: `CANCELLED` by request, `EXPIRED` by the sweeper, `PAID` / `PARTIALLY_PAID` by consuming `payment.succeeded` |
+| **Payment** | Built | No refunds, no reconciliation, one shared provider callback secret |
 | **Provider Simulator** | Built | No payouts (Settlement is Phase 2), no refund callbacks (no receiver yet), no percentage-based failure injection ([ADR-017](docs/decisions/ADR-017-simulate-providers-through-scheduled-signed-callbacks.md)) |
 | **Ledger** | Not started | — |
 | **Refund** | Not started | — |
@@ -63,13 +66,18 @@ Platform pieces, honestly:
 |---|---|
 | PostgreSQL + Flyway | Working; Hibernate runs `ddl-auto=validate`, Flyway owns the schema |
 | Idempotency | Working, on four registered routes |
-| Outbox table | Written in-transaction — **but there is no relay, no Kafka and no consumer, so no event is ever published** |
-| Kafka, Redis, rate limiting, API keys, HMAC webhooks | None |
+| Outbox + relay + inbox | Working. Events are written in-transaction, polled by a scheduled relay, dispatched in-process, and deduplicated per consumer in `processed_events` |
+| Kafka | None, deliberately — the **consumer contract** is the one a broker needs (envelope in, inbox dedup, idempotent handler), so the transport can be swapped without touching a consumer ([ADR-016](docs/decisions/ADR-016-in-process-event-dispatch-before-kafka.md)) |
+| Redis, rate limiting, API keys, HMAC webhooks | None |
 | Observability | `/actuator/health` and `/actuator/info` only |
 
-The unpublished outbox has a visible consequence worth stating up front: **`orders.status`
-never reaches `PAID`**, because the consumer that would move it does not exist. That is a
-documented inconsistency, not a bug report.
+**`orders.status` reaches `PAID`**, and until this release it could not — the event
+announcing a successful payment was written correctly and read by nobody. It is delivered
+now, so an order whose payment succeeded reads `PAID` (or `PARTIALLY_PAID` after a partial
+capture) within a relay tick. Two consequences worth stating up front: the update is
+**asynchronous**, so a merchant polling immediately after a capture may still see `PENDING`
+for a second or two; and an event that fails to deliver is retried forever with no
+dead-letter and no alert, which is the largest known hole in the delivery design.
 
 ## Architecture
 
@@ -94,13 +102,15 @@ com.paymesh
 ├── identity             + infrastructure/security
 ├── customer
 ├── order                + infrastructure/customer   ← the CustomerLookup adapter
+│                        + infrastructure/events     ← the payment.succeeded consumer
 ├── payment              + infrastructure/order      ← the OrderLookup adapter
+├── simulator            the fake provider; imports no other capability and none imports it
 └── shared
     ├── api              ApiErrorResponse
     ├── security         SecurityConfiguration, AuthenticatedCaller, argument resolver
     ├── tenant           MerchantId — the tenant identifier every capability carries
     ├── idempotency      filter, records, IdempotentRoutes
-    ├── outbox           OutboxEvent, the append port, the JPA adapter
+    ├── outbox           OutboxEvent, the append port, the relay, the dispatcher, the inbox
     └── infrastructure   the Clock bean
 ```
 
@@ -202,8 +212,10 @@ password verifies — which is why `USER_NOT_ACTIVE` is `403` and not `401`.
 | `GET` | `/orders` | bearer | — | Cursor pagination (`limit`, `cursor`), optional `status` filter. |
 | `POST` | `/orders/{orderId}/cancel` | bearer | **required** | Only from `PENDING`, else `409`. Optional reason body. |
 
-`PAID`, `PARTIALLY_PAID` and `EXPIRED` exist in the enum and the CHECK constraint so that
-Payment needs no migration on arrival, but no code path reaches them.
+Every status in the enum and in `ck_orders_status` is now reachable. `CANCELLED` is a
+merchant request, `EXPIRED` is the sweeper (ADR-014), and `PAID` / `PARTIALLY_PAID` are
+Order's own consumer of `payment.succeeded` (ADR-016) — **Payment never writes this table**,
+which is why `ModuleBoundaryTest.orderNeverImportsPayment` still has an empty allowlist.
 
 ### Payment
 
@@ -246,11 +258,19 @@ alters a table.
 | `V4__create_idempotency_records.sql` | `idempotency_records`: state, request hash, stored response, keyed on merchant + endpoint template + key |
 | `V5__create_orders.sql` | `orders`, and `uq_customers_merchant_customer` on `customers` so the order → customer FK can be composite and tenant-safe |
 | `V6__fix_payment_method_tokens_tenant_foreign_key.sql` | Replaces `payment_method_tokens`' single-column customer FK with the composite `(merchant_id, customer_id)` one — closing the same cross-tenant hole V5 closed for orders, before anything writes the table |
-| `V7__create_outbox_events.sql` | `outbox_events` plus a partial index over the unpublished rows a relay will one day poll |
+| `V7__create_outbox_events.sql` | `outbox_events` plus the partial index the relay polls. Its header still says "THERE IS NO RELAY YET" and is left that way on purpose: Flyway checksums applied migrations, so editing a comment breaks validation on every existing database |
 | `V8__create_payment_intents.sql` | `payment_intents`, `payment_state_history` (append-only from day one, so no intent has a hole in its timeline), `uq_orders_merchant_order` to make the order FK composite, and `uq_payment_intents_live_per_order` |
+| `V9__create_payment_attempts.sql` | `payment_attempts`, one row per try at a provider, with `uq_payment_attempts_provider_reference` so a callback carrying only a provider reference resolves to exactly one payment |
+| `V10__create_provider_callbacks.sql` | `provider_callbacks`, keyed `(provider, external_event_id)` — the primary key IS the duplicate-delivery guard (ADR-012) |
+| `V11__create_order_state_history.sql` | `order_state_history` (no backfill, and the migration says at length why) plus `idx_orders_expirable`, the first index on `orders` that does not lead with `merchant_id` |
+| `V12__index_processing_payment_intents.sql` | The access path for the `PROCESSING` timeout sweep (ADR-015) |
+| `V14__create_processed_events.sql` | `processed_events`: the inbox. Primary key `(consumer_name, event_id)`, which is the concurrency control rather than an access path — the claim is `INSERT … ON CONFLICT DO NOTHING` and the row count is the answer |
 
 Every merchant-owned table carries `merchant_id`, and every index is composite and
-merchant-leading.
+merchant-leading. **`processed_events` is the one exception and it is argued in the
+migration**: it is owned by a consumer rather than a merchant, the dedup identity is the
+event platform-wide, and a `merchant_id` in that key would let one event be applied once per
+tenant.
 
 ## Running it locally
 
@@ -360,9 +380,16 @@ count checked underneath — does **not** turn the test red, because the databas
 arbitrating. Only discarding the row count breaks it. That is recorded too, so nobody
 concludes the test covers more than it does.
 
-Some claims cannot be asserted and are verified another way. That "no code path reaches
-`PAID`" and "only two payment statuses are reachable" are both verified by grep, not by
-assertion, and are labelled as such.
+Some claims cannot be asserted and are verified another way. `PARTIALLY_REFUNDED` and
+`REFUNDED` being unreachable is verified by grep, not by assertion, and is labelled as such.
+(The same was once true of `PAID`; it is now reachable and asserted end to end.)
+
+The most useful sabotage in the delivery work was one that **stayed green**. Removing the
+`processed_events` guard — and then also removing the consumer's own `PENDING` re-check —
+left the end-to-end "applied exactly once" test passing, because `Order.markPaid` refuses a
+non-`PENDING` order. Three independent mechanisms, none subsuming the others, so no
+order-level assertion can isolate the inbox. It is proved instead by a test that dispatches
+one event three times to a handler with no guard of its own and counts invocations.
 
 ### End-to-end contract
 
@@ -391,8 +418,9 @@ uses it.
 | [007](docs/decisions/ADR-007-enforce-authentication-and-tenant-scoping.md) | Authentication at the filter chain, tenancy at the data | "Who is calling" is a property of the request; "which rows may they touch" is a property of the row, and the edge cannot see the row |
 | [008](docs/decisions/ADR-008-cross-module-reads-through-a-consumer-owned-port.md) | Cross-module reads go through a consumer-owned port | The consumer declares the interface it needs; the adapter lives in the consumer's `infrastructure` |
 | [009](docs/decisions/ADR-009-idempotency-for-public-writes.md) | Public-write idempotency in PostgreSQL, records deleted on 5xx | Scope is merchant + endpoint template + key; the pre-handler commit *is* the concurrency control |
-| [010](docs/decisions/ADR-010-transactional-outbox-in-postgresql.md) | Domain events to a PostgreSQL outbox, in the caller's transaction, no relay yet | A broker write cannot join a database transaction, so no ordering of the two calls closes the gap |
+| [010](docs/decisions/ADR-010-transactional-outbox-in-postgresql.md) | Domain events to a PostgreSQL outbox, in the caller's transaction | A broker write cannot join a database transaction, so no ordering of the two calls closes the gap. Its §3 ("no relay") is superseded by ADR-016 |
 | [011](docs/decisions/ADR-011-one-live-payment-intent-per-order.md) | One live payment intent per order, enforced by a partial unique index | Reconciling several intents against an order needs a running total that is correct under concurrency, and there is no Ledger yet to hold one |
+| [016](docs/decisions/ADR-016-in-process-event-dispatch-before-kafka.md) | Deliver events in-process, on a broker-shaped consumer contract, before Kafka | A broker between two packages in one JVM buys nothing — but the consumer contract is the one Kafka needs (envelope in, `processed_events` dedup, idempotent handler), so swapping the transport changes no consumer |
 
 The SDD's Appendix D has a *separate* ADR list using the same numbers for different
 decisions. When citing one, say which source you mean.
@@ -421,22 +449,8 @@ conflict and it matters, surface the divergence rather than silently picking one
 
 ## Roadmap
 
-Payment's core has landed. The rest of it is three PRs, and they are strictly serial
-because each one's reachable states depend on the last:
-
-1. **Attach a payment method + confirm** — `V9`, `payment_attempts`
-2. **Provider callbacks** — `V10`, `provider_callbacks`, ADR-012
-3. **Manual capture**
-
-One thing is settled before the confirm PR, not during it: an order can currently be
-cancelled out from under a live payment intent. Today that is an inconsistency because
-nothing moves money; the moment confirm exists it becomes a payment collected against a
-cancelled order.
-
-Alongside those: `order_state_history`, an order expiry sweeper, and a `PROCESSING`
-timeout.
-
-Then, in SDD order: **Ledger** → **Refund**. The Ledger is
+Payment is feature-complete, its events are delivered, and the Provider Simulator drives
+the loop end to end. What is left in Phase 1, in SDD order: **Ledger** → **Refund**. The Ledger is
 deliberately last in Phase 1 and will be the last thing extracted into a service. It is
 the financial source of truth — double-entry, immutable entries, corrections as reversal
 transactions rather than edits — and a `SUCCEEDED` payment is only operational state

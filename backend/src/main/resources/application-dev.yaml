@@ -1,9 +1,9 @@
 # ============================================================================
 #  Local development overrides: the secrets that application.yaml deliberately
-#  leaves empty (so a fresh clone runs with nothing to set up), plus the two
-#  background sweepers, which are switched OFF here.
+#  leaves empty (so a fresh clone runs with nothing to set up), plus every
+#  background job -- the outbox relay and the three sweeps -- switched OFF here.
 #
-#  THE SWEEPERS ARE OFF BECAUSE THIS IS THE PROFILE THE TEST SUITE RUNS UNDER.
+#  THEY ARE OFF BECAUSE THIS IS THE PROFILE THE TEST SUITE RUNS UNDER.
 #  Every @SpringBootTest in this project carries @ActiveProfiles("dev"), and a
 #  timer that mutates orders and payment intents while a test is asserting on
 #  them is a flake generator -- one that fails rarely, on someone else's change,
@@ -11,16 +11,22 @@
 #  which is where the real default lives; this file is the exception and the only
 #  place it is made.
 #
-#  It follows that `./mvnw spring-boot:run` also runs with them off. To watch
-#  either job locally, set the matching environment variable, e.g.
+#  It follows that `./mvnw spring-boot:run` also runs with them off. To watch a
+#  job locally, set the matching environment variable, e.g.
+#      PAYMESH_EVENTS_OUTBOX_RELAY_ENABLED=true
 #      PAYMESH_ORDERS_EXPIRY_SWEEP_ENABLED=true
 #      PAYMESH_PAYMENTS_PROCESSING_TIMEOUT_ENABLED=true
-#  and shorten the interval and age while you are at it -- the production values
-#  (5m, 1h) are far too patient to observe by hand.
+#  and shorten the sweeps' interval and age while you are at it -- the production
+#  values (5m, 1h) are far too patient to observe by hand. The relay's 2s is not.
 #
-#  The sweep LOGIC is unaffected either way: ExpireOrdersService and
-#  TimeOutProcessingPaymentsService are plain beans that exist regardless, so the
-#  tests that cover them call sweep() directly and never need a scheduler.
+#  THE RELAY IS THE ONE THE POSTMAN COLLECTION NEEDS. Its "Event delivery" folder
+#  proves an order reaching PAID, which cannot happen with nothing delivering, so
+#  that folder is run against an app started with the first variable above.
+#
+#  The LOGIC is unaffected either way: PublishOutboxEventsService,
+#  ExpireOrdersService and TimeOutProcessingPaymentsService are plain beans that
+#  exist regardless, so the tests call publish()/sweep() directly and never need a
+#  scheduler.
 #
 #  Everything here is public by definition, which is why the profile is never
 #  active by accident. It is switched on explicitly in two places and nowhere
@@ -47,6 +53,19 @@ paymesh:
     # profile is the sole active one, so copying it into a real environment variable fails startup
     # loudly rather than letting anyone forge a callback for any payment.
     callback-secret: dev-only-insecure-provider-callback-secret-change-me
+  events:
+    outbox-relay:
+      # OFF for the same reason as the sweeps, and more sharply: this one moves an
+      # order to PAID, so a tick landing between a test's capture and its assertion
+      # would change the very column the test is reading. PublishOutboxEventsService
+      # is a plain bean that exists regardless, so the tests drive publish() directly
+      # and never wait for a scheduler.
+      #
+      # It follows that `./mvnw spring-boot:run` has no relay either, and that the
+      # Postman "Event delivery" folder needs
+      #     PAYMESH_EVENTS_OUTBOX_RELAY_ENABLED=true ./mvnw spring-boot:run
+      # to pass. The default interval (2s) is already short enough to watch by hand.
+      enabled: false
   simulator:
     # Same deal again, and it matters as much as the callback secret rather than less: this key
     # is the only authentication on /sim/v1/**, and POST /sim/v1/payments queues the callback
