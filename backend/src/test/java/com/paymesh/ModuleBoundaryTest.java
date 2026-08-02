@@ -233,6 +233,144 @@ class ModuleBoundaryTest {
     }
 
     /**
+     * REFUND READS PAYMENT THROUGH EXACTLY ONE DIRECTORY, AND THIS IS THE ONLY NON-EMPTY ALLOWLIST
+     * IN THIS FILE.
+     * <p>
+     * Refund genuinely has to ask Payment a question -- how much was captured, in what currency, and
+     * is this payment in a state to be refunded at all -- and unlike Order it can do so with an
+     * adapter without creating a cycle: nothing in PayMesh imports Refund, so the arrow points one
+     * way and Refund stays a leaf. That is why this follows the {@code OrderLookup} shape rather
+     * than the {@code PaymentActivityLookup} one (ADR-008).
+     * <p>
+     * TWO paths, and the second is the configuration, exactly as Payment's allowlist against Order
+     * includes {@code PaymentConfiguration}: a manually-wired bean has to name the service it wires
+     * (java-coding-conventions.md 13), so the config is where the adapter is handed its dependency.
+     * <p>
+     * If a THIRD path appears, the port has leaked out of its adapter and Payment's types are loose
+     * inside Refund.
+     */
+    @Test
+    void refundImportsPaymentOnlyThroughItsAdapter() throws IOException {
+        assertOnlyTheseImport(
+            "com/paymesh/refund",
+            "com.paymesh.payment.",
+            List.of(
+                "refund/infrastructure/payment/PaymentModuleLookup.java",
+                "refund/infrastructure/config/RefundConfiguration.java"
+            )
+        );
+    }
+
+    /**
+     * AND NOTHING IMPORTS REFUND, WHICH IS WHAT KEEPS THE ARROW ONE-WAY.
+     * <p>
+     * Payment learns that a refund succeeded, and moves its own {@code refunded_amount_minor} and
+     * status because of it -- but it learns it from an event, not from a call. The moment anything
+     * here imports {@code com.paymesh.refund}, the adapter above becomes half of a cycle and
+     * neither module can be extracted without the other.
+     */
+    @Test
+    void noCapabilityImportsRefund() throws IOException {
+        for (String capability : CAPABILITIES) {
+            if (capability.equals("refund")) {
+                continue;
+            }
+
+            assertOnlyTheseImport("com/paymesh/" + capability, "com.paymesh.refund.", List.of());
+        }
+
+        assertOnlyTheseImport("com/paymesh/shared", "com.paymesh.refund.", List.of());
+    }
+
+    /**
+     * THE LEDGER'S REVERSAL CONSUMER NAMES NEITHER REFUND NOR PAYMENT.
+     * <p>
+     * It reads {@code refund.succeeded} out of a Map, exactly as it reads {@code payment.succeeded}.
+     * The Ledger is the module SDD 30.1 schedules for extraction last, so it is the one that can
+     * least afford a type shared with a producer.
+     */
+    @Test
+    void ledgerConsumesRefundEventsWithoutNamingRefundTypes() throws IOException {
+        Path consumer = Path.of(
+            "src/main/java/com/paymesh/ledger/infrastructure/events/RefundSucceededLedgerHandler.java"
+        );
+
+        assertThat(Files.exists(consumer))
+            .as("the Ledger's reversal consumer must exist; ADR-018 promised it and V15's"
+                + " immutability triggers are what make a reversal the only available correction")
+            .isTrue();
+
+        assertThat(Files.readString(consumer)).contains("refund.succeeded");
+
+        assertThat(codeLinesNaming(consumer, "com.paymesh.refund"))
+            .as("the payload is read as a Map, like every other consumer here")
+            .isEmpty();
+    }
+
+    /**
+     * PAYMENT NOW CONSUMES AN EVENT AS WELL AS PRODUCING THEM, and it still imports nothing new.
+     * <p>
+     * This is what makes {@code PARTIALLY_REFUNDED} and {@code REFUNDED} reachable -- both declared
+     * in V8 and unreachable ever since. Payment moves its own column because Refund may not write
+     * it, the same rule that stops Payment writing {@code orders.status}.
+     */
+    @Test
+    void paymentConsumesRefundEventsWithoutNamingRefundTypes() throws IOException {
+        Path consumer = Path.of(
+            "src/main/java/com/paymesh/payment/infrastructure/events/RefundSucceededHandler.java"
+        );
+
+        assertThat(Files.exists(consumer))
+            .as("Payment's consumer of refund.succeeded must exist; without it a refunded payment"
+                + " never leaves SUCCEEDED and refunded_amount_minor stays zero forever")
+            .isTrue();
+
+        assertThat(Files.readString(consumer)).contains("refund.succeeded");
+
+        assertThat(codeLinesNaming(consumer, "com.paymesh.refund"))
+            .as("a fully-qualified Refund type here is the same violation as an import")
+            .isEmpty();
+    }
+
+    /**
+     * THE SIGNATURE FILTER IN {@code shared} NAMES NO CAPABILITY.
+     * <p>
+     * It moved out of {@code payment.infrastructure.provider} when Refund's callback route needed
+     * the same scheme (ADR-019), and it could only move because its path and its request attribute
+     * became constructor arguments. A constant naming either controller would have dragged a
+     * capability into {@code shared}, where every module can see it.
+     */
+    @Test
+    void theSharedSignatureFilterNamesNoCapability() throws IOException {
+        Path filter = Path.of(
+            "src/main/java/com/paymesh/shared/provider/ProviderCallbackSignatureFilter.java"
+        );
+
+        assertThat(Files.exists(filter)).isTrue();
+
+        for (String capability : CAPABILITIES) {
+            assertThat(codeLinesNaming(filter, "com.paymesh." + capability))
+                .as("shared must not name %s", capability)
+                .isEmpty();
+        }
+    }
+
+    /**
+     * Code lines -- not comments -- in {@code file} that mention {@code qualifiedPrefix}.
+     * <p>
+     * COMMENTS ARE EXCLUDED, and they have to be: these files explain at length why they may not
+     * name another capability, and a check over raw text would fail on its own documentation.
+     */
+    private static List<String> codeLinesNaming(Path file, String qualifiedPrefix)
+        throws IOException {
+        return Files.readAllLines(file).stream()
+            .map(String::strip)
+            .filter(line -> !line.startsWith("*") && !line.startsWith("//") && !line.startsWith("/*"))
+            .filter(line -> line.contains(qualifiedPrefix))
+            .toList();
+    }
+
+    /**
      * TWO CONSUMERS OF ONE EVENT MUST NOT SHARE AN INBOX NAME.
      * <p>
      * {@code processed_events} is keyed on {@code (consumer_name, event_id)}, so if Order's handler
@@ -304,7 +442,7 @@ class ModuleBoundaryTest {
 
     /** Every capability package except the simulator itself. */
     private static final List<String> CAPABILITIES =
-        List.of("merchant", "identity", "customer", "order", "payment", "ledger");
+        List.of("merchant", "identity", "customer", "order", "payment", "ledger", "refund");
 
     private static void assertOnlyTheseImport(
         String moduleDirectory,

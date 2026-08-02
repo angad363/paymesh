@@ -2,6 +2,8 @@ package com.paymesh.payment.infrastructure.config;
 
 import com.paymesh.order.application.GetOrderService;
 import com.paymesh.order.application.PaymentActivityLookup;
+import com.paymesh.payment.api.ProviderCallbackController;
+import com.paymesh.payment.application.ApplyRefundSucceededService;
 import com.paymesh.payment.application.AttachPaymentMethodService;
 import com.paymesh.payment.application.CancelAbandonedPaymentIntentsService;
 import com.paymesh.payment.application.CancelPaymentIntentService;
@@ -17,6 +19,7 @@ import com.paymesh.payment.application.PaymentStateHistoryRepository;
 import com.paymesh.payment.application.ProviderCallbackRepository;
 import com.paymesh.payment.application.RecordProviderCallbackService;
 import com.paymesh.payment.application.TimeOutProcessingPaymentsService;
+import com.paymesh.payment.infrastructure.events.RefundSucceededHandler;
 import com.paymesh.payment.infrastructure.order.OrderModuleLookup;
 import com.paymesh.payment.infrastructure.order.PaymentActivityAdapter;
 import com.paymesh.payment.infrastructure.persistence.jpa.JpaPaymentAttemptRepository;
@@ -27,7 +30,7 @@ import com.paymesh.payment.infrastructure.persistence.jpa.SpringDataPaymentAttem
 import com.paymesh.payment.infrastructure.persistence.jpa.SpringDataPaymentIntentRepository;
 import com.paymesh.payment.infrastructure.persistence.jpa.SpringDataPaymentStateHistoryRepository;
 import com.paymesh.payment.infrastructure.persistence.jpa.SpringDataProviderCallbackRepository;
-import com.paymesh.payment.infrastructure.provider.ProviderCallbackSignatureFilter;
+import com.paymesh.shared.provider.ProviderCallbackSignatureFilter;
 import com.paymesh.payment.infrastructure.schedule.AbandonedIntentSweeper;
 import com.paymesh.payment.infrastructure.schedule.ProcessingTimeoutSweeper;
 import com.paymesh.shared.outbox.application.OutboxWriter;
@@ -206,7 +209,14 @@ public class PaymentConfiguration {
     ) {
         FilterRegistrationBean<ProviderCallbackSignatureFilter> registration =
             new FilterRegistrationBean<>(new ProviderCallbackSignatureFilter(
-                providerProperties.callbackSecret(), objectMapper, clock
+                // The path and the attribute are arguments now: the filter moved to shared when
+                // Refund's callback route needed the same scheme, and it names no capability so
+                // that it could (ADR-019).
+                "/internal/v1/provider-callbacks",
+                providerProperties.callbackSecret(),
+                ProviderCallbackController.PAYLOAD_HASH_ATTRIBUTE,
+                objectMapper,
+                clock
             ));
 
         registration.setOrder(SecurityFilterProperties.DEFAULT_FILTER_ORDER + 1);
@@ -352,5 +362,31 @@ public class PaymentConfiguration {
             transactionTemplate,
             clock
         );
+    }
+
+    /**
+     * PAYMENT'S FIRST SUBSCRIPTION, and the transition that makes PARTIALLY_REFUNDED and REFUNDED
+     * reachable. Payment has produced events since ADR-010; this is the first it consumes.
+     * <p>
+     * Declared on Payment's side, so nothing in {@code shared} names a capability and deleting this
+     * bean unsubscribes Payment without touching anything else. It does not put Refund in Payment's
+     * import graph: the bean's type is Payment's own class and the event type is a string.
+     */
+    @Bean
+    ApplyRefundSucceededService applyRefundSucceededService(
+        PaymentIntentRepository paymentIntentRepository,
+        PaymentStateHistoryRepository paymentStateHistoryRepository,
+        GetPaymentIntentService getPaymentIntentService
+    ) {
+        return new ApplyRefundSucceededService(
+            paymentIntentRepository, paymentStateHistoryRepository, getPaymentIntentService
+        );
+    }
+
+    @Bean
+    RefundSucceededHandler refundSucceededHandler(
+        ApplyRefundSucceededService applyRefundSucceededService
+    ) {
+        return new RefundSucceededHandler(applyRefundSucceededService);
     }
 }

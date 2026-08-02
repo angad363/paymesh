@@ -389,6 +389,82 @@ public final class PaymentIntent {
     }
 
     /**
+     * A refund of this payment succeeded: raise the refunded total and move the status with it.
+     *
+     * <h2>THIS IS WHAT FINALLY MAKES PARTIALLY_REFUNDED AND REFUNDED REACHABLE</h2>
+     *
+     * Both have been declared in {@link PaymentIntentStatus} since V8 and unreachable ever since --
+     * {@code project-status.md} verified it by grep. The enum's own comment said "the Refund
+     * capability; not this design". This is that capability arriving.
+     *
+     * <h2>Payment moves its own column, because Refund may not</h2>
+     *
+     * Called by Payment's consumer of {@code refund.succeeded}, exactly as {@code Order.markPaid}
+     * is called by Order's consumer of {@code payment.succeeded} (ADR-016). Refund never writes
+     * this table any more than Payment writes the orders table, so the arrow between them stays
+     * one-way and nothing imports Refund.
+     *
+     * <h2>SUCCEEDED is a legal starting point and so is PARTIALLY_REFUNDED</h2>
+     *
+     * A payment refunded in parts passes through PARTIALLY_REFUNDED repeatedly before reaching
+     * REFUNDED. Anything else -- FAILED, CANCELLED, an already fully REFUNDED payment -- means a
+     * refund succeeded against money this intent does not think it holds, which is a
+     * reconciliation problem rather than a state transition, and the consumer logs it rather than
+     * forcing it through.
+     */
+    public PaymentIntent applyRefund(long refundAmountMinor, Instant refundedAt) {
+        if (status != PaymentIntentStatus.SUCCEEDED
+            && status != PaymentIntentStatus.PARTIALLY_REFUNDED) {
+            throw new PaymentIntentNotRefundableException(paymentIntentId, status);
+        }
+
+        if (refundAmountMinor <= 0) {
+            throw new IllegalArgumentException(
+                "A refund amount must be positive, got " + refundAmountMinor
+            );
+        }
+
+        long refundedTotal = refundedAmountMinor + refundAmountMinor;
+
+        // THE COMPARISON IS AGAINST WHAT WAS CAPTURED, never against amountMinor. On a partial
+        // capture the two differ by money that was never collected, and allowing refunds up to the
+        // intent's amount would let more go out than ever came in. Refund's own deferred trigger
+        // says the same thing at the schema; this is the second reader of that rule, and if they
+        // ever disagree the database wins.
+        if (refundedTotal > capturedAmountMinor) {
+            throw new IllegalArgumentException(
+                "Refunds of " + refundedTotal + " would exceed the " + capturedAmountMinor
+                    + " captured by payment intent " + paymentIntentId.value()
+            );
+        }
+
+        return new PaymentIntent(
+            paymentIntentId,
+            merchantId,
+            orderId,
+            customerId,
+            amountMinor,
+            currency,
+            captureMethod,
+            paymentMethodType,
+            refundedTotal == capturedAmountMinor
+                ? PaymentIntentStatus.REFUNDED
+                : PaymentIntentStatus.PARTIALLY_REFUNDED,
+            capturedAmountMinor,
+            refundedTotal,
+            failureCode,
+            failureMessage,
+            cancellationReason,
+            cancelledAt,
+            description,
+            metadata,
+            version,
+            createdAt,
+            refundedAt
+        );
+    }
+
+    /**
      * PROCESSING to FAILED, with the provider's reason after redaction.
      * <p>
      * FAILED also releases the order's live-intent slot, which is why a failed collection does not

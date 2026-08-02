@@ -1,6 +1,5 @@
-package com.paymesh.payment.infrastructure.provider;
+package com.paymesh.shared.provider;
 
-import com.paymesh.payment.api.ProviderCallbackController;
 import com.paymesh.shared.api.ApiErrorResponse;
 import com.paymesh.shared.api.CachedBodyHttpServletRequest;
 import jakarta.servlet.FilterChain;
@@ -45,12 +44,22 @@ import java.util.HexFormat;
  * Failures return 401 with no indication of WHICH check failed. "Bad timestamp" versus "bad
  * signature" tells an attacker whether they have the secret, and the caller who legitimately holds
  * it does not need to be told.
+ *
+ * <h2>IT LIVES IN {@code shared} BECAUSE TWO ROUTES NOW NEED IT, AND THERE MUST ONLY BE ONE OF IT</h2>
+ *
+ * It began in {@code payment.infrastructure.provider}, verifying exactly one path. Refund's callback
+ * route needs the same scheme against the same secret, and the alternative to moving this class was
+ * a second copy of it -- two implementations of the one check standing between a forged request and
+ * a merchant's money, where fixing one silently leaves the other wrong. ADR-019.
+ * <p>
+ * Both the PATH it guards and the REQUEST ATTRIBUTE it writes the payload hash to are constructor
+ * arguments rather than constants, so it names no capability. That is what lets it sit in
+ * {@code shared} without {@code ModuleBoundaryTest} finding a capability import in there.
  */
 public final class ProviderCallbackSignatureFilter extends OncePerRequestFilter {
 
     public static final String SIGNATURE_HEADER = "X-PayMesh-Signature";
 
-    static final String PATH_PREFIX = "/internal/v1/provider-callbacks";
 
     /**
      * How far out of step the provider's clock may be, in either direction.
@@ -65,12 +74,31 @@ public final class ProviderCallbackSignatureFilter extends OncePerRequestFilter 
     private static final String ALGORITHM = "HmacSHA256";
     private static final String DIGEST = "SHA-256";
 
+    private final String pathPrefix;
     private final String secret;
+    private final String payloadHashAttribute;
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
-    public ProviderCallbackSignatureFilter(String secret, ObjectMapper objectMapper, Clock clock) {
+    /**
+     * @param pathPrefix the one path this instance guards, e.g.
+     *     {@code /internal/v1/provider-callbacks}. One instance per callback route: a single filter
+     *     matching both would still be correct today, because both routes share a secret, but it
+     *     would silently keep working on the day they stop sharing one.
+     * @param payloadHashAttribute the request attribute the raw-body hash is published under, which
+     *     the owning controller reads back. A parameter rather than a constant so this class names
+     *     no capability's controller.
+     */
+    public ProviderCallbackSignatureFilter(
+        String pathPrefix,
+        String secret,
+        String payloadHashAttribute,
+        ObjectMapper objectMapper,
+        Clock clock
+    ) {
+        this.pathPrefix = pathPrefix;
         this.secret = secret;
+        this.payloadHashAttribute = payloadHashAttribute;
         this.objectMapper = objectMapper;
         this.clock = clock;
     }
@@ -78,7 +106,7 @@ public final class ProviderCallbackSignatureFilter extends OncePerRequestFilter 
     /** Everything else in the application authenticates the normal way and must not touch this. */
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        return !pathWithinApplication(request).startsWith(PATH_PREFIX);
+        return !pathWithinApplication(request).startsWith(pathPrefix);
     }
 
     @Override
@@ -102,9 +130,7 @@ public final class ProviderCallbackSignatureFilter extends OncePerRequestFilter 
         // re-serialized record, would be a hash of Jackson's formatting rather than of what the
         // provider actually sent -- and payload_hash is the column an investigator uses to tell two
         // deliveries that share an event id apart.
-        cached.setAttribute(
-            ProviderCallbackController.PAYLOAD_HASH_ATTRIBUTE, sha256(cached.body())
-        );
+        cached.setAttribute(payloadHashAttribute, sha256(cached.body()));
         chain.doFilter(cached, response);
     }
 

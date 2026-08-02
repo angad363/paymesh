@@ -5,7 +5,9 @@ import com.paymesh.ledger.application.GetBalancesService;
 import com.paymesh.ledger.application.LedgerAccountRepository;
 import com.paymesh.ledger.application.LedgerTransactionRepository;
 import com.paymesh.ledger.application.PostPaymentCapturedService;
+import com.paymesh.ledger.application.PostRefundReversalService;
 import com.paymesh.ledger.infrastructure.events.PaymentSucceededLedgerHandler;
+import com.paymesh.ledger.infrastructure.events.RefundSucceededLedgerHandler;
 import com.paymesh.ledger.infrastructure.persistence.jpa.JpaBalanceRepository;
 import com.paymesh.ledger.infrastructure.persistence.jpa.JpaLedgerAccountRepository;
 import com.paymesh.ledger.infrastructure.persistence.jpa.JpaLedgerTransactionRepository;
@@ -81,5 +83,29 @@ public class LedgerConfiguration {
         PostPaymentCapturedService postPaymentCapturedService
     ) {
         return new PaymentSucceededLedgerHandler(postPaymentCapturedService);
+    }
+
+    /**
+     * The reversal posting, and THE LEDGER'S SECOND SUBSCRIPTION.
+     * <p>
+     * ADR-018 recorded "no reversal path exists" as a known gap and said the immutability triggers
+     * were what would make a reversal the only available option when Refund arrived. It has.
+     */
+    @Bean
+    PostRefundReversalService postRefundReversalService(
+        LedgerAccountRepository ledgerAccountRepository,
+        LedgerTransactionRepository ledgerTransactionRepository,
+        Clock clock
+    ) {
+        return new PostRefundReversalService(
+            ledgerAccountRepository, ledgerTransactionRepository, clock
+        );
+    }
+
+    @Bean
+    RefundSucceededLedgerHandler refundSucceededLedgerHandler(
+        PostRefundReversalService postRefundReversalService
+    ) {
+        return new RefundSucceededLedgerHandler(postRefundReversalService);
     }
 }

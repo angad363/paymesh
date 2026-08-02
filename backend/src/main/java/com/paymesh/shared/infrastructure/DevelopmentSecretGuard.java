@@ -54,6 +54,14 @@ public class DevelopmentSecretGuard {
                 + "could forge a callback for any payment"
         ),
         new GuardedSecret(
+            "paymesh.refund.callback-secret",
+            "dev-only-insecure-refund-callback-secret-change-me",
+            "PAYMESH_REFUND_CALLBACK_SECRET",
+            "is the only authentication on the endpoint that marks refunds SUCCEEDED, which posts "
+                + "a ledger reversal -- so anyone could forge money back out of any merchant's "
+                + "balance"
+        ),
+        new GuardedSecret(
             "paymesh.simulator.api-key",
             "dev-only-insecure-simulator-api-key-change-me",
             "PAYMESH_SIMULATOR_API_KEY",

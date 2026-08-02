@@ -89,6 +89,11 @@ public class SecurityConfiguration {
                 // payment collected. Placing it here rather than under /api/ is what keeps the two
                 // audiences from sharing a surface at all.
                 .requestMatchers(POST, "/internal/v1/provider-callbacks/**").permitAll()
+                // THE REFUND CALLBACK ROUTE, on the same terms and for the same reasons. Its own
+                // filter instance, its own secret property, and the same rule: a merchant's token
+                // must not reach it, because this route decides that money went back to a customer
+                // and a merchant able to call it could settle their own refunds. ADR-019.
+                .requestMatchers(POST, "/internal/v1/refund-callbacks/**").permitAll()
                 // THE PROVIDER SIMULATOR IS NOT UNAUTHENTICATED EITHER, AND IT IS NOT THE MERCHANT
                 // API.
                 //

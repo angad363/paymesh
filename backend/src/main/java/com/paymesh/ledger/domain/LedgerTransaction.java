@@ -46,6 +46,12 @@ public record LedgerTransaction(
     /** What a {@link #PAYMENT_CAPTURED} journal points back at. */
     public static final String REFERENCE_PAYMENT_INTENT = "PAYMENT_INTENT";
 
+    /** SDD 15.6 invariant 8's correction: a reversal, never an edit. ADR-019. */
+    public static final String REFUND_REVERSAL = "REFUND_REVERSAL";
+
+    /** What a {@link #REFUND_REVERSAL} journal points back at. */
+    public static final String REFERENCE_REFUND = "REFUND";
+
     public LedgerTransaction {
         if (ledgerTransactionId == null) {
             throw new IllegalArgumentException("Ledger transaction identifier is required");
@@ -138,6 +144,62 @@ public record LedgerTransaction(
      */
     public static String paymentCapturedIdempotencyKey(String paymentIntentId) {
         return "payment-captured:" + paymentIntentId;
+    }
+
+    /**
+     * The correction for a refund: the capture posting, in reverse.
+     *
+     * <pre>
+     *   DEBIT   merchant:mrc_x:pending:INR    -- PayMesh owes the merchant less
+     *   CREDIT  provider-clearing:INR         -- and is owed less by the provider
+     * </pre>
+     *
+     * <b>The original journal is untouched.</b> It cannot be touched --
+     * {@code tr_ledger_entries_immutable} refuses UPDATE and DELETE -- and that is the point rather
+     * than an obstacle: both journals stay in the history, so "what happened" and "what the balance
+     * is" remain separate facts.
+     * <p>
+     * The reference points at the REFUND, not at the payment. A payment can be refunded in several
+     * parts, and each part is its own correction with its own reason to exist.
+     */
+    public static LedgerTransaction refundReversal(
+        MerchantId merchantId,
+        String refundId,
+        String paymentIntentId,
+        LedgerAccountId merchantPendingAccountId,
+        LedgerAccountId providerClearingAccountId,
+        long amountMinor,
+        String currency,
+        Instant occurredAt,
+        Instant createdAt
+    ) {
+        return new LedgerTransaction(
+            LedgerTransactionId.generate(),
+            merchantId,
+            REFUND_REVERSAL,
+            REFERENCE_REFUND,
+            refundId,
+            currency,
+            refundReversalIdempotencyKey(refundId),
+            List.of(
+                LedgerEntry.debit(merchantPendingAccountId, amountMinor),
+                LedgerEntry.credit(providerClearingAccountId, amountMinor)
+            ),
+            occurredAt,
+            createdAt
+        );
+    }
+
+    /**
+     * {@code refund-reversal:ref_<uuid>}.
+     * <p>
+     * KEYED ON THE REFUND, and it has to be. The payment's key is already taken by its capture
+     * journal, and a payment may be refunded in several parts -- keying on the payment would
+     * collide on the first reversal and silently refuse every later partial refund, which is the
+     * worst possible failure mode: money returned to a customer and never recorded.
+     */
+    public static String refundReversalIdempotencyKey(String refundId) {
+        return "refund-reversal:" + refundId;
     }
 
     /** Total of the DEBIT entries, in minor units. */

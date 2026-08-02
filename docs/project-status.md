@@ -12,15 +12,16 @@ architecture, read the SDD.
 
 ## Where the project is
 
-Seven of Phase 1's eight capabilities are built: **Merchant**, **Identity & Access**,
-**Customer**, **Order**, **Payment**, the **Provider Simulator**, and the **Ledger**. Underneath them sit four
+**All eight of Phase 1's capabilities are built**: **Merchant**, **Identity & Access**,
+**Customer**, **Order**, **Payment**, the **Provider Simulator**, the **Ledger**, and
+**Refund**. Underneath them sit four
 pieces of platform work that had to land first: the application refuses to boot on the committed
 JWT signing key, public writes are idempotent through PostgreSQL, a transactional outbox lets a
 state change and the event announcing it commit together, and **that outbox is finally read**.
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**943 tests, 0 failures.** Fifteen Flyway migrations (V1–V15). Eighteen ADRs. The Postman
+**1028 tests, 0 failures.** Sixteen Flyway migrations (V1–V16). Nineteen ADRs. The Postman
 collection runs thirteen folders, the newest showing a payment become a balance.
 
 **The Ledger is the financial source of truth, and as of this session it exists** (ADR-018).
@@ -84,7 +85,7 @@ The SDD describes ~15 services across 31 sections. This is what the code actuall
 | Provider Simulator | §13.1–§13.2, §13.5–§13.6 | Built. **§13.3's payouts and §13.4's `provider_payouts` are not** — Settlement is Phase 2 and has no consumer. Percentage-based injection is deliberately absent (ADR-017 §5). |
 | Risk & Fraud | §14 | Not started. |
 | Ledger | §15.1–§15.2, §15.6 | Core built (ADR-018): double-entry accounts, journals, immutable entries, and a merchant balance. **§15.3's internal posting API is deliberately absent** — the only writer is an event consumer, so every posting traces to a committed state change. **§15.5's `balance_holds` and `account_balances` are not built**: nothing reserves funds until Settlement, and a SUM over entries cannot drift the way a projection can. No fee split (§15.2) — there is no fee schedule. No reversal path yet; Refund brings it. |
-| Refund | §16 | Not started. |
+| Refund | §16.1–§16.3, §16.5–§16.6 | Built (ADR-019). Create, read, list, cancel, and a Refund-owned callback route. **§16.4's `refund_reservations` and `refund_attempts` are not built** — the first is a second copy of what `refunds.status` says, the second is for a conversation a refund does not have. §16.3's ops retry route is absent. §16.6's third line — reconciling a lost callback — is the known gap. |
 | Settlement, Webhook, Notification/Reporting/Audit, AI Ops | §17–§20 | Not started. |
 | End-to-end workflows | §21 | Only the create-order → create-intent prefix exists; §21.4 reconciliation is absent. |
 | Security & privacy | §25 | Partial: authn, tenant isolation, secret guards. No encryption at rest, no key management, no audit trail beyond `security_events`. |
@@ -420,6 +421,7 @@ The collection is not decorative: dropping the tenant predicate in
 | 016 | Deliver events in-process on a broker-shaped consumer contract, before Kafka |
 | 017 | Simulate providers through scheduled, signed callbacks — never an inline call |
 | 018 | Post the ledger from events, and keep its invariants in the database |
+| 019 | Refunds own their callback route, and the over-refund guard lives in the database |
 
 Note that the SDD's Appendix D has its own ADR list with the same numbers and
 different decisions. When citing one, say which source you mean.
@@ -545,7 +547,7 @@ expiry sweep, the `PROCESSING` timeout and the abandoned-checkout sweep. Every s
 intent enum is now reachable except `PARTIALLY_REFUNDED` and `REFUNDED`, which belong to the
 Refund capability and are verified unreachable by grep.
 
-**The Provider Simulator and the Ledger are built.** What is left in Phase 1: **Refund**.
+**Phase 1 is complete.** Every capability the SDD lists for it is built.
 
 Three things were waiting on the simulator, and it is worth being precise about which of them it
 actually closed, because the temptation to overclaim is real:

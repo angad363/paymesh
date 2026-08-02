@@ -6,8 +6,8 @@ balances, settlements and webhooks. It exists to model the parts of a payment pl
 that are genuinely hard (retries, duplicate delivery, tenant isolation, state machines,
 auditability) rather than the parts that are CRUD.
 
-It is a single Spring Boot application, Java 21, PostgreSQL, Flyway. Seven of Phase 1's
-eight capabilities are built.
+It is a single Spring Boot application, Java 21, PostgreSQL, Flyway. **All eight of Phase 1's
+capabilities are built.**
 
 ## What this is not
 
@@ -41,7 +41,7 @@ tests bypass it and still pass, because the constraint is the guard.
 
 ## Current status
 
-Seven of Phase 1's eight capabilities are built, and **Payment is feature-complete**:
+**All eight of Phase 1's capabilities are built**, and Payment is feature-complete:
 create, attach, confirm, provider callbacks, capture and cancel, with order expiry and
 stranded-payment sweeps behind them. **Domain events are now delivered**: the outbox has a
 relay, an in-process dispatcher and a `processed_events` inbox, and Order consumes
@@ -50,7 +50,10 @@ The **Provider Simulator** drives the whole loop end to end without a hand-signe
 the **Ledger** now posts a balanced double-entry journal when it does — so a merchant has a
 balance, which was not true of this codebase before
 ([ADR-018](docs/decisions/ADR-018-post-the-ledger-from-events-with-the-invariants-in-the-database.md)).
-**943 tests, 0 failures. Fifteen Flyway migrations (V1–V15). Eighteen ADRs.**
+**Refund** closes the loop in the other direction: money goes back out, the Ledger posts a
+reversal, and the payment reaches `REFUNDED`
+([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-their-over-refund-guard.md)).
+**1028 tests, 0 failures. Sixteen Flyway migrations (V1–V16). Nineteen ADRs.**
 
 | Capability | State | What is missing |
 |---|---|---|
@@ -61,7 +64,7 @@ balance, which was not true of this codebase before
 | **Payment** | Built | No refunds, no reconciliation, one shared provider callback secret |
 | **Provider Simulator** | Built | No payouts (Settlement is Phase 2), no refund callbacks (no receiver yet), no percentage-based failure injection ([ADR-017](docs/decisions/ADR-017-simulate-providers-through-scheduled-signed-callbacks.md)) |
 | **Ledger** | Core built | Double-entry posting and `GET /api/v1/balances`. No holds, no `account_balances` projection, no reversal path (Refund brings it), no platform fee — there is no fee schedule to apply ([ADR-018](docs/decisions/ADR-018-post-the-ledger-from-events-with-the-invariants-in-the-database.md)) |
-| **Refund** | Not started | — |
+| **Refund** | Built | No provider-simulator refund callbacks yet, no ops retry route, and nothing reconciles a refund whose callback never arrives ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-their-over-refund-guard.md)) |
 
 Platform pieces, honestly:
 
@@ -70,7 +73,7 @@ Platform pieces, honestly:
 | PostgreSQL + Flyway | Working; Hibernate runs `ddl-auto=validate`, Flyway owns the schema |
 | Idempotency | Working, on four registered routes |
 | Outbox + relay + inbox | Working. Events are written in-transaction, polled by a scheduled relay, dispatched in-process, and deduplicated per consumer in `processed_events`. **Two** consumers now read one event — Order and the Ledger — each with its own inbox row |
-| Double-entry ledger | Working for captures. Debits equal credits, entries are immutable, and both rules are enforced by PostgreSQL triggers rather than by application code |
+| Double-entry ledger | Working for captures **and refund reversals**. Debits equal credits, entries are immutable, and both rules are enforced by PostgreSQL triggers rather than by application code. A correction is a new journal, never an edit |
 | Kafka | None, deliberately — the **consumer contract** is the one a broker needs (envelope in, inbox dedup, idempotent handler), so the transport can be swapped without touching a consumer ([ADR-016](docs/decisions/ADR-016-in-process-event-dispatch-before-kafka.md)) |
 | Redis, rate limiting, API keys, HMAC webhooks | None |
 | Observability | `/actuator/health` and `/actuator/info` only |
@@ -116,6 +119,7 @@ com.paymesh
 │                        + infrastructure/events     ← the payment.succeeded consumer
 ├── payment              + infrastructure/order      ← the OrderLookup adapter
 ├── ledger               + infrastructure/events     ← the payment.succeeded consumer
+├── refund               + infrastructure/payment    ← the PaymentLookup adapter
 ├── simulator            the fake provider; imports no other capability and none imports it
 └── shared
     ├── api              ApiErrorResponse
@@ -461,10 +465,22 @@ conflict and it matters, surface the divergence rather than silently picking one
 
 ## Roadmap
 
-Payment is feature-complete, its events are delivered, the Provider Simulator drives the
-loop end to end, and the Ledger records it. What is left in Phase 1: **Refund**, which
-needs the reversal path the Ledger deliberately does not have yet — a refund without
-double-entry is an untraceable subtraction.
+**Phase 1 is complete.** A payment can be raised, collected, recorded in a double-entry
+ledger and given back, with a fake provider driving the whole loop over real HTTP.
+
+What comes next is not another capability but the operational half nobody has built:
+
+- **Reconciliation.** A refund whose callback never arrives stays `PROCESSING` forever,
+  holding its amount against the captured total. Payment has a timeout sweeper (ADR-015);
+  Refund has no equivalent, and the simulator's reconciliation file (ADR-017) still has no
+  job reading it.
+- **Event-delivery operations.** An event that fails to deliver is retried forever with no
+  dead-letter and no alert — named in ADR-016 as the largest hole in the design and still
+  open.
+- **Refund callbacks from the simulator**, so the last hand-signed request in the test
+  suite can go away.
+
+Then Phase 2, in SDD order: Risk, Settlement, Webhook, Notification, Reporting.
 
 The Ledger will still be the last thing extracted into a service (SDD §30.1). It is the
 financial source of truth — double-entry, immutable entries, corrections as reversal

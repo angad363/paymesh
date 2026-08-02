@@ -22,12 +22,12 @@ payment method, confirms it, receives the "here's what happened" callback from a
 provider, and either collects the money or releases it. Along the way it refuses to
 double-charge, refuses to let one business see another's data, and writes an audit trail.
 
-**Seven of the eight Phase-1 capabilities are built**, and the events they emit are now
-actually delivered: an order whose payment succeeds reaches `PAID` on its own, because Order
-consumes the event rather than Payment reaching across and writing the column (§7). The
-Provider Simulator drives that loop end to end over real HTTP, and the **Ledger** records
-the money — a merchant has a balance, which was not true of this project before. The one
-remaining capability is Refund.
+**All eight Phase-1 capabilities are built.** The events they emit are actually delivered: an
+order whose payment succeeds reaches `PAID` on its own, because Order consumes the event rather
+than Payment reaching across and writing the column (§7). The Provider Simulator drives that loop
+end to end over real HTTP, the **Ledger** records the money — a merchant has a balance — and
+**Refund** sends it back, with the Ledger writing a reversal rather than editing what it already
+wrote.
 
 ---
 
@@ -424,7 +424,75 @@ instant — and under `./mvnw spring-boot:run` the relay is off entirely unless 
 
 ---
 
-### 3.9 The cross-cutting platform
+### 3.9 Refund — giving it back
+
+`POST /api/v1/refunds`, and a second callback route nobody outside a provider ever calls.
+
+**The danger here is the mirror of Payment's.** Payment's nightmare is collecting twice; Refund's
+is **paying out more than was collected**. And it is not exotic — two partial refunds submitted at
+the same moment each read a total that excludes the other, both pass the check, and both are
+written. Neither request did anything wrong.
+
+**So the rule lives in the database, as a trigger checked at commit:**
+
+```
+sum(refunds that are not FAILED and not CANCELLED) <= what the payment captured
+```
+
+Three details in that line are doing real work:
+
+- **A refund still in flight counts.** It has moved no money *yet*, but the provider may be about
+  to. If only successful refunds counted, a merchant could queue ten full refunds while the first
+  was still with the provider, each individually valid.
+- **It compares against what was CAPTURED, never what was charged.** On a partial capture those
+  differ by money that was never collected, and refunding against the larger figure sends out
+  funds that never came in.
+- **A separate trigger refuses a refund in the wrong currency.** 5000 JPY against a 5000 INR
+  capture passes the amount check *exactly* — integers carry no currency — and about sixty times
+  the money goes back out with every other constraint satisfied.
+
+Deleting either trigger turns tests red and leaves every Java-level test green. That was checked
+by actually deleting them.
+
+**Three modules move and none of them calls another.** A successful refund announces itself, and:
+
+| Module | What it does | How it knows |
+|---|---|---|
+| **Ledger** | Writes a reversal journal — the capture, in the opposite direction | It subscribed to `refund.succeeded` |
+| **Payment** | Raises `refundedAmountMinor`, moves to `PARTIALLY_REFUNDED` or `REFUNDED` | It subscribed too |
+
+Payment is now on *both* sides of the event bus — it produces `payment.succeeded` and consumes
+`refund.succeeded` — and still imports nothing new, because both directions are a `Map` read out
+of an envelope.
+
+**This is what finally makes `PARTIALLY_REFUNDED` and `REFUNDED` reachable.** Both have been
+declared since V8 and produced by nothing; `project-status.md` verified it by grep. Every status
+in the payment enum is now reachable.
+
+**The reversal never edits the original.** It cannot — the ledger's entries refuse UPDATE and
+DELETE outright — so a correction is always a *new* journal pointing the other way. Both stay in
+the history, which is the whole reason a ledger is append-only.
+
+**Its own callback route**, `/internal/v1/refund-callbacks/{provider}`, rather than a branch of
+Payment's. Sharing Payment's would have meant Payment knowing refunds exist in order to route the
+callback — the boundary broken in the direction hardest to undo. The one thing that *is* shared is
+the HMAC filter, which moved into `shared` so there is one implementation of the check standing
+between a forged request and a merchant's money, not two.
+
+**What is missing, and the first one matters:**
+
+- **Nothing reconciles a lost callback.** A refund whose provider result never arrives stays
+  `PROCESSING` forever, holding its amount against the captured total. Payment has a timeout
+  sweeper for exactly this shape; Refund does not.
+- **The simulator cannot send refund callbacks** — its outbound-callback model is shaped around
+  payments. So the refund result is the one hand-signed HMAC request left in this project.
+- **Cancel almost always answers 409**, because a refund is handed to the provider in the same
+  transaction that creates it. That is honest rather than broken: `PROCESSING` means the money may
+  already be gone.
+
+---
+
+### 3.10 The cross-cutting platform
 
 Not user-visible, but three pieces do most of the safety work.
 
@@ -813,18 +881,24 @@ the honest accounting.
 
 ### 6.1 Phase-1 capabilities not started
 
-One is left. The Provider Simulator (§3.7) and the Ledger (§3.8) both used to head this list.
-Worth saying what each did *not* close, because it would be easy to assume otherwise:
+None are left. All three that used to head this list are built, and it is worth saying what each
+did *not* close, because it would be easy to assume otherwise:
 
 - **The simulator** produced the reconciliation **file** the 1-hour timeout's recovery leans on,
-  but **not the recovery job**, which still does not exist. A provider *sequence number* and
-  per-provider secrets also remain open, and ADR-017 says why each is somebody else's PR.
-- **The Ledger** posts and reports a balance, but has **no reversal path, no holds, and no fee
-  split** — each waits on the thing that would use it, and ADR-018 argues each one separately.
+  but **not the recovery job**, which still does not exist. It also cannot send *refund*
+  callbacks — its outbound-callback model is shaped around payments — so the one hand-signed
+  request left in this project is a refund result. ADR-017 and ADR-019.
+- **The Ledger** posts, reports a balance and now reverses, but has **no holds and no fee
+  split** — each waits on the thing that would use it. ADR-018.
+- **Refund** has no ops retry route and, more importantly, **nothing reconciles a refund whose
+  callback never arrives**: it stays `PROCESSING` forever, holding its amount against the
+  captured total. Payment has a timeout sweeper for exactly this shape and Refund has no
+  equivalent. ADR-019.
 
 | Capability | SDD | What it would do | Why it's next / not next |
 |---|---|---|---|
-| **Refund** | §16 | Give money back, in full or part | **The last one.** The Ledger exists now (§3.8) but has no reversal path, because nothing had anything to reverse — that is the piece Refund brings. This is why `PARTIALLY_REFUNDED` and `REFUNDED` are unreachable. |
+_Nothing. Every Phase-1 capability is built — see §3. What remains is Phase 2 and the
+operational work in §6.3._
 
 ### 6.2 Phase-2+ services, none started
 
@@ -914,8 +988,8 @@ cd backend
 ./mvnw spring-boot:run          # port 8080
 ```
 
-The documented count is **943 tests, 0 failures**, across 15 Flyway migrations (V1–V15)
-and 18 ADRs.
+The documented count is **1028 tests, 0 failures**, across 16 Flyway migrations (V1–V16)
+and 19 ADRs.
 
 Integration tests run against a throwaway PostgreSQL container, so Flyway migrates an empty
 database on every run and the migrations are re-proved rather than assumed.
