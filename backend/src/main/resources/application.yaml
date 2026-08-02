@@ -129,6 +129,39 @@ paymesh:
     # One secret, one provider. Per-provider secrets and rotation are deferred.
     callback-secret:
 
+  # --- Outbox relay (ADR-016) -------------------------------------------------
+  # outbox_events has been written in-transaction since ADR-010 and, until this
+  # existed, NEVER READ. Every row stayed unpublished, so orders.status never
+  # reached PAID even when its payment succeeded. This is the job that reads the
+  # table, hands each event to the in-process dispatcher, and stamps published_at.
+  events:
+    outbox-relay:
+      # true: register the scheduled bean. Off -> the timer does not exist at all
+      # (the bean is @ConditionalOnProperty), rather than running and doing nothing.
+      #
+      # ON BY DEFAULT, because a relay that is off by default is an outbox with no
+      # relay, which is the state this whole thing exists to end. THE dev PROFILE
+      # TURNS IT OFF -- that profile is what the test suite runs under, and a timer
+      # moving orders to PAID underneath an assertion is a flake generator. See
+      # application-dev.yaml. That also means `./mvnw spring-boot:run` has it off:
+      # to exercise the Postman "Event delivery" folder, start the app with
+      #     PAYMESH_EVENTS_OUTBOX_RELAY_ENABLED=true
+      enabled: true
+      # How long after one pass FINISHES the next one starts (fixedDelay, not
+      # fixedRate -- overlapping passes contend for no benefit).
+      #
+      # SECONDS, NOT MINUTES, AND THE DIFFERENCE FROM THE SWEEPS BELOW IS THE POINT.
+      # A sweep is catch-up work that nobody is watching. This is DELIVERY LATENCY:
+      # the gap between a payment succeeding and the merchant's order reading PAID.
+      # Five minutes of that would be indistinguishable, to anyone using the API,
+      # from the bug this fixes.
+      interval: 2s
+      # How many unpublished events one pass may take. Bounded so a backlog drains
+      # over several passes instead of loading the whole log into memory, and so the
+      # number of transactions one pass opens is predictable. Each event is its own
+      # transaction (one per consumer, plus one for the published_at stamp).
+      batch-size: 100
+
   # --- Order expiry sweep (ADR-014) -------------------------------------------
   # orders.expires_at is a deadline the merchant sets and, until this sweep existed,
   # nothing ever acted on: the status stayed PENDING forever. This is the job that

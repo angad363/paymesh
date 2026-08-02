@@ -265,6 +265,78 @@ public final class Order {
     }
 
     /**
+     * PENDING to PAID or PARTIALLY_PAID, because a payment against this order succeeded.
+     * <p>
+     * <b>THIS IS THE TRANSITION V5 DECLARED AND NOTHING COULD REACH.</b> {@code PAID} and
+     * {@code PARTIALLY_PAID} have sat in the enum and in {@code ck_orders_status} since that
+     * migration, waiting for a consumer of {@code payment.succeeded} to exist. It does now
+     * (ADR-016), and this is the only method that reaches either.
+     * <p>
+     * <b>The split is decided against THIS ORDER'S {@code amountMinor}, never the payment's.</b> The
+     * order states the obligation; a payment intent states an attempt to meet it, and while the two
+     * figures agree today (an intent collects exactly its order's amount), comparing against the
+     * payment's own number would mean an order was marked fully paid on the strength of a document
+     * that is not the obligation. Equal is PAID; anything less is PARTIALLY_PAID.
+     * <p>
+     * PENDING only. A CANCELLED or EXPIRED order must not quietly become PAID -- a redelivered or
+     * reconstructed event arriving after the merchant cancelled would otherwise resurrect it -- and a
+     * PAID order must not be paid again. <b>This refusal is not redundant with the inbox</b>: the
+     * inbox stops the SAME event being applied twice, and this stops a DIFFERENT event describing
+     * the same collection from double-applying. Neither subsumes the other.
+     * <p>
+     * The amount bounds are checked here so the failure names the two figures, but
+     * {@code ck_orders_amount_paid} is the guarantee -- it refuses {@code amount_paid_minor} above
+     * {@code amount_minor} whatever wrote it.
+     *
+     * @param capturedAmountMinor how much was actually collected, in minor units. Positive, and at
+     *                            most this order's own amount
+     * @param paidAt              when the collecting authority says it happened
+     */
+    public Order markPaid(long capturedAmountMinor, Instant paidAt) {
+        if (status != OrderStatus.PENDING) {
+            throw new OrderPaymentNotApplicableException(orderId, status);
+        }
+
+        if (paidAt == null) {
+            throw new IllegalArgumentException("Payment timestamp cannot be null");
+        }
+
+        if (capturedAmountMinor <= 0) {
+            throw new IllegalArgumentException(
+                "Paid amount must be a positive number of minor units"
+            );
+        }
+
+        if (capturedAmountMinor > amountMinor) {
+            throw new IllegalArgumentException(
+                "Paid amount " + capturedAmountMinor + " exceeds the order's " + amountMinor
+                    + " minor units"
+            );
+        }
+
+        return new Order(
+            orderId,
+            merchantId,
+            customerId,
+            merchantOrderReference,
+            amountMinor,
+            currency,
+            capturedAmountMinor,
+            capturedAmountMinor == amountMinor ? OrderStatus.PAID : OrderStatus.PARTIALLY_PAID,
+            description,
+            metadata,
+            expiresAt,
+            cancellationReason,
+            // Left null, as it must be: ck_orders_cancellation refuses a cancelled_at on any status
+            // but CANCELLED, and a paid order was never cancelled.
+            cancelledAt,
+            version,
+            createdAt,
+            paidAt
+        );
+    }
+
+    /**
      * Whether {@code expiredAt} has reached this order's deadline and it is still in a state that
      * could act on it.
      * <p>

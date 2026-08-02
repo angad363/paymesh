@@ -1,6 +1,6 @@
 # PayMesh — Project Status and Roadmap
 
-_Last updated: 1 August 2026. Update this file at the end of a working session, not
+_Last updated: 2 August 2026. Update this file at the end of a working session, not
 during one._
 
 This is the pick-up-here document. It records what exists, what has actually been
@@ -13,13 +13,16 @@ architecture, read the SDD.
 ## Where the project is
 
 Five of Phase 1's eight capabilities are built: **Merchant**, **Identity & Access**,
-**Customer**, **Order**, and the core of **Payment**. Underneath them sit three pieces of
-platform work that had to land first: the application refuses to boot on the committed
-JWT signing key, public writes are idempotent through PostgreSQL, and a transactional
-outbox lets a state change and the event announcing it commit together.
+**Customer**, **Order**, and **Payment**. Underneath them sit four pieces of platform work
+that had to land first: the application refuses to boot on the committed JWT signing key,
+public writes are idempotent through PostgreSQL, a transactional outbox lets a state change
+and the event announcing it commit together, and — new this session — **that outbox is
+finally read**. A scheduled relay, an in-process dispatcher and a `processed_events` inbox
+deliver events to consumers, and Order is the first consumer (ADR-016).
 
-**727 tests, 0 failures.** Twelve Flyway migrations (V1–V12). Fifteen ADRs. The Postman
-collection runs seven folders, the newest covering payment intents.
+**785 tests, 0 failures.** Thirteen Flyway migrations (V1–V12 and V14; V13 is reserved for a
+parallel branch). Sixteen ADRs. The Postman collection runs eleven folders, the newest
+proving an order reaching `PAID` without anyone calling an order endpoint.
 
 The application is still a single deployable with strict module boundaries — the
 modular-monolith-first plan from ADR-001 and SDD §30.1. Nothing has been extracted
@@ -62,10 +65,10 @@ The SDD describes ~15 services across 31 sections. This is what the code actuall
 | Identity & Access | §8 (all), §8.6 token lifetimes | Built. No API keys, no OAuth2/OIDC, no denylist. |
 | Merchant | §9 (all) | Built. Registration only; no team roles, API keys or webhook setup (§9.3). |
 | Customer | §10, and §10.6's hash/display split | Built in the encrypted *shape*; encryption itself deferred (ADR-006). No payment-method endpoints. |
-| Order | §11.1–§11.3, §11.6 | Built. **§11.4's `order_state_history` is missing**; §11.5's events are written to the outbox but never published. |
+| Order | §11.1–§11.4, §11.6 | Built, including `order_state_history`. §11.5's events are written **and now published**. Every status in the enum is reachable. |
 | Payment | §12.1 (partially), §12.2–§12.3, §12.5–§12.6 | Core built. **§12.4 confirm is not implemented**; 2 of the 10 §12.1 states are reachable. |
 | Idempotency & concurrency | §23.1–§23.2 | Built in PostgreSQL. §23.3's Redis accelerator: not built, deliberately. |
-| Events / outbox | §22.1 outbox shape, §24 durability | Table and in-transaction write only. **§22.2–§22.4 (Kafka topics, contracts, consumers) do not exist.** |
+| Events / outbox | §22.1 envelope, §22.3 outbox, §22.4 inbox, §24 durability | Built: in-transaction write, a scheduled relay, an in-process dispatcher, `processed_events`, and one consumer (ADR-016). **§22.2 (Kafka topics and partition keys) does not exist, deliberately** — the consumer contract is a broker's, so the transport can be swapped without touching a consumer. §24's alerting does not exist either. |
 | API Gateway / Edge | §7 | Not built. Its concerns (rate limiting, API keys, HMAC) are absent. |
 | Provider Simulator | §13 | Not started — next after Payment. |
 | Risk & Fraud | §14 | Not started. |
@@ -140,10 +143,12 @@ columns that are never queried, separate hash columns carrying the indexes — b
 | `GET /api/v1/orders` | bearer token | — | Cursor pagination, optional status filter |
 | `POST /api/v1/orders/{id}/cancel` | bearer token | yes | Only from `PENDING`, else 409 |
 
-State machine: `PENDING → CANCELLED` is the only reachable transition today. `PAID`,
-`PARTIALLY_PAID` and `EXPIRED` exist in the enum and the CHECK constraint so Payment
-does not need a migration on arrival, but **no code path reaches them** — verified by
-grep, not by assertion.
+State machine: **every status is reachable.** `PENDING → CANCELLED` is a merchant request,
+`PENDING → EXPIRED` is the sweeper (ADR-014), and `PENDING → PAID` / `PENDING → PARTIALLY_PAID`
+is Order's own consumer of `payment.succeeded` (ADR-016) — the last two were declared in V5 and
+unreachable until this session. `PARTIALLY_PAID` does not lead to `PAID`: a second collection
+against one order is structurally impossible while an order holds at most one live intent for
+exactly its own amount.
 
 Properties worth not breaking:
 
@@ -167,6 +172,14 @@ Properties worth not breaking:
 - **Order reads Customer through a port it owns** (`CustomerLookup`), implemented in
   `order.infrastructure`. Nothing in Order's `api`, `application` or `domain` sees
   Customer. ADR-008.
+- **Order learns that a payment succeeded from an EVENT, not from a call**, and that is what
+  keeps `ModuleBoundaryTest.orderNeverImportsPayment`'s allowlist empty while Order writes
+  `orders.status` on Payment's news. The consumer reads the payload as a `Map`, imports nothing
+  from `com.paymesh.payment`, and takes the merchant from the envelope rather than the payload.
+  **The PAID / PARTIALLY_PAID split compares the captured figure against the ORDER's amount, never
+  the payment's** — the two agree today, so reading the payment's would pass every test that did
+  not check, and would mark an order fully paid on the strength of a document that is not the
+  obligation.
 
 ### Payment — `com.paymesh.payment`
 
@@ -218,6 +231,41 @@ Properties worth not breaking:
 `MerchantId` (the tenant identifier every capability carries), the `Clock` bean,
 `ApiErrorResponse`, the security layer (`SecurityConfiguration`, `AuthenticatedCaller`,
 `AuthenticatedCallers` and the argument resolver built on it), and:
+
+**Event delivery** — `com.paymesh.shared.outbox`, ADR-016. The half of the outbox pattern that
+did not exist until this session.
+
+| Piece | What it does |
+|---|---|
+| `PublishOutboxEventsService` | One pass: claims `published_at IS NULL` oldest-first (bounded), dispatches, stamps. A plain object; `OutboxRelay` is the `@Scheduled` bean and holds one call and one log line |
+| `EventDispatcher` | Handlers indexed by event type. **One transaction per (handler, event)**, holding the inbox claim and everything the handler writes |
+| `ProcessedEventRepository` | `INSERT … ON CONFLICT DO NOTHING`; the row count is the answer. No read, so there is no read-then-write window |
+| `EventHandler` | The consumer contract: envelope in, `Map` payload, must be idempotent, must throw to retry, **must not open a transaction** |
+
+Properties worth not breaking:
+
+- **The mapping from row to envelope happens INSIDE the per-item try/catch**, which is the
+  one thing open item 2 says both sweeps get wrong. `OutboxReader.findUnpublished` returns raw
+  unvalidated rows for exactly this reason. Verified by moving it out: one corrupt row then
+  killed the whole pass *and* a different test in the same class, which is open item 2's
+  pathology reproduced live.
+- **A failed event blocks its own aggregate for the rest of the pass, and nothing else.**
+  Without that, the first failure delivers an aggregate's second event before its first.
+- **The `published_at` stamp commits separately from the handlers**, which is what makes
+  delivery at-least-once. Not a defect to remove: a consumer that will one day live in another
+  process cannot share a transaction with the relay at all.
+- **Per-handler transactions, not per-event.** One transaction across every consumer would mean
+  the Ledger failing rolls back Order's committed work *and* the inbox row recording it, so both
+  re-apply.
+- **`published_at` is deliberately unmapped on the JPA entity and both relay queries are
+  native.** The entity is `@Immutable`, so Hibernate would silently drop an assignment to a
+  mapped field — it would look correct and do nothing.
+- **Three independent mechanisms stop a payment being applied twice** — the inbox row, the
+  consumer's `PENDING` re-check, and `Order.markPaid`'s refusal — and this was *measured*:
+  removing the first two together still left the end-to-end test green. So the inbox is proved
+  by a test with a guard-free handler that counts invocations, not by an order-level assertion.
+  Same shape as the idempotency-filter note below: a partial sabotage that stays green means the
+  sabotage was unfaithful.
 
 **Idempotency** — `com.paymesh.shared.idempotency`, ADR-009. A servlet filter running
 *after* Spring Security, keyed on `merchant + endpoint + Idempotency-Key`, with
@@ -304,12 +352,13 @@ The collection is not decorative: dropping the tenant predicate in
 | 007 | Authentication at the filter chain, tenancy next to the data |
 | 008 | Cross-module reads go through a port owned by the consumer |
 | 009 | Public-write idempotency in PostgreSQL; records deleted on 5xx |
-| 010 | Transactional outbox in PostgreSQL, written in the caller's transaction; no relay yet |
+| 010 | Transactional outbox in PostgreSQL, written in the caller's transaction (its "no relay" section is superseded by 016) |
 | 011 | One live payment intent per order, enforced by a partial unique index |
 | 012 | Provider callbacks deduplicated by `(provider, external_event_id)` and ordered by a monotonic clock |
 | 013 | Guard the confirm transition against an order cancelled underneath it |
 | 014 | Expire orders, but never one holding a live collection |
 | 015 | Time a stranded `PROCESSING` payment out to `FAILED`, with the risk stated |
+| 016 | Deliver events in-process on a broker-shaped consumer contract, before Kafka |
 
 Note that the SDD's Appendix D has its own ADR list with the same numbers and
 different decisions. When citing one, say which source you mean.
@@ -380,13 +429,25 @@ failing test._
    merchant's escape is a fresh key — backstopped by `merchant_order_ref`, which is
    precisely why those two dedup rules stay independent. But the cost is a wedged key,
    not merely table growth.
-14. **The outbox has no relay, so nothing is ever published.** `outbox_events` exists and is
-   written in the same transaction as the state change (ADR-010), but there is no Kafka, no
-   relay and no consumer, so every row stays unpublished. SDD §24 names that exact state as
-   non-corrupting, which is why it was built this way — but it does mean `order.created`,
-   `payment.created` and `payment.cancelled` currently go nowhere, and `orders.status` never
-   moves when a payment succeeds because the consumer that would move it does not exist.
-   Merchant and Customer still emit nothing at all.
+14. **A permanently failing event freezes its own aggregate forever, silently.** _(This
+   replaces the old item 14, "the outbox has no relay" — closed by ADR-016.)_ The relay retries a
+   failed event at the head of every pass and defers that aggregate's later events behind it, so
+   ordering holds and the rest of the platform drains. But there is **no dead-letter table, no
+   attempt counter and no alert** — only a WARN per pass and a growing
+   `min(occurred_at) where published_at is null`, which is precisely SDD §24's metric and needs
+   observability that does not exist. This is the largest known hole in event delivery.
+
+   Smaller residue from the same change: **delivery is asynchronous**, so a merchant polling
+   immediately after a capture may read `PENDING` for a second or two; `occurred_at` is not
+   unique, so two events for one aggregate at the same instant have no defined order (the same
+   trade ADR-012 accepts, with the same fix — a sequence number); neither `outbox_events` nor
+   `processed_events` is ever pruned; and there is one relay instance with no leader election
+   (two would be safe, the inbox arbitrates, but wasteful). **Merchant and Customer still emit no
+   events at all**, and `order.paid`, `order.partially_paid`, `order.created`, `order.cancelled`,
+   `order.expired`, `payment.created`, `payment.cancelled`, `payment.failed`,
+   `payment.authorized` and `payment.requires_action` are all delivered to nobody — dispatched to
+   an empty handler list and stamped published, which is the correct handling of an event nobody
+   wants.
 15. **Smaller:** `DevelopmentSecretGuard` surfaces as a raw stack trace rather than the
     tidy `APPLICATION FAILED TO START` block a `FailureAnalyzer` would give it;
     `ModuleBoundaryTest` allowlists by *filename* rather than path, so a
@@ -430,9 +491,15 @@ truth: double-entry, immutable entries, corrections as reversal transactions rat
 edits. Until it exists, a `SUCCEEDED` payment is operational state and nothing more — no
 balance moves anywhere in this codebase.
 
-**The outbox still has no relay**, so `orders.status` never reaches `PAID` even when its
-payment succeeds. Correct by design and visibly wrong to anyone reading the API; it resolves
-when delivery and an Order-side consumer exist.
+**Event delivery is no longer a gap, and the Ledger is what it unblocks.** The relay,
+dispatcher and inbox exist (ADR-016), `orders.status` reaches `PAID`, and the consumer contract
+is deliberately the one a Kafka consumer would need — an envelope in, `processed_events` dedup,
+an idempotent handler — so the Ledger can be written as a second `EventHandler` on
+`payment.succeeded` and will not have to be rewritten when the transport changes. That is the
+whole argument for building delivery before the Ledger rather than after it.
+
+What is still missing on the delivery side is the operational half rather than the mechanism:
+no dead-letter, no attempt counter, no "oldest unpublished event age" alert (open item 14).
 
 ### Working method that has been effective
 

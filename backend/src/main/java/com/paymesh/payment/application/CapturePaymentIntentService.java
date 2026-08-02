@@ -147,7 +147,27 @@ public final class CapturePaymentIntentService {
             .orElseThrow(() -> new OrderNotPayableException(orderId));
     }
 
-    /** SDD 22.1 names this event. */
+    /**
+     * SDD 22.1 names this event.
+     *
+     * <h2>ONE SHAPE, AND IT USED NOT TO BE (ADR-016 section 6)</h2>
+     *
+     * This payload and {@code RecordProviderCallbackService}'s were different at the same envelope
+     * version 1: this one carried {@code customerId}, {@code captureMethod} and {@code capturedAt},
+     * that one carried {@code occurredAt} and none of the other three. A consumer reading
+     * {@code customerId} would have got a value from one authority and null from the other, with
+     * nothing in the envelope to tell it which it was holding. It never bit because nothing had ever
+     * read an event; the relay is what makes it a live defect, so it is fixed in the same change.
+     * <p>
+     * {@code capturedAt} is gone and {@code occurredAt} carries its value. On this path they were the
+     * same {@link Instant} by construction, so no data is lost, and the one key now means the same
+     * thing on both paths: <b>when the authority that decided this says it happened</b> -- the
+     * provider's clock over there, the capture instant here. The envelope's own {@code occurredAt}
+     * continues to mean when PayMesh recorded it.
+     * <p>
+     * The version stays 1 deliberately. Bumping it would claim there is a v1 consumer to protect and
+     * there has never been one -- no event had ever been delivered to anything.
+     */
     private static OutboxEvent paymentSucceeded(
         PaymentIntent intent,
         PaymentIntentStatus from,
@@ -162,9 +182,10 @@ public final class CapturePaymentIntentService {
         payload.put("orderId", intent.orderId());
         payload.put("customerId", intent.customerId());
         payload.put("amountMinor", intent.amountMinor());
-        // THE FIGURE THAT MAKES orders.PARTIALLY_PAID REACHABLE, once a consumer exists to read it.
-        // It is below amountMinor on a partial capture, and a consumer that assumed the two were
-        // always equal would mark such an order fully PAID.
+        // THE FIGURE THAT MAKES orders.PARTIALLY_PAID REACHABLE, and a consumer now reads it: Order's
+        // PaymentSucceededHandler compares it against the ORDER's amount. It is below amountMinor on
+        // a partial capture, and a consumer that assumed the two were always equal would mark such an
+        // order fully PAID.
         payload.put("capturedAmountMinor", intent.capturedAmountMinor());
         payload.put("currency", intent.currency());
         payload.put("captureMethod", intent.captureMethod().name());
@@ -172,7 +193,7 @@ public final class CapturePaymentIntentService {
         // capture from an automatic one without a second event type.
         payload.put("previousStatus", from.name());
         payload.put("status", intent.status().name());
-        payload.put("capturedAt", occurredAt.toString());
+        payload.put("occurredAt", occurredAt.toString());
 
         return new OutboxEvent(
             EventId.generate(),

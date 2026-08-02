@@ -5520,7 +5520,7 @@
                 "value": "{{callbackSignature}}"
               }
             ],
-            "description": "PROCESSING to SUCCEEDED. Operational state only: no balance moves and no ledger entry exists, so the order stays PENDING -- see open item 1 of project-status."
+            "description": "PROCESSING to SUCCEEDED. Operational state only: no balance moves and no ledger entry exists. The order behind it now reaches PAID once the relay delivers this event (ADR-016) -- see the \"Event delivery\" folder, which proves that end to end."
           },
           "event": [
             {
@@ -7029,7 +7029,7 @@
           ]
         },
         {
-          "name": "The order is still PENDING after a successful capture (200)",
+          "name": "Capture hands the order to the relay (200)",
           "request": {
             "method": "GET",
             "url": {
@@ -7050,7 +7050,7 @@
                 "value": "Bearer {{accessToken}}"
               }
             ],
-            "description": "A KNOWN, DOCUMENTED INCONSISTENCY, ASSERTED SO IT IS NEVER FILED AS A BUG. Payment does not write the orders table (spec 0.5) and the payment.succeeded consumer that would move the status does not exist -- there is no relay. An order whose payment succeeded stays PENDING in the API until both land."
+            "description": "THIS USED TO ASSERT \"still PENDING\", AND THAT CLAIM IS WHAT ADR-016 DELETED. Payment still does not write the orders table (design spec 0.5) -- but Order now consumes payment.succeeded and moves its own status, so a partial capture ends as PARTIALLY_PAID once the relay delivers.\n\nDeliberately accepts EITHER value. This request runs milliseconds after the capture, so which one it sees depends on whether a 2s relay tick has fired -- and with the relay off (the dev profile default) it stays PENDING forever. Asserting either specific value here would be a test that passes on timing. The deterministic proof lives in the \"Event delivery\" folder, which polls."
           },
           "event": [
             {
@@ -7060,8 +7060,12 @@
                 "exec": [
                   "pm.test('200 OK', () => pm.response.to.have.status(200));",
                   "const b = pm.response.json();",
-                  "pm.test('still PENDING', () => pm.expect(b.status).to.eql('PENDING'));",
-                  "pm.test('and nothing was written to amountPaidMinor either', () => pm.expect(b.amountPaidMinor).to.eql(0));"
+                  "// PARTIALLY_PAID because the capture above took 3000 of an authorized 4000. PENDING if the",
+                  "// relay has not ticked yet, or is switched off. Both are correct; neither is assertable alone.",
+                  "pm.test('PENDING or PARTIALLY_PAID, depending on the relay', () =>",
+                  "    pm.expect(b.status).to.be.oneOf(['PENDING', 'PARTIALLY_PAID']));",
+                  "pm.test('amountPaidMinor agrees with the status', () =>",
+                  "    pm.expect(b.amountPaidMinor).to.eql(b.status === 'PENDING' ? 0 : 3000));"
                 ]
               }
             }
@@ -7580,6 +7584,414 @@
                 "exec": [
                   "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
                   "pm.test('the key is required', () => pm.expect(pm.response.json().code).to.eql('IDEMPOTENCY_KEY_REQUIRED'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Event delivery (outbox relay to order.PAID)",
+      "description": "THE LOOP THAT DID NOT CLOSE UNTIL ADR-016: create an order, collect against it, and watch the ORDER reach PAID without anyone calling an order endpoint.\n\nPayment writes payment.succeeded to outbox_events in the same transaction as the payment (ADR-010). The relay reads it, the dispatcher hands it to Order's consumer, and Order moves its own status and amountPaidMinor. Payment still never writes the orders table, which is why ModuleBoundaryTest.orderNeverImportsPayment keeps an empty allowlist.\n\nSTART THE APP WITH THE RELAY ON:\n    PAYMESH_EVENTS_OUTBOX_RELAY_ENABLED=true ./mvnw spring-boot:run\nThe dev profile that spring-boot:run activates switches the relay OFF, because that same profile is what the test suite runs under and a timer moving orders to PAID mid-assertion is a flake generator. Without the variable, the last request here polls ten times and fails.\n\nRuns after the folders above and reuses their access token; it mints its own order, intent and idempotency keys, so it disturbs nothing they left behind.",
+      "item": [
+        {
+          "name": "Setup: an order for the relay to settle (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amountMinor\": 4000,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{edOrderKey}}"
+              }
+            ],
+            "description": "Its own order. An order holds at most one live payment intent (ADR-011), so every folder above has already spent the ones it created."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('edOrderKey', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('edIntentKey', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('edAttachKey', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('edConfirmKey', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('edReference', 'sim_pay_' + pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('providerCallbackSecret', 'dev-only-insecure-provider-callback-secret-change-me');",
+                  "// The poll below counts its own attempts. Reset here so a second run of the folder",
+                  "// does not start already exhausted.",
+                  "pm.collectionVariables.set('edPollAttempt', 0);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.test('PENDING, with nothing paid', () => {",
+                  "    const b = pm.response.json();",
+                  "    pm.expect(b.status).to.eql('PENDING');",
+                  "    pm.expect(b.amountPaidMinor).to.eql(0);",
+                  "});",
+                  "pm.collectionVariables.set('edOrderId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: a payment intent for it (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{edOrderId}}\",\n  \"amountMinor\": 4000,\n  \"currency\": \"INR\",\n  \"captureMethod\": \"AUTOMATIC\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{edIntentKey}}"
+              }
+            ],
+            "description": "AUTOMATIC capture, so the provider callback that reports SUCCEEDED is what collects -- no merchant capture step in this folder."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('edIntentId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: attach a payment method (200)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{edIntentId}}/payment-method",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{edIntentId}}",
+                "payment-method"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentMethodType\": \"CARD\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{edAttachKey}}"
+              }
+            ],
+            "description": "Records the KIND of instrument, never the instrument. Moves no money and calls nothing."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: confirm it (202)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{edIntentId}}/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{edIntentId}}",
+                "confirm"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{edConfirmKey}}"
+              }
+            ],
+            "description": "PROCESSING. 202 because the outcome is undecided until a callback resolves it."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fixed provider instant, so the payload signed below is stable within this run.",
+                  "pm.collectionVariables.set('edOccurredAt', '2026-08-02T11:00:00Z');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "pm.test('PROCESSING', () => pm.expect(pm.response.json().status).to.eql('PROCESSING'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The provider collects the full amount (200, APPLIED)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/internal/v1/provider-callbacks/SIMULATOR",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "v1",
+                "provider-callbacks",
+                "SIMULATOR"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{callbackBody}}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Signature",
+                "value": "{{callbackSignature}}"
+              }
+            ],
+            "description": "PROCESSING to SUCCEEDED, and the payment.succeeded row lands in outbox_events in the same transaction (ADR-010). Everything after this is delivery."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// THE SIGNATURE IS COMPUTED HERE, NOT PASTED -- same scheme as the provider-callbacks",
+                  "// folder above. A fixed signature would be valid for one body at one second.",
+                  "const body = JSON.stringify({",
+                  "    eventId: 'sim_evt_' + pm.variables.replaceIn('{{$guid}}'),",
+                  "    occurredAt: pm.collectionVariables.get('edOccurredAt'),",
+                  "    paymentIntentId: pm.collectionVariables.get('edIntentId'),",
+                  "    providerReference: pm.collectionVariables.get('edReference'),",
+                  "    outcome: 'SUCCEEDED',",
+                  "    capturedAmountMinor: 4000",
+                  "});",
+                  "const t = Math.floor(Date.now() / 1000);",
+                  "const v1 = CryptoJS.HmacSHA256(",
+                  "    t + '.' + body,",
+                  "    pm.collectionVariables.get('providerCallbackSecret')",
+                  ").toString(CryptoJS.enc.Hex);",
+                  "// The request body is literally {{callbackBody}}, so what is sent is byte-for-byte",
+                  "// what was signed.",
+                  "pm.collectionVariables.set('callbackBody', body);",
+                  "pm.collectionVariables.set('callbackSignature', 't=' + t + ',v1=' + v1);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('applied', () => pm.expect(pm.response.json().outcome).to.eql('APPLIED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The payment is SUCCEEDED (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{edIntentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{edIntentId}}"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "The money side is done. SUCCEEDED is operational state: no balance moved and no ledger entry exists (design spec 0.5). The obligation side has not moved yet."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('SUCCEEDED', () => pm.expect(b.status).to.eql('SUCCEEDED'));",
+                  "pm.test('for the whole amount', () => pm.expect(b.capturedAmountMinor).to.eql(4000));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The order reaches PAID once the relay delivers it (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders/{{edOrderId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders",
+                "{{edOrderId}}"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "THE POINT OF THIS FOLDER, AND THE LINE THAT USED TO READ \"still PENDING\". Nobody called an order endpoint: the relay read payment.succeeded out of outbox_events, Order's consumer applied it, and Order moved its own column (ADR-016). Payment still never writes the orders table.\n\nIT POLLS, because delivery is asynchronous by design -- the relay runs on a 2s fixedDelay timer. Up to ten attempts, roughly a second and a half apart.\n\nREQUIRES THE RELAY TO BE ON. `./mvnw spring-boot:run` activates the dev profile, where it is switched off so it cannot mutate rows underneath the test suite. Start the app with PAYMESH_EVENTS_OUTBOX_RELAY_ENABLED=true or this request exhausts its attempts and fails, which is the honest outcome rather than a skip."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A pre-request setTimeout is how a Postman run waits; the sandbox holds the request",
+                  "// until pending timers settle. The relay's default interval is 2s, so this is a little",
+                  "// under one tick per attempt and ten attempts covers a comfortable margin.",
+                  "setTimeout(() => {}, 1500);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const attempt = Number(pm.collectionVariables.get('edPollAttempt') || 0) + 1;",
+                  "pm.collectionVariables.set('edPollAttempt', attempt);",
+                  "",
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "",
+                  "if (b.status === 'PENDING' && attempt < 10) {",
+                  "    // Not delivered yet. Re-run THIS request rather than asserting -- a failure on the",
+                  "    // first poll would only be measuring how fast the timer happened to fire.",
+                  "    console.log('waiting for the relay, attempt ' + attempt + ' of 10');",
+                  "    postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "    pm.test('PAID -- the relay delivered payment.succeeded and Order consumed it', () =>",
+                  "        pm.expect(b.status).to.eql('PAID'));",
+                  "    pm.test('and amountPaidMinor moved with it', () =>",
+                  "        pm.expect(b.amountPaidMinor).to.eql(4000));",
+                  "}"
                 ]
               }
             }
