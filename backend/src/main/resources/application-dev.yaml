@@ -72,6 +72,12 @@ paymesh:
     # and lowers what PayMesh owes the merchant. DevelopmentSecretGuard refuses this exact value
     # unless the dev profile is the sole active one.
     callback-secret: dev-only-insecure-refund-callback-secret-change-me
+  refunds:
+    processing-timeout:
+      # OFF under dev for the same reason as every other sweep: this profile is what the test
+      # suite runs under, and a timer failing refunds mid-assertion would change the very rows
+      # a test is asserting on.
+      enabled: false
   simulator:
     # Same deal again, and it matters as much as the callback secret rather than less: this key
     # is the only authentication on /sim/v1/**, and POST /sim/v1/payments queues the callback

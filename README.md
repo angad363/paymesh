@@ -53,7 +53,7 @@ balance, which was not true of this codebase before
 **Refund** closes the loop in the other direction: money goes back out, the Ledger posts a
 reversal, and the payment reaches `REFUNDED`
 ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)).
-**1086 tests, 0 failures. Eighteen Flyway migrations (V1–V18). Twenty-two ADRs.**
+**1102 tests, 0 failures. Nineteen Flyway migrations (V1–V19). Twenty-three ADRs.**
 
 **A merchant can now be stopped.** Three lifecycle enums had exactly one reachable value each —
 no merchant could be suspended, no user disabled, no customer blocked, and nothing anywhere read
@@ -65,12 +65,12 @@ the caller's role instead of discarding it
 |---|---|---|
 | **Merchant** | Built | Registration is unauthenticated and unrate-limited. API credentials have no expiry, so rotation is a manual discipline ([ADR-022](docs/decisions/ADR-022-authenticate-machines-with-merchant-api-credentials.md)) |
 | **Identity & Access** | Built | Authorization is binary per tenant; access tokens are not revocable before expiry |
-| **Customer** | Built | No list/search, no PATCH, no payment-method endpoints. PII is **plaintext** — stored in the encrypted *shape*, not encrypted ([ADR-006](docs/decisions/ADR-006-defer-customer-pii-encryption.md)) |
+| **Customer** | Built | No list/search. PII is **plaintext** — stored in the encrypted *shape*, not encrypted ([ADR-006](docs/decisions/ADR-006-defer-customer-pii-encryption.md)) |
 | **Order** | Built | Every status is now reachable: `CANCELLED` by request, `EXPIRED` by the sweeper, `PAID` / `PARTIALLY_PAID` by consuming `payment.succeeded` |
 | **Payment** | Built | No refunds, no reconciliation, one shared provider callback secret |
 | **Provider Simulator** | Built | No payouts (Settlement is Phase 2), no refund callbacks (no receiver yet), no percentage-based failure injection ([ADR-017](docs/decisions/ADR-017-simulate-providers-through-scheduled-signed-callbacks.md)) |
 | **Ledger** | Built | Double-entry posting, refund reversals, and `GET /api/v1/balances`. No holds, no `account_balances` projection, no platform fee — there is no fee schedule to apply ([ADR-018](docs/decisions/ADR-018-post-the-ledger-from-events-with-the-invariants-in-the-database.md)) |
-| **Refund** | Built | No provider-simulator refund callbacks yet, no ops retry route, and nothing reconciles a refund whose callback never arrives ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)) |
+| **Refund** | Built | No provider-simulator refund callbacks yet, no ops retry route. A lost callback now times out after six hours rather than holding head-room forever, but nothing reconciles against the provider's own record ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)) |
 
 Platform pieces, honestly:
 

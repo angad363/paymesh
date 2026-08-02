@@ -21,7 +21,7 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1086 tests, 0 failures.** Eighteen Flyway migrations (V1–V18). Twenty-two ADRs. The Postman
+**1102 tests, 0 failures.** Nineteen Flyway migrations (V1–V19). Twenty-three ADRs. The Postman
 collection runs fourteen folders, the newest showing money go back out.
 
 **The Ledger is the financial source of truth, and as of this session it exists** (ADR-018).
@@ -506,6 +506,7 @@ The collection is not decorative: dropping the tenant predicate in
 | 020 | Defer federated login until there is an identity provider |
 | 021 | Make the lifecycle states reachable, and enforce them |
 | 022 | Authenticate machines with merchant API credentials |
+| 023 | Finish the lifecycle claims, and give the token table a writer |
 
 Note that the SDD's Appendix D has its own ADR list with the same numbers and
 different decisions. When citing one, say which source you mean.
@@ -518,6 +519,12 @@ _Items 1 and 2 of the previous list are now **closed in code** and kept below on
 residue survives. The Payment module is feature-complete; what follows is what is known to be
 wrong with it, worst first, and every one of these was found by review rather than by a
 failing test._
+
+0. **`UserStatus.SUSPENDED` and `CLOSED` are still unreachable.** The aggregate methods exist and
+   nothing calls them -- the same defect ADR-021 was written to fix, surviving one layer up.
+   **A departed employee's account cannot be disabled.** Not closed in ADR-023 because there is no
+   admin user API at all and "who may disable a user" is a real question deserving an answer rather
+   than a guess. Also still open: `GET /v1/customers` (SDD 10.3's search).
 
 1. **Timing a stranded payment out can kill the order it exists to rescue.** ADR-015 says
    `FAILED` releases the slot so the merchant can retry. But the intent has been stranded for

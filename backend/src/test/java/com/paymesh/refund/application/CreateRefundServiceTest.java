@@ -306,6 +306,11 @@ class CreateRefundServiceTest {
         }
 
         @Override
+        public List<Refund> findProcessingOlderThan(java.time.Instant threshold, int limit) {
+            return List.of();
+        }
+
+        @Override
         public long activeTotalMinor(String paymentIntentId) {
             return existingActiveTotal;
         }

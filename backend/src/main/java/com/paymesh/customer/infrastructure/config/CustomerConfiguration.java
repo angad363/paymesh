@@ -1,6 +1,17 @@
 package com.paymesh.customer.infrastructure.config;
 
+import com.paymesh.customer.application.AttachPaymentMethodTokenService;
+import com.paymesh.customer.application.ChangeCustomerStatusService;
 import com.paymesh.customer.application.CreateCustomerService;
+import com.paymesh.customer.application.CustomerStatusHistoryRepository;
+import com.paymesh.customer.application.PaymentMethodTokenRepository;
+import com.paymesh.customer.application.UpdateCustomerService;
+import com.paymesh.customer.infrastructure.persistence.jpa.JpaCustomerStatusHistoryRepository;
+import com.paymesh.customer.infrastructure.persistence.jpa.JpaPaymentMethodTokenRepository;
+import com.paymesh.customer.infrastructure.persistence.jpa.SpringDataCustomerStatusHistoryRepository;
+import com.paymesh.customer.infrastructure.persistence.jpa.SpringDataPaymentMethodTokenRepository;
+import com.paymesh.shared.outbox.application.OutboxWriter;
+import org.springframework.transaction.support.TransactionTemplate;
 import com.paymesh.customer.application.CustomerRepository;
 import com.paymesh.customer.application.GetCustomerService;
 import com.paymesh.customer.infrastructure.persistence.jpa.JpaCustomerRepository;
@@ -31,5 +42,54 @@ public class CustomerConfiguration {
     @Bean
     GetCustomerService getCustomerService(CustomerRepository customerRepository) {
         return new GetCustomerService(customerRepository);
+    }
+
+    @Bean
+    CustomerStatusHistoryRepository customerStatusHistoryRepository(
+        SpringDataCustomerStatusHistoryRepository history
+    ) {
+        return new JpaCustomerStatusHistoryRepository(history);
+    }
+
+    @Bean
+    PaymentMethodTokenRepository paymentMethodTokenRepository(
+        SpringDataPaymentMethodTokenRepository tokens
+    ) {
+        return new JpaPaymentMethodTokenRepository(tokens);
+    }
+
+    @Bean
+    UpdateCustomerService updateCustomerService(
+        CustomerRepository customerRepository,
+        GetCustomerService getCustomerService,
+        Clock clock
+    ) {
+        return new UpdateCustomerService(customerRepository, getCustomerService, clock);
+    }
+
+    @Bean
+    ChangeCustomerStatusService changeCustomerStatusService(
+        CustomerRepository customerRepository,
+        CustomerStatusHistoryRepository customerStatusHistoryRepository,
+        GetCustomerService getCustomerService,
+        TransactionTemplate transactionTemplate,
+        Clock clock
+    ) {
+        return new ChangeCustomerStatusService(
+            customerRepository, customerStatusHistoryRepository, getCustomerService,
+            transactionTemplate, clock
+        );
+    }
+
+    @Bean
+    AttachPaymentMethodTokenService attachPaymentMethodTokenService(
+        PaymentMethodTokenRepository paymentMethodTokenRepository,
+        GetCustomerService getCustomerService,
+        OutboxWriter outboxWriter,
+        Clock clock
+    ) {
+        return new AttachPaymentMethodTokenService(
+            paymentMethodTokenRepository, getCustomerService, outboxWriter, clock
+        );
     }
 }
