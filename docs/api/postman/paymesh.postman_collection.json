@@ -376,6 +376,102 @@
     {
       "key": "capCrossKey",
       "value": ""
+    },
+    {
+      "key": "simulatorKey",
+      "value": "dev-only-insecure-simulator-api-key-change-me"
+    },
+    {
+      "key": "simPaymentId",
+      "value": ""
+    },
+    {
+      "key": "simManualId",
+      "value": ""
+    },
+    {
+      "key": "simToday",
+      "value": ""
+    },
+    {
+      "key": "simKeyA",
+      "value": ""
+    },
+    {
+      "key": "simKeyB",
+      "value": ""
+    },
+    {
+      "key": "simKeyC",
+      "value": ""
+    },
+    {
+      "key": "simSuccessKey",
+      "value": ""
+    },
+    {
+      "key": "simDeclineKey",
+      "value": ""
+    },
+    {
+      "key": "simTimeoutKey",
+      "value": ""
+    },
+    {
+      "key": "simManualKey",
+      "value": ""
+    },
+    {
+      "key": "simCaptureKey",
+      "value": ""
+    },
+    {
+      "key": "simCapture2Key",
+      "value": ""
+    },
+    {
+      "key": "simCapture3Key",
+      "value": ""
+    },
+    {
+      "key": "simRefundKey",
+      "value": ""
+    },
+    {
+      "key": "simRefund2Key",
+      "value": ""
+    },
+    {
+      "key": "simE2eRef",
+      "value": ""
+    },
+    {
+      "key": "simE2eOrderKey",
+      "value": ""
+    },
+    {
+      "key": "simE2eOrderId",
+      "value": ""
+    },
+    {
+      "key": "simE2eIntentKey",
+      "value": ""
+    },
+    {
+      "key": "simE2eIntentId",
+      "value": ""
+    },
+    {
+      "key": "simE2eConfirmKey",
+      "value": ""
+    },
+    {
+      "key": "simE2ePayKey",
+      "value": ""
+    },
+    {
+      "key": "simE2ePolls",
+      "value": ""
     }
   ],
   "item": [
@@ -7580,6 +7676,1264 @@
                 "exec": [
                   "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
                   "pm.test('the key is required', () => pm.expect(pm.response.json().code).to.eql('IDEMPOTENCY_KEY_REQUIRED'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Provider Simulator (/sim/v1, ADR-017)",
+      "description": "THE PROVIDER, NOT THE MERCHANT API. Everything here is under /sim/v1 and none of it is part of the surface a merchant integrates against.\n\nAuthentication is X-PayMesh-Simulator-Key and nothing else -- not a bearer token, which is refused on purpose: these routes queue the callback that marks a payment SUCCEEDED, so a merchant able to call them could authorize their own collection (ADR-017 section 3).\n\nThe first eighteen requests need no background job and run against a plain `./mvnw spring-boot:run`. The last six drive a real payment intent end to end and need the callback dispatcher, which the dev profile switches OFF so it cannot mutate rows under a test. Start the server with PAYMESH_SIMULATOR_DISPATCH_ENABLED=true for those.\n\nDepends on Identity & Auth having captured {{accessToken}}, like every other folder here.",
+      "item": [
+        {
+          "name": "Refuse a create carrying no simulator key",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sim/v1/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sim",
+                "v1",
+                "payments"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "description": "The only authentication on /sim/v1/** is X-PayMesh-Simulator-Key. This route queues a callback that marks a payment SUCCEEDED, so an unauthenticated simulator would be an unauthenticated way to collect any payment on the platform (ADR-017 section 3).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idempotencyKey\": \"{{simKeyA}}\",\n  \"callbackReference\": \"pi_unauthenticated\",\n  \"method\": \"CARD\",\n  \"token\": \"tok_sim_success\",\n  \"amountMinor\": 1999,\n  \"currency\": \"INR\",\n  \"captureMethod\": \"AUTOMATIC\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('simKeyA', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('one code for every failure', () => pm.expect(pm.response.json().code).to.eql('SIMULATOR_KEY_INVALID'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refuse a merchant access token as a way in",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sim/v1/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sim",
+                "v1",
+                "payments"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "THE ONE THAT MATTERS. A merchant able to drive the provider could authorize their own collection. The chain permits the route -- there is no bearer token to evaluate -- and the filter refuses it anyway, because a token is not one of the ways to produce the key.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idempotencyKey\": \"{{simKeyB}}\",\n  \"callbackReference\": \"pi_merchant_token\",\n  \"method\": \"CARD\",\n  \"token\": \"tok_sim_success\",\n  \"amountMinor\": 1999,\n  \"currency\": \"INR\",\n  \"captureMethod\": \"AUTOMATIC\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('simKeyB', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('SIMULATOR_KEY_INVALID', () => pm.expect(pm.response.json().code).to.eql('SIMULATOR_KEY_INVALID'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refuse the wrong simulator key",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sim/v1/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sim",
+                "v1",
+                "payments"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Simulator-Key",
+                "value": "not-the-key"
+              }
+            ],
+            "description": "Constant-time comparison, and one answer with no detail about which check failed.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idempotencyKey\": \"{{simKeyC}}\",\n  \"callbackReference\": \"pi_wrong_key\",\n  \"method\": \"CARD\",\n  \"token\": \"tok_sim_success\",\n  \"amountMinor\": 1999,\n  \"currency\": \"INR\",\n  \"captureMethod\": \"AUTOMATIC\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('simKeyC', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Take a payment the provider captures automatically",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sim/v1/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sim",
+                "v1",
+                "payments"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Simulator-Key",
+                "value": "{{simulatorKey}}"
+              }
+            ],
+            "description": "tok_sim_success with AUTOMATIC capture: the provider authorizes and captures in one step and queues a single SUCCEEDED callback. The behaviour is resolved once, at create time, and stored on the row -- changing the failure profile later cannot make this payment change its mind.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idempotencyKey\": \"{{simSuccessKey}}\",\n  \"callbackReference\": \"pi_sim_walkthrough\",\n  \"method\": \"CARD\",\n  \"token\": \"tok_sim_success\",\n  \"amountMinor\": 1999,\n  \"currency\": \"INR\",\n  \"captureMethod\": \"AUTOMATIC\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('simSuccessKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('provider mints its own opaque id', () => pm.expect(b.providerPaymentId).to.match(/^sim_pay_[0-9a-f-]{36}$/));",
+                  "pm.test('CAPTURED', () => pm.expect(b.status).to.eql('CAPTURED'));",
+                  "pm.test('behaviour resolved from the token', () => pm.expect(b.behaviour).to.eql('SUCCEED'));",
+                  "pm.test('captured the full amount', () => pm.expect(b.capturedAmountMinor).to.eql(1999));",
+                  "pm.test('no PayMesh concepts leak into the provider resource', () => {",
+                  "  ['merchantId', 'orderId', 'paymentIntentId'].forEach(f => pm.expect(b).to.not.have.property(f));",
+                  "});",
+                  "pm.collectionVariables.set('simPaymentId', b.providerPaymentId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Replay the identical request: 200, not a second payment",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sim/v1/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sim",
+                "v1",
+                "payments"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Simulator-Key",
+                "value": "{{simulatorKey}}"
+              }
+            ],
+            "description": "Provider-side idempotency, and deliberately NOT the platform's IdempotencyFilter -- that one keys on merchant + endpoint + key, and a provider has no merchant. uq_provider_payments_idempotency_key is the guard. 200 rather than 201 so a caller can tell a replay from a create without diffing bodies.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idempotencyKey\": \"{{simSuccessKey}}\",\n  \"callbackReference\": \"pi_sim_walkthrough\",\n  \"method\": \"CARD\",\n  \"token\": \"tok_sim_success\",\n  \"amountMinor\": 1999,\n  \"currency\": \"INR\",\n  \"captureMethod\": \"AUTOMATIC\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK, not 201', () => pm.response.to.have.status(200));",
+                  "pm.test('the same payment came back', () => pm.expect(pm.response.json().providerPaymentId).to.eql(pm.collectionVariables.get('simPaymentId')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Same key, different amount: 409",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sim/v1/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sim",
+                "v1",
+                "payments"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Simulator-Key",
+                "value": "{{simulatorKey}}"
+              }
+            ],
+            "description": "Fails closed rather than returning the original. Some real providers return the original and it would be friendlier -- but the original may be for a different amount, and answering 'your 1999 payment succeeded' to a request for 50000 is a money-path lie.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idempotencyKey\": \"{{simSuccessKey}}\",\n  \"callbackReference\": \"pi_sim_walkthrough\",\n  \"method\": \"CARD\",\n  \"token\": \"tok_sim_success\",\n  \"amountMinor\": 50000,\n  \"currency\": \"INR\",\n  \"captureMethod\": \"AUTOMATIC\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('SIMULATOR_IDEMPOTENCY_KEY_REUSED', () => pm.expect(pm.response.json().code).to.eql('SIMULATOR_IDEMPOTENCY_KEY_REUSED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A declined payment",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sim/v1/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sim",
+                "v1",
+                "payments"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Simulator-Key",
+                "value": "{{simulatorKey}}"
+              }
+            ],
+            "description": "tok_sim_decline. One FAILED callback carrying the vocabulary a real card network uses.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idempotencyKey\": \"{{simDeclineKey}}\",\n  \"callbackReference\": \"pi_sim_declined\",\n  \"method\": \"CARD\",\n  \"token\": \"tok_sim_decline\",\n  \"amountMinor\": 1999,\n  \"currency\": \"INR\",\n  \"captureMethod\": \"AUTOMATIC\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('simDeclineKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('DECLINED', () => pm.expect(b.status).to.eql('DECLINED'));",
+                  "pm.test('do_not_honour', () => pm.expect(b.failureCode).to.eql('do_not_honour'));",
+                  "pm.test('captured nothing', () => pm.expect(b.capturedAmountMinor).to.eql(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The lost callback: TIMED_OUT, and nothing is ever sent",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sim/v1/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sim",
+                "v1",
+                "payments"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Simulator-Key",
+                "value": "{{simulatorKey}}"
+              }
+            ],
+            "description": "tok_sim_timeout is the only behaviour that queues NO callback row at all. The payment is real at the provider and invisible to PayMesh -- which is exactly the stranded PROCESSING state ADR-015's timeout sweeper exists for, and until this module existed it could only be reached by hand.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idempotencyKey\": \"{{simTimeoutKey}}\",\n  \"callbackReference\": \"pi_sim_timeout\",\n  \"method\": \"CARD\",\n  \"token\": \"tok_sim_timeout\",\n  \"amountMinor\": 1999,\n  \"currency\": \"INR\",\n  \"captureMethod\": \"AUTOMATIC\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('simTimeoutKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.test('TIMED_OUT', () => pm.expect(pm.response.json().status).to.eql('TIMED_OUT'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Take a payment the provider holds for manual capture",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sim/v1/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sim",
+                "v1",
+                "payments"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Simulator-Key",
+                "value": "{{simulatorKey}}"
+              }
+            ],
+            "description": "MANUAL stops at AUTHORIZED and queues an AUTHORIZED callback. ADR-012 section 4 refuses AUTHORIZED -> SUCCEEDED as a provider transition, so a simulator that captured on its own say-so would produce IGNORED_TERMINAL and look broken.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idempotencyKey\": \"{{simManualKey}}\",\n  \"callbackReference\": \"pi_sim_manual\",\n  \"method\": \"CARD\",\n  \"token\": \"tok_sim_success\",\n  \"amountMinor\": 1999,\n  \"currency\": \"INR\",\n  \"captureMethod\": \"MANUAL\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('simManualKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('AUTHORIZED', () => pm.expect(b.status).to.eql('AUTHORIZED'));",
+                  "pm.test('captured nothing yet', () => pm.expect(b.capturedAmountMinor).to.eql(0));",
+                  "pm.collectionVariables.set('simManualId', b.providerPaymentId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Capture the authorization",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sim/v1/payments/{{simManualId}}/capture",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sim",
+                "v1",
+                "payments",
+                "{{simManualId}}",
+                "capture"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Simulator-Key",
+                "value": "{{simulatorKey}}"
+              }
+            ],
+            "description": "Settles the authorization and queues the SUCCEEDED callback.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idempotencyKey\": \"{{simCaptureKey}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('simCaptureKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('CAPTURED', () => pm.expect(b.status).to.eql('CAPTURED'));",
+                  "pm.test('captured the authorized amount', () => pm.expect(b.capturedAmountMinor).to.eql(1999));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Capturing twice is refused",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sim/v1/payments/{{simManualId}}/capture",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sim",
+                "v1",
+                "payments",
+                "{{simManualId}}",
+                "capture"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Simulator-Key",
+                "value": "{{simulatorKey}}"
+              }
+            ],
+            "description": "The one that would collect twice. Refused by the aggregate rather than left to the CHECK constraint, so the caller gets a 409 naming the state instead of a 500 naming an index.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idempotencyKey\": \"{{simCapture2Key}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('simCapture2Key', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('SIMULATED_PAYMENT_NOT_CAPTURABLE', () => pm.expect(pm.response.json().code).to.eql('SIMULATED_PAYMENT_NOT_CAPTURABLE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Capturing an unknown payment is 404",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sim/v1/payments/sim_pay_00000000-0000-4000-8000-000000000000/capture",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sim",
+                "v1",
+                "payments",
+                "sim_pay_00000000-0000-4000-8000-000000000000",
+                "capture"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Simulator-Key",
+                "value": "{{simulatorKey}}"
+              }
+            ],
+            "description": "404 rather than the merchant API's deliberate ambiguity: there is one credential and no tenants here, so a caller holding the key is entitled to know an id is unknown.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idempotencyKey\": \"{{simCapture3Key}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('simCapture3Key', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('SIMULATED_PAYMENT_NOT_FOUND', () => pm.expect(pm.response.json().code).to.eql('SIMULATED_PAYMENT_NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refund half of what was captured",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sim/v1/refunds",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sim",
+                "v1",
+                "refunds"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Simulator-Key",
+                "value": "{{simulatorKey}}"
+              }
+            ],
+            "description": "The refund row is the provider's truth and appears in the reconciliation export. NO CALLBACK IS QUEUED, deliberately: /internal/v1/provider-callbacks speaks only the four payment outcomes, so a refund callback today would retry into a 404 until ABANDONED.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idempotencyKey\": \"{{simRefundKey}}\",\n  \"providerPaymentId\": \"{{simPaymentId}}\",\n  \"amountMinor\": 999\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('simRefundKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('sim_ref_ prefix, not ref_', () => pm.expect(b.providerRefundId).to.match(/^sim_ref_[0-9a-f-]{36}$/));",
+                  "pm.test('SUCCEEDED', () => pm.expect(b.status).to.eql('SUCCEEDED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refunding more than remains is refused",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sim/v1/refunds",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sim",
+                "v1",
+                "refunds"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Simulator-Key",
+                "value": "{{simulatorKey}}"
+              }
+            ],
+            "description": "1999 captured, 999 already refunded, so 1000 remains. The application checks it under a row lock for a readable 422; ck_provider_payments_refunded is what actually guarantees it.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idempotencyKey\": \"{{simRefund2Key}}\",\n  \"providerPaymentId\": \"{{simPaymentId}}\",\n  \"amountMinor\": 1500\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('simRefund2Key', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable Entity', () => pm.response.to.have.status(422));",
+                  "pm.test('REFUND_EXCEEDS_CAPTURED_AMOUNT', () => pm.expect(pm.response.json().code).to.eql('REFUND_EXCEEDS_CAPTURED_AMOUNT'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Configure the ambient failure profile",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sim/v1/failure-profile",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sim",
+                "v1",
+                "failure-profile"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Simulator-Key",
+                "value": "{{simulatorKey}}"
+              }
+            ],
+            "description": "Last-write-wins configuration, so 200 and not 201, and deliberately not idempotency-keyed: a replayed configuration change is the same configuration. The token still wins wherever it names a behaviour -- this only fills in where it names nothing.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"defaultBehaviour\": \"SUCCEED\",\n  \"callbackDelayMs\": 0\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('SUCCEED', () => pm.expect(pm.response.json().defaultBehaviour).to.eql('SUCCEED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "An unknown behaviour is refused without naming a Java type",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sim/v1/failure-profile",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sim",
+                "v1",
+                "failure-profile"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Simulator-Key",
+                "value": "{{simulatorKey}}"
+              }
+            ],
+            "description": "An error body is not a place to hand a caller internal type names.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"defaultBehaviour\": \"EXPLODE\",\n  \"callbackDelayMs\": 0\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('INVALID_REQUEST', () => pm.expect(pm.response.json().code).to.eql('INVALID_REQUEST'));",
+                  "pm.test('no Java type in the message', () => pm.expect(pm.response.json().message).to.not.include('SimulatedBehaviour.'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Export the provider's own truth for today",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/sim/v1/reconciliation/{{simToday}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sim",
+                "v1",
+                "reconciliation",
+                "{{simToday}}"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Simulator-Key",
+                "value": "{{simulatorKey}}"
+              }
+            ],
+            "description": "ADR-015 leans on a reconciliation job as the mitigation for timing a stranded PROCESSING payment out to FAILED. THIS IS THE INPUT, NOT THE JOB -- nothing here compares the provider's truth to PayMesh's, and no payment changes state because a report was read. TIMED_OUT in countsByStatus is the interesting bucket: payments the provider decided and never reported."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('simToday', new Date().toISOString().slice(0, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('the day it was asked for', () => pm.expect(b.date).to.eql(pm.collectionVariables.get('simToday')));",
+                  "pm.test('carries this run\\'s payment', () => pm.expect(b.payments.map(p => p.providerPaymentId)).to.include(pm.collectionVariables.get('simPaymentId')));",
+                  "pm.test('counts are per provider-side status', () => pm.expect(b.countsByStatus).to.be.an('object'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A day the provider took nothing is an empty report, not a 404",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/sim/v1/reconciliation/2020-01-01",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sim",
+                "v1",
+                "reconciliation",
+                "2020-01-01"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Simulator-Key",
+                "value": "{{simulatorKey}}"
+              }
+            ],
+            "description": "A date with no activity is an honest empty answer, not a missing resource."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('no payments', () => pm.expect(pm.response.json().payments).to.be.empty);",
+                  "pm.test('nothing captured', () => pm.expect(pm.response.json().capturedTotalMinor).to.eql(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "End to end: an order for the simulator to collect",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{simE2eOrderKey}}"
+              }
+            ],
+            "description": "REQUIRES THE DISPATCHER. Everything above works with the timer off; the four requests from here on need it, because they wait for a callback to actually be delivered. ./mvnw spring-boot:run activates the dev profile, which sets paymesh.simulator.dispatch.enabled=false -- start the server with PAYMESH_SIMULATOR_DISPATCH_ENABLED=true or these will time out.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"merchantOrderReference\": \"SIM-E2E-{{simE2eRef}}\",\n  \"amountMinor\": 1999,\n  \"currency\": \"INR\",\n  \"description\": \"Collected by the provider simulator\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('simE2eRef', pm.variables.replaceIn('{{$randomInt}}'));",
+                  "pm.collectionVariables.set('simE2eOrderKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('simE2eOrderId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "End to end: create and confirm the intent (PROCESSING)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{simE2eIntentKey}}"
+              }
+            ],
+            "description": "Created here; attached and confirmed by the next two requests.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{simE2eOrderId}}\",\n  \"amountMinor\": 1999,\n  \"currency\": \"INR\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('simE2eIntentKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('simE2eIntentId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "End to end: attach a card",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{simE2eIntentId}}/payment-method",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{simE2eIntentId}}",
+                "payment-method"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "Attach, then confirm. The intent cannot be confirmed without an instrument.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentMethodType\": \"CARD\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "End to end: confirm, leaving the intent PROCESSING",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{simE2eIntentId}}/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{simE2eIntentId}}",
+                "confirm"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{simE2eConfirmKey}}"
+              }
+            ],
+            "description": "PROCESSING is the state with no local exit -- cancel is refused from it, because an in-flight attempt may already have succeeded at the provider. Only a callback moves it, and the next request is what makes one happen.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('simE2eConfirmKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('PROCESSING', () => pm.expect(pm.response.json().status).to.eql('PROCESSING'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "End to end: tell the provider to collect it",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sim/v1/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sim",
+                "v1",
+                "payments"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Simulator-Key",
+                "value": "{{simulatorKey}}"
+              }
+            ],
+            "description": "callbackReference is the intent id, and the simulator neither knows nor cares what it is -- it is stored, echoed into the callback body, and never interpreted. A real provider models exactly this as a merchant reference passthrough.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idempotencyKey\": \"{{simE2ePayKey}}\",\n  \"callbackReference\": \"{{simE2eIntentId}}\",\n  \"method\": \"CARD\",\n  \"token\": \"tok_sim_success\",\n  \"amountMinor\": 1999,\n  \"currency\": \"INR\",\n  \"captureMethod\": \"AUTOMATIC\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('simE2ePayKey', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('simE2ePolls', 0);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.test('CAPTURED at the provider', () => pm.expect(pm.response.json().status).to.eql('CAPTURED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "End to end: poll until the callback lands and the intent is SUCCEEDED",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{simE2eIntentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{simE2eIntentId}}"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "THE ASSERTION THE WHOLE FOLDER EXISTS FOR, and the first one in this collection that is not immediate. The dispatcher runs every two seconds, so this re-requests itself until the intent leaves PROCESSING -- up to about thirty seconds. A timeout here almost always means the server was started without PAYMESH_SIMULATOR_DISPATCH_ENABLED=true."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const status = pm.response.json().status;",
+                  "const polls = Number(pm.collectionVariables.get('simE2ePolls') || 0);",
+                  "",
+                  "if (status === 'PROCESSING' && polls < 15) {",
+                  "  pm.collectionVariables.set('simE2ePolls', polls + 1);",
+                  "  setTimeout(() => {}, 2000);",
+                  "  postman.setNextRequest('End to end: poll until the callback lands and the intent is SUCCEEDED');",
+                  "} else {",
+                  "  pm.test('the simulator drove the intent to SUCCEEDED', () => pm.expect(status).to.eql('SUCCEEDED'));",
+                  "  pm.test('for exactly the order amount', () => pm.expect(pm.response.json().capturedAmountMinor).to.eql(1999));",
+                  "  postman.setNextRequest(null);",
+                  "}"
                 ]
               }
             }

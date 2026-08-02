@@ -590,3 +590,81 @@ means the sabotage was unfaithful, and that gets said rather than papered over.
 - `docs/project-status.md`, `docs/project-walkthrough.md` (§3.6 and §6.1) and `README.md`:
   Provider Simulator moves from "not started" to built. Edits scoped to simulator facts only
    — a sibling branch owns the outbox-relay prose in the same files.
+
+---
+
+## 11. What implementation found that the spec did not (added after the fact)
+
+Recorded here rather than only in the PR, because the spec is the thing the next capability gets
+copied from.
+
+### 11.1 A schema/entity mismatch the WIP could not have caught
+
+`V13` declares `currency CHAR(3)`, matching every other money table in this codebase, but
+`SimulatedPaymentJpaEntity` mapped it as a plain `String` — which Hibernate binds to `VARCHAR`.
+`ddl-auto=validate` refuses to start on that drift:
+
+```
+Schema validation: wrong column type encountered in column [currency] in table
+[provider_payments]; found [bpchar (Types#CHAR)], but expecting [varchar(3) (Types#VARCHAR)]
+```
+
+The fix is the annotation the other entities already carry, `@JdbcTypeCode(SqlTypes.CHAR)`.
+
+**Why it survived until the first `@SpringBootTest`:** the module compiled cleanly and every class
+was written before anything booted a context. Nothing below the API layer needs a running Hibernate,
+so a whole module can be written, reviewed and committed with a schema mismatch in it. §1 should have
+said that the first thing to write is the context test, not the last.
+
+### 11.2 §8's test list was right, but one test in it can pass for the wrong reason
+
+`replaysTheOriginalPaymentWithTwoHundredForARepeatedKey` calls a `createBody` helper. Because the
+helper mints a fresh `callbackReference` each call — and the request hash covers it — calling it
+twice produces two genuinely different requests and a correct `409`. The first draft of that test
+therefore reported working replay logic as a bug.
+
+The same trap runs the other way in `refusesARepeatedKeyCarryingADifferentRequest`: build the second
+body from the helper and the test is green even if the hash ignored `amountMinor` entirely, which is
+the one field whose being ignored would be a money-path lie. Both now hold the body constant and vary
+exactly one thing.
+
+### 11.3 The Postman folder is unrun, like the callback folder before it
+
+§10 asked for the folder and it exists — 24 requests. It has **not been executed**: that needs a live
+server plus `newman`, and its last six requests additionally need
+`PAYMESH_SIMULATOR_DISPATCH_ENABLED=true`, because `./mvnw spring-boot:run` activates `dev`, which
+switches the dispatcher off by design. This is the same unexercised state as open item 7, now
+doubled. The Java tests cover the same ground and are run.
+
+### 11.4 The one place the boundary nearly leaked, and it is not in the module
+
+§0 forbids importing another capability, and the module does not. But `SimulatorConfiguration` needs
+the callback signing secret, which Payment owns as `ProviderProperties` — and injecting that bean
+would have been the natural Spring thing to do, would have compiled, and would have broken the rule
+the spec spends its first page on.
+
+It is bound by `@Value("${paymesh.provider.callback-secret}")` instead. A property name is a string
+the two sides agree on, like the JSON contract; the bean is a type from a package this module may not
+see. Worth noting that `ModuleBoundaryTest` **cannot** catch the wrong choice here — it greps
+imports, and a property key is not one — so this is guarded by a comment rather than by a test.
+
+### 11.5 §8.1's sabotage list held up
+
+Six were run and all six turned the expected tests red, with no unfaithful passes:
+
+| Sabotage | Result |
+|---|---|
+| Sign `body` alone instead of `t + "." + body` | 6 of 7 delivery tests red |
+| Re-serialize the body after signing | 6 of 7 delivery tests red |
+| Fresh `external_event_id` for the duplicate's second row | both duplicate tests red |
+| Stamp the stale row's `occurred_at` later instead of earlier | out-of-order test red |
+| Enqueue a callback for `TIMEOUT` | both lost-callback tests red |
+| `enabled: true` in `application-dev.yaml` | 2 config tests red |
+
+The signature sabotages leave exactly one delivery test green — the `TIMEOUT` case, which sends
+nothing and therefore cannot depend on signing. That is the correct result rather than a gap.
+
+Two from §8.1 were **not** run: dropping `uq_provider_payments_idempotency_key` (it lives in an
+applied migration, and editing one breaks Flyway's checksum on every existing database) and removing
+the create `TransactionTemplate` wrap. The idempotency claim is therefore covered by an
+`assert count == 1` after three identical posts rather than by a demonstrated constraint failure.

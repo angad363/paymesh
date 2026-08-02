@@ -41,10 +41,10 @@ tests bypass it and still pass, because the constraint is the guard.
 
 ## Current status
 
-Five of Phase 1's eight capabilities are built, and **Payment is feature-complete**:
-create, attach, confirm, provider callbacks, capture and cancel, with order expiry and
-stranded-payment sweeps behind them. **727 tests, 0 failures. Twelve Flyway migrations
-(V1–V12). Fifteen ADRs.**
+Six of Phase 1's eight capabilities are built. **Payment is feature-complete** — create, attach,
+confirm, provider callbacks, capture and cancel, with order expiry and stranded-payment sweeps
+behind them — and the **Provider Simulator** now drives it end to end without a hand-signed request.
+**813 tests, 0 failures. Thirteen Flyway migrations (V1–V13). Sixteen ADRs.**
 
 | Capability | State | What is missing |
 |---|---|---|
@@ -53,7 +53,7 @@ stranded-payment sweeps behind them. **727 tests, 0 failures. Twelve Flyway migr
 | **Customer** | Built | PII is **plaintext** — stored in the encrypted *shape*, not encrypted ([ADR-006](docs/decisions/ADR-006-defer-customer-pii-encryption.md)) |
 | **Order** | Built | `PENDING → CANCELLED` is the only reachable transition; no `order_state_history`, no expiry sweeper |
 | **Payment** | Core built | Attach payment method, confirm, provider callbacks and manual capture are three more PRs |
-| **Provider Simulator** | Not started | — |
+| **Provider Simulator** | Built | No payouts (Settlement is Phase 2), no refund callbacks (no receiver yet), no percentage-based failure injection ([ADR-017](docs/decisions/ADR-017-simulate-providers-through-scheduled-signed-callbacks.md)) |
 | **Ledger** | Not started | — |
 | **Refund** | Not started | — |
 
@@ -436,7 +436,7 @@ cancelled order.
 Alongside those: `order_state_history`, an order expiry sweeper, and a `PROCESSING`
 timeout.
 
-Then, in SDD order: **Provider Simulator** → **Ledger** → **Refund**. The Ledger is
+Then, in SDD order: **Ledger** → **Refund**. The Ledger is
 deliberately last in Phase 1 and will be the last thing extracted into a service. It is
 the financial source of truth — double-entry, immutable entries, corrections as reversal
 transactions rather than edits — and a `SUCCEEDED` payment is only operational state

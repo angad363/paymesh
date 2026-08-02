@@ -39,7 +39,7 @@ confusion about these.
 | **Customer** | A person who buys from a merchant. Belongs to that merchant only — merchant A and merchant B can both have "alice@example.com" and they are two unrelated rows. |
 | **Order** | **The bill.** "Alice owes us ₹40.00." It is a statement of what is owed, and it does not move money. |
 | **Payment Intent** | **The attempt to collect that bill.** A separate object from the order on purpose: an order is what is owed, an intent is one try at collecting it, and a try can fail without destroying the bill. |
-| **Provider** | The outside company that actually touches the card network. PayMesh doesn't have one yet, so the "Provider Simulator" is a planned fake. The endpoint it will call already exists. |
+| **Provider** | The outside company that actually touches the card network. PayMesh has no real one, so the **Provider Simulator** stands in — a fake provider that behaves like one on purpose: it succeeds, declines, asks for a 3DS challenge, goes silent, or sends the same callback twice. It talks to PayMesh only over HTTP, exactly as a real provider would, so nothing in PayMesh knows it is fake. |
 
 Two conventions that will otherwise look like bugs:
 
@@ -316,7 +316,49 @@ name any merchant's intent. Deferred until per-provider credentials exist.
 
 ---
 
-### 3.7 The cross-cutting platform
+### 3.7 The Provider Simulator — the thing that finally calls that endpoint
+
+`POST /sim/v1/payments` and four siblings.
+
+For most of this project's life the endpoint above had no caller. Confirming a payment left it in
+`PROCESSING` forever unless a human signed a callback by hand, which meant the states that matter
+most were reachable only by someone with an HMAC key and a terminal. The simulator is the fake
+provider that calls it.
+
+**The design rule that shapes everything else: it does not know PayMesh exists.** It writes no
+PayMesh table, imports no PayMesh code, and holds no shared type — its only influence is an HTTP POST
+of a signed body, exactly as a real provider's would be. Delete the module and every other test still
+passes. A test enforces this in both directions with no exceptions at all, which is stricter than any
+other module boundary in the codebase.
+
+**You drive it with a token, and the token decides what happens:**
+
+| Token | What PayMesh sees |
+|---|---|
+| `tok_sim_success` | Payment succeeds. With `MANUAL` capture it stops at `AUTHORIZED` and waits to be captured |
+| `tok_sim_decline` | Payment fails, `do_not_honour` |
+| `tok_sim_3ds` | A 3DS challenge — `REQUIRES_ACTION` with a URL |
+| `tok_sim_timeout` | **Nothing at all.** No callback is ever sent, and the intent strands in `PROCESSING` — the lost-callback case the 1-hour timeout exists for |
+| `tok_sim_duplicate` | The same callback twice: applied once, second answered `DUPLICATE` |
+| `tok_sim_stale` | Two callbacks arriving out of order: the late one refused as stale |
+
+**Why the callback goes through a scheduler instead of being sent inline.** An inline POST from
+inside the create handler would be less code and would make the module pointless: *every* failure
+above is a property of **when and how often** a callback arrives, and none of them can be expressed
+by code that sends one immediately and returns. Late, lost, doubled and out-of-order are the whole
+product here.
+
+**It has its own key**, `X-PayMesh-Simulator-Key`, and not the callback secret — because one value
+doing both jobs means one leak does both. A merchant's login token is refused here for the same
+reason it is refused on the callback route: anyone who can drive the provider can make it collect.
+
+**The dispatcher is switched off in local development.** It is a timer, and the test suite runs under
+the same profile, so it would mutate rows out from under assertions. To watch it work by hand, start
+the app with `PAYMESH_SIMULATOR_DISPATCH_ENABLED=true`.
+
+---
+
+### 3.8 The cross-cutting platform
 
 Not user-visible, but three pieces do most of the safety work.
 
@@ -694,9 +736,14 @@ the honest accounting.
 
 ### 6.1 Phase-1 capabilities not started
 
+Two are left. The Provider Simulator used to head this list and is now built — see §3.7. Worth
+saying what it did *not* close, because it would be easy to assume otherwise: it produced the
+reconciliation **file** the 1-hour timeout's recovery leans on, but **not the recovery job**, which
+still does not exist. A provider *sequence number* and per-provider secrets also remain open, and
+ADR-017 says why each is somebody else's PR.
+
 | Capability | SDD | What it would do | Why it's next / not next |
 |---|---|---|---|
-| **Provider Simulator** | §13 | A fake payment provider: accepts a charge, waits, fires the callback, simulates declines and 3DS | **The next one.** Three already-written-down things wait on it: reconciliation (the recovery the 1-hour timeout leans on and which doesn't exist), a provider *sequence number* (the proper fix for the tie-refusal trade-off in the ordering guard), and per-provider secrets replacing today's single shared one. The callback endpoint was built as exactly the seam it plugs into. |
 | **Ledger** | §15 | Double-entry bookkeeping. Every transaction's debits equal its credits, entries are immutable, corrections are new reversal transactions | **Deliberately last in Phase 1**, and last to be extracted into a service. It is the financial source of truth. Until it exists, a `SUCCEEDED` payment is operational state and nothing more — **no balance moves anywhere in this codebase.** |
 | **Refund** | §16 | Give money back, in full or part | Needs the Ledger first — a refund without double-entry is an untraceable subtraction. This is why `PARTIALLY_REFUNDED` and `REFUNDED` are unreachable. |
 
