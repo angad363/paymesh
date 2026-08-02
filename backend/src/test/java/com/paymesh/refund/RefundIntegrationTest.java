@@ -612,6 +612,6 @@ class RefundIntegrationTest {
             "IN",
             "INR",
             CREATED_AT
-        )).merchantId();
+        ).activate(CREATED_AT)).merchantId();
     }
 }

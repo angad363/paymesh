@@ -1,6 +1,7 @@
 package com.paymesh.shared.idempotency.infrastructure;
 
 import com.paymesh.TestcontainersConfiguration;
+import com.paymesh.merchant.application.ChangeMerchantStatusService;
 import com.paymesh.merchant.application.RegisterMerchantCommand;
 import com.paymesh.merchant.application.RegisterMerchantService;
 import com.paymesh.shared.idempotency.application.IdempotencyRepository;
@@ -61,12 +62,17 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 @AutoConfigureMockMvc
 class IdempotencyIntegrationTest {
 
+    /** Platform staff, for fixtures that must activate a merchant. */
+    private static final String PLATFORM_OPERATOR = "usr_00000000-0000-4000-8000-000000000001";
+
     private static final String PATH = "/api/v1/test-orders";
     private static final String ENDPOINT = "POST " + PATH;
     private static final String BODY = "{\"amountMinor\":1000}";
 
     private final MockMvc mockMvc;
     private final RegisterMerchantService merchants;
+
+    private final ChangeMerchantStatusService changeMerchantStatus;
     private final IdempotencyRepository records;
     private final CountingHandler handler;
 
@@ -76,11 +82,13 @@ class IdempotencyIntegrationTest {
     IdempotencyIntegrationTest(
         MockMvc mockMvc,
         RegisterMerchantService merchants,
+        ChangeMerchantStatusService changeMerchantStatus,
         IdempotencyRepository records,
         CountingHandler handler
     ) {
         this.mockMvc = mockMvc;
         this.merchants = merchants;
+        this.changeMerchantStatus = changeMerchantStatus;
         this.records = records;
         this.handler = handler;
     }
@@ -88,9 +96,13 @@ class IdempotencyIntegrationTest {
     @BeforeEach
     void resetHandlerAndRegisterMerchant() {
         handler.reset();
-        merchantId = merchants.register(new RegisterMerchantCommand(
+        MerchantId registered = merchants.register(new RegisterMerchantCommand(
             "Tenant Co", "tenant-" + UUID.randomUUID() + "@example.test", "IN", "INR"
-        )).merchantId().value();
+        )).merchantId();
+
+        activate(registered);
+
+        merchantId = registered.value();
     }
 
     /**
@@ -348,5 +360,16 @@ class IdempotencyIntegrationTest {
         int executions() {
             return executions.get();
         }
+    }
+
+    /**
+     * REGISTRATION PRODUCES PENDING_VERIFICATION, AND A PENDING MERCHANT CANNOT WRITE (ADR-021).
+     * <p>
+     * Every fixture that goes on to create an order, an intent or a refund has to take the merchant
+     * through the real activation path first, exactly as a platform operator would. Skipping it
+     * would mean these tests exercised a merchant state no live merchant can be in.
+     */
+    private void activate(MerchantId merchantId) {
+        changeMerchantStatus.activate(merchantId, PLATFORM_OPERATOR, "Activated for test");
     }
 }

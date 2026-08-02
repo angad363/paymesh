@@ -5,7 +5,9 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 
-import java.util.LinkedHashSet;
+import java.util.EnumSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -45,32 +47,56 @@ public final class AuthenticatedCallers {
             return Optional.empty();
         }
 
-        return Optional.of(new AuthenticatedCaller(jwt.getSubject(), merchantIds(jwt)));
+        return Optional.of(new AuthenticatedCaller(jwt.getSubject(), rolesByMerchant(jwt)));
     }
 
-    private static Set<MerchantId> merchantIds(Jwt jwt) {
+    /**
+     * Parses {@code "<ROLE>:<merchantId>"} into merchant-scoped roles.
+     *
+     * <h2>THE ROLE USED TO BE SPLIT OFF AND DROPPED ON THE FLOOR</h2>
+     *
+     * This method kept only the merchant id, which is why every authenticated caller had identical
+     * authority at their tenant. It now keeps both halves. ADR-021.
+     *
+     * <h2>Unparseable entries grant nothing, and never throw</h2>
+     *
+     * A malformed or unknown scope is skipped rather than rejected. Throwing would turn one bad
+     * entry in a token into a total denial for a caller whose other scopes are fine -- and an
+     * attacker who can put a string in a claim could then deny service to anyone. Skipping means
+     * the worst a bad entry can do is grant less.
+     */
+    private static Map<MerchantId, Set<CallerRole>> rolesByMerchant(Jwt jwt) {
         List<String> scopedRoles = jwt.getClaimAsStringList(ROLES_CLAIM);
 
         if (scopedRoles == null) {
-            return Set.of();
+            return Map.of();
         }
 
-        Set<MerchantId> merchantIds = new LinkedHashSet<>();
+        Map<MerchantId, Set<CallerRole>> byMerchant = new LinkedHashMap<>();
 
         for (String scopedRole : scopedRoles) {
             int separator = scopedRole.indexOf(':');
 
-            if (separator < 0 || separator == scopedRole.length() - 1) {
+            if (separator < 1 || separator == scopedRole.length() - 1) {
+                continue;
+            }
+
+            Optional<CallerRole> role = CallerRole.parse(scopedRole.substring(0, separator));
+
+            if (role.isEmpty()) {
                 continue;
             }
 
             try {
-                merchantIds.add(MerchantId.from(scopedRole.substring(separator + 1)));
+                MerchantId merchantId = MerchantId.from(scopedRole.substring(separator + 1));
+
+                byMerchant.computeIfAbsent(merchantId, id -> EnumSet.noneOf(CallerRole.class))
+                    .add(role.get());
             } catch (IllegalArgumentException ignored) {
-                // Unparseable scope grants nothing. See the class comment.
+                // Unparseable merchant grants nothing. See the method comment.
             }
         }
 
-        return merchantIds;
+        return byMerchant;
     }
 }

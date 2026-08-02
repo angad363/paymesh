@@ -3,6 +3,7 @@ package com.paymesh.order.api;
 import com.paymesh.TestcontainersConfiguration;
 import com.paymesh.customer.application.CreateCustomerCommand;
 import com.paymesh.customer.application.CreateCustomerService;
+import com.paymesh.merchant.application.ChangeMerchantStatusService;
 import com.paymesh.merchant.application.RegisterMerchantCommand;
 import com.paymesh.merchant.application.RegisterMerchantService;
 import com.paymesh.shared.tenant.MerchantId;
@@ -44,8 +45,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @ActiveProfiles("dev")
 class OrderControllerTest {
 
+    /** Platform staff, for fixtures that must activate a merchant. */
+    private static final String PLATFORM_OPERATOR = "usr_00000000-0000-4000-8000-000000000001";
+
     private final MockMvc mockMvc;
     private final RegisterMerchantService merchants;
+
+    private final ChangeMerchantStatusService changeMerchantStatus;
     private final CreateCustomerService customers;
 
     private String merchantId;
@@ -55,10 +61,12 @@ class OrderControllerTest {
     OrderControllerTest(
         MockMvc mockMvc,
         RegisterMerchantService merchants,
+        ChangeMerchantStatusService changeMerchantStatus,
         CreateCustomerService customers
     ) {
         this.mockMvc = mockMvc;
         this.merchants = merchants;
+        this.changeMerchantStatus = changeMerchantStatus;
         this.customers = customers;
     }
 
@@ -555,12 +563,26 @@ class OrderControllerTest {
     }
 
     private String registerMerchant() {
-        return merchants.register(new RegisterMerchantCommand(
+        MerchantId merchantId = merchants.register(new RegisterMerchantCommand(
             "Tenant Co", "tenant-" + UUID.randomUUID() + "@example.test", "IN", "INR"
-        )).merchantId().value();
+        )).merchantId();
+        activate(merchantId);
+
+        return merchantId.value();
     }
 
     private static tools.jackson.databind.JsonNode json(MvcResult result) throws Exception {
         return new ObjectMapper().readTree(result.getResponse().getContentAsString());
+    }
+
+    /**
+     * REGISTRATION PRODUCES PENDING_VERIFICATION, AND A PENDING MERCHANT CANNOT WRITE (ADR-021).
+     * <p>
+     * Every fixture that goes on to create an order, an intent or a refund has to take the merchant
+     * through the real activation path first, exactly as a platform operator would. Skipping it
+     * would mean these tests exercised a merchant state no live merchant can be in.
+     */
+    private void activate(MerchantId merchantId) {
+        changeMerchantStatus.activate(merchantId, PLATFORM_OPERATOR, "Activated for test");
     }
 }

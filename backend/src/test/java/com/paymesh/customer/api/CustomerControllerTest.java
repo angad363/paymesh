@@ -1,8 +1,10 @@
 package com.paymesh.customer.api;
 
 import com.paymesh.TestcontainersConfiguration;
+import com.paymesh.merchant.application.ChangeMerchantStatusService;
 import com.paymesh.merchant.application.RegisterMerchantCommand;
 import com.paymesh.merchant.application.RegisterMerchantService;
+import com.paymesh.shared.tenant.MerchantId;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -34,15 +36,25 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class CustomerControllerTest {
 
     private final MockMvc mockMvc;
+    /** Platform staff, for fixtures that must activate a merchant. */
+    private static final String PLATFORM_OPERATOR = "usr_00000000-0000-4000-8000-000000000001";
+
     private final RegisterMerchantService merchants;
+
+    private final ChangeMerchantStatusService changeMerchantStatus;
 
     private String merchantId;
     private String otherMerchantId;
 
     @Autowired
-    CustomerControllerTest(MockMvc mockMvc, RegisterMerchantService merchants) {
+    CustomerControllerTest(
+        MockMvc mockMvc,
+        RegisterMerchantService merchants,
+        ChangeMerchantStatusService changeMerchantStatus
+    ) {
         this.mockMvc = mockMvc;
         this.merchants = merchants;
+        this.changeMerchantStatus = changeMerchantStatus;
     }
 
     @BeforeEach
@@ -232,13 +244,20 @@ class CustomerControllerTest {
     }
 
     private String registerMerchant() {
-        return merchants.register(
+        // REGISTRATION PRODUCES PENDING_VERIFICATION, AND A PENDING MERCHANT CANNOT WRITE
+        // (ADR-021). A fixture that goes on to create customers has to take the merchant through
+        // the real activation path first, exactly as a platform operator would.
+        MerchantId merchantId = merchants.register(
             new RegisterMerchantCommand(
                 "Tenant Co",
                 "tenant-" + UUID.randomUUID() + "@example.test",
                 "IN",
                 "INR"
             )
-        ).merchantId().value();
+        ).merchantId();
+
+        changeMerchantStatus.activate(merchantId, PLATFORM_OPERATOR, "Activated for test");
+
+        return merchantId.value();
     }
 }

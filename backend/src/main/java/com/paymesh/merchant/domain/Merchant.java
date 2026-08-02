@@ -173,6 +173,119 @@ public final class Merchant {
         return normalizedDefaultCurrency;
     }
 
+    /**
+     * PENDING_VERIFICATION to ACTIVE, when a platform operator approves verification.
+     *
+     * <h2>THIS METHOD DID NOT EXIST, AND CLAUDE.md CITED IT TWICE</h2>
+     *
+     * {@code merchant.activate()} was the repository's canonical example of the intent-method
+     * convention -- named in CLAUDE.md's architecture rules and again in its change conventions --
+     * and the aggregate had no state-changing method at all. Every merchant was permanently
+     * PENDING_VERIFICATION, nothing read the status, and there was no way to stop a merchant
+     * trading. ADR-021.
+     *
+     * <h2>Re-activating a SUSPENDED merchant is the same transition</h2>
+     *
+     * Deliberately one method rather than {@code activate()} plus {@code reinstate()}: the
+     * resulting state is identical, the authority required is identical, and two methods would
+     * invite two subtly different sets of rules for the same outcome. CLOSED is the exception --
+     * see {@link #close}.
+     */
+    public Merchant activate(Instant activatedAt) {
+        requireTransitionTo(MerchantStatus.ACTIVE, activatedAt);
+
+        return withStatus(MerchantStatus.ACTIVE, activatedAt);
+    }
+
+    /**
+     * Stop this merchant trading, reversibly.
+     * <p>
+     * THE CONTROL THE PLATFORM DID NOT HAVE. A suspended merchant fails every authenticated write
+     * -- orders, intents, captures, refunds -- at the boundary, before any handler runs. Reads
+     * still work, because a suspended merchant reconciling what happened to them is not a threat
+     * and blocking it only makes the incident harder to resolve.
+     */
+    public Merchant suspend(Instant suspendedAt) {
+        requireTransitionTo(MerchantStatus.SUSPENDED, suspendedAt);
+
+        return withStatus(MerchantStatus.SUSPENDED, suspendedAt);
+    }
+
+    /**
+     * Terminal. A closed merchant cannot be reopened -- it registers again.
+     * <p>
+     * Terminal on purpose: closure is the state that should be reached only deliberately, and a
+     * reversible closure is just a suspension with a more alarming name. Keeping them distinct is
+     * what makes "suspended" safe to use freely during an investigation.
+     */
+    public Merchant close(Instant closedAt) {
+        requireTransitionTo(MerchantStatus.CLOSED, closedAt);
+
+        return withStatus(MerchantStatus.CLOSED, closedAt);
+    }
+
+    /**
+     * Correct the presentational name. Normalized through the same rule as registration, because a
+     * value that arrives by a different door must not be held to a different standard.
+     */
+    public Merchant rename(String newBusinessName, Instant renamedAt) {
+        if (renamedAt == null) {
+            throw new IllegalArgumentException("A merchant rename needs an instant");
+        }
+
+        return new Merchant(
+            merchantId, normalizeBusinessName(newBusinessName), email, country, defaultCurrency,
+            status, createdAt, renamedAt
+        );
+    }
+
+    /** True when this merchant may perform authenticated writes. */
+    public boolean canTransact() {
+        return status == MerchantStatus.ACTIVE;
+    }
+
+    private Merchant withStatus(MerchantStatus next, Instant at) {
+        return new Merchant(
+            merchantId, businessName, email, country, defaultCurrency, next, createdAt, at
+        );
+    }
+
+    /**
+     * Every legal move, in one place.
+     *
+     * <pre>
+     *   PENDING_VERIFICATION --&gt; ACTIVE | CLOSED
+     *   ACTIVE               --&gt; SUSPENDED | CLOSED
+     *   SUSPENDED            --&gt; ACTIVE | CLOSED
+     *   CLOSED               --&gt; (nothing)
+     * </pre>
+     *
+     * A PENDING_VERIFICATION merchant may be closed without ever being activated, which is what
+     * happens to an abandoned or rejected registration.
+     */
+    private void requireTransitionTo(MerchantStatus next, Instant at) {
+        if (at == null) {
+            throw new IllegalArgumentException("A merchant status change needs an instant");
+        }
+
+        if (at.isBefore(createdAt)) {
+            throw new IllegalArgumentException(
+                "A merchant status change cannot predate the registration"
+            );
+        }
+
+        boolean legal = switch (status) {
+            case PENDING_VERIFICATION -> next == MerchantStatus.ACTIVE || next == MerchantStatus.CLOSED;
+            case ACTIVE -> next == MerchantStatus.SUSPENDED || next == MerchantStatus.CLOSED;
+            case SUSPENDED -> next == MerchantStatus.ACTIVE || next == MerchantStatus.CLOSED;
+            case CLOSED -> false;
+        };
+
+        if (!legal) {
+            throw new MerchantStatusNotChangeableException(merchantId, status, next);
+        }
+    }
+
     public MerchantId merchantId() {
         return merchantId;
     }

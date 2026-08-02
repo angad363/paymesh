@@ -284,7 +284,7 @@ class JpaOrderRepositoryTest {
             "IN",
             "INR",
             Instant.now()
-        )).merchantId();
+        ).activate(Instant.now())).merchantId();
     }
 
     private String existingCustomer(MerchantId merchantId) {

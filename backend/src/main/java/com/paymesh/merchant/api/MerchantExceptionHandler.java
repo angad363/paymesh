@@ -1,6 +1,11 @@
 package com.paymesh.merchant.api;
 
+import com.paymesh.merchant.application.KycSubmissionAlreadyOpenException;
+import com.paymesh.merchant.application.KycSubmissionNotFoundException;
+import com.paymesh.merchant.domain.KycSubmissionAlreadyDecidedException;
+import com.paymesh.merchant.domain.MerchantStatusNotChangeableException;
 import com.paymesh.shared.api.ApiErrorResponse;
+import com.paymesh.shared.security.InsufficientRoleException;
 import com.paymesh.merchant.application.MerchantEmailAlreadyExistsException;
 import com.paymesh.merchant.application.MerchantNotFoundException;
 import org.springframework.http.HttpStatus;
@@ -65,6 +70,39 @@ public final class MerchantExceptionHandler {
             exception.getMessage()
         );
     }
+
+    /**
+     * 403, and distinct from {@code NoMerchantScopeException}: that one means the caller could not
+     * be resolved to a tenant at all, this means they were and simply may not do it.
+     */
+    @ExceptionHandler(InsufficientRoleException.class)
+    @ResponseStatus(HttpStatus.FORBIDDEN)
+    ApiErrorResponse handleInsufficientRole(InsufficientRoleException exception) {
+        return ApiErrorResponse.of("INSUFFICIENT_ROLE", exception.getMessage());
+    }
+
+    /** 409: the state machine refused the transition, and the message says where it actually is. */
+    @ExceptionHandler(MerchantStatusNotChangeableException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    ApiErrorResponse handleStatusNotChangeable(MerchantStatusNotChangeableException exception) {
+        return ApiErrorResponse.of("MERCHANT_STATUS_NOT_CHANGEABLE", exception.getMessage());
+    }
+
+    @ExceptionHandler(KycSubmissionAlreadyOpenException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    ApiErrorResponse handleKycAlreadyOpen(KycSubmissionAlreadyOpenException exception) {
+        return ApiErrorResponse.of("KYC_SUBMISSION_ALREADY_OPEN", exception.getMessage());
+    }
+
+    @ExceptionHandler(KycSubmissionAlreadyDecidedException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    ApiErrorResponse handleKycAlreadyDecided(KycSubmissionAlreadyDecidedException exception) {
+        return ApiErrorResponse.of("KYC_SUBMISSION_ALREADY_DECIDED", exception.getMessage());
+    }
+
+    @ExceptionHandler(KycSubmissionNotFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    ApiErrorResponse handleKycNotFound(KycSubmissionNotFoundException exception) {
+        return ApiErrorResponse.of("KYC_SUBMISSION_NOT_FOUND", exception.getMessage());
+    }
 }
-
-

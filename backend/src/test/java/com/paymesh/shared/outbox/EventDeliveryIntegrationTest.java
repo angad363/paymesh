@@ -625,7 +625,7 @@ class EventDeliveryIntegrationTest {
             "IN",
             "INR",
             CREATED_AT
-        )).merchantId();
+        ).activate(CREATED_AT)).merchantId();
     }
 
     /** Claims the event, then fails. The claim must not outlive the failure. */

@@ -202,6 +202,61 @@ public final class Customer {
         return normalizedValue;
     }
 
+    /**
+     * The merchant blocks their own buyer.
+     *
+     * <h2>{@code BLOCKED} WAS DECLARED AND UNREACHABLE</h2>
+     *
+     * {@code CustomerStatus} has had two values since V3 and only ACTIVE was ever produced -- one
+     * of the three lifecycle enums the Phase 1 audit found frozen. ADR-021.
+     *
+     * <h2>Blocking is the merchant's decision, not the platform's</h2>
+     *
+     * Unlike a merchant suspension, PayMesh has no opinion here: this is a business deciding it
+     * will not sell to someone. So the actor is MERCHANT, and a merchant-scoped caller may do it
+     * to their own customers and nobody else's.
+     * <p>
+     * What it stops is <b>new collection</b> -- an order or a payment intent naming a blocked
+     * customer is refused. It deliberately does NOT touch money already in flight: a payment that
+     * is already PROCESSING settles normally, because a customer who has been charged is owed an
+     * outcome whatever the merchant now thinks of them, and a refund of an existing payment must
+     * stay possible for exactly the same reason.
+     */
+    public Customer block(Instant blockedAt) {
+        requireStatusChange(CustomerStatus.BLOCKED, blockedAt);
+
+        return withStatus(CustomerStatus.BLOCKED, blockedAt);
+    }
+
+    /** Reversible, unlike a merchant closure: a blocked buyer is a commercial decision. */
+    public Customer unblock(Instant unblockedAt) {
+        requireStatusChange(CustomerStatus.ACTIVE, unblockedAt);
+
+        return withStatus(CustomerStatus.ACTIVE, unblockedAt);
+    }
+
+    /** True when this customer may be named on a new order or payment intent. */
+    public boolean canBeCharged() {
+        return status == CustomerStatus.ACTIVE;
+    }
+
+    private Customer withStatus(CustomerStatus next, Instant at) {
+        return new Customer(
+            customerId, merchantId, merchantReference, email, emailHash, name, phone, phoneHash,
+            next, createdAt, at
+        );
+    }
+
+    private void requireStatusChange(CustomerStatus next, Instant at) {
+        if (at == null) {
+            throw new IllegalArgumentException("A customer status change needs an instant");
+        }
+
+        if (status == next) {
+            throw new CustomerStatusNotChangeableException(customerId, status, next);
+        }
+    }
+
     public CustomerId customerId() {
         return customerId;
     }

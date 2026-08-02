@@ -53,13 +53,19 @@ balance, which was not true of this codebase before
 **Refund** closes the loop in the other direction: money goes back out, the Ledger posts a
 reversal, and the payment reaches `REFUNDED`
 ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)).
-**1031 tests, 0 failures. Sixteen Flyway migrations (V1–V16). Nineteen ADRs.**
+**1063 tests, 0 failures. Seventeen Flyway migrations (V1–V17). Twenty-one ADRs.**
+
+**A merchant can now be stopped.** Three lifecycle enums had exactly one reachable value each —
+no merchant could be suspended, no user disabled, no customer blocked, and nothing anywhere read
+merchant status. Every state is reachable now, enforced on every write, and authorization reads
+the caller's role instead of discarding it
+([ADR-021](docs/decisions/ADR-021-make-the-lifecycle-states-reachable-and-enforce-them.md)).
 
 | Capability | State | What is missing |
 |---|---|---|
-| **Merchant** | Built | Registration is unauthenticated and unrated-limited |
+| **Merchant** | Built | Registration is unauthenticated and unrate-limited. No API credentials yet, so server-to-server integration still needs a human's token |
 | **Identity & Access** | Built | Authorization is binary per tenant; access tokens are not revocable before expiry |
-| **Customer** | Built | PII is **plaintext** — stored in the encrypted *shape*, not encrypted ([ADR-006](docs/decisions/ADR-006-defer-customer-pii-encryption.md)) |
+| **Customer** | Built | No list/search, no PATCH, no payment-method endpoints. PII is **plaintext** — stored in the encrypted *shape*, not encrypted ([ADR-006](docs/decisions/ADR-006-defer-customer-pii-encryption.md)) |
 | **Order** | Built | Every status is now reachable: `CANCELLED` by request, `EXPIRED` by the sweeper, `PAID` / `PARTIALLY_PAID` by consuming `payment.succeeded` |
 | **Payment** | Built | No refunds, no reconciliation, one shared provider callback secret |
 | **Provider Simulator** | Built | No payouts (Settlement is Phase 2), no refund callbacks (no receiver yet), no percentage-based failure injection ([ADR-017](docs/decisions/ADR-017-simulate-providers-through-scheduled-signed-callbacks.md)) |
