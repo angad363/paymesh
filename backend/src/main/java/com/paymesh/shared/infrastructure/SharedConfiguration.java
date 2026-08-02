@@ -1,5 +1,7 @@
 package com.paymesh.shared.infrastructure;
 
+import com.paymesh.shared.security.ApiKeyAuthenticationFilter;
+import com.paymesh.shared.security.ApiKeyAuthenticator;
 import com.paymesh.shared.tenant.MerchantStatusFilter;
 import com.paymesh.shared.tenant.MerchantStatusGate;
 import org.springframework.boot.security.autoconfigure.web.servlet.SecurityFilterProperties;
@@ -69,6 +71,44 @@ public class SharedConfiguration {
 
         // AFTER the API-key filter, which may be what establishes the caller in the first place.
         registration.setOrder(SecurityFilterProperties.DEFAULT_FILTER_ORDER + 2);
+        return registration;
+    }
+
+    /**
+     * NOT a {@code FilterRegistrationBean}, unlike every other filter here.
+     * <p>
+     * A registration bean puts a filter in the servlet chain, which runs <b>after</b> Spring
+     * Security's -- and the security chain ends with {@code .anyRequest().authenticated()}, so an
+     * ApiKey request would be refused 401 before the filter ever saw the header. This is a plain
+     * bean that {@code SecurityConfiguration} inserts INTO the security chain with
+     * {@code addFilterBefore}.
+     * <p>
+     * Being a plain {@code Filter} bean would normally make Boot auto-register it in the servlet
+     * chain as well, running it twice. {@code OncePerRequestFilter} makes the second run a no-op,
+     * and the {@code FilterRegistrationBean} below disables the auto-registration outright so it
+     * does not happen at all.
+     */
+    @Bean
+    ApiKeyAuthenticationFilter apiKeyAuthenticationFilter(
+        ApiKeyAuthenticator apiKeyAuthenticator,
+        ObjectMapper objectMapper
+    ) {
+        return new ApiKeyAuthenticationFilter(apiKeyAuthenticator, objectMapper);
+    }
+
+    /**
+     * Stops Boot auto-registering the filter above in the servlet chain, where it would run a
+     * second time -- outside the security chain and after it, which is the position that does not
+     * work.
+     */
+    @Bean
+    FilterRegistrationBean<ApiKeyAuthenticationFilter> apiKeyAuthenticationFilterNotInServletChain(
+        ApiKeyAuthenticationFilter filter
+    ) {
+        FilterRegistrationBean<ApiKeyAuthenticationFilter> registration =
+            new FilterRegistrationBean<>(filter);
+
+        registration.setEnabled(false);
         return registration;
     }
 }

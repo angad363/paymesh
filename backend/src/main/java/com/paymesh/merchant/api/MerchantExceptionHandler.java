@@ -1,7 +1,9 @@
 package com.paymesh.merchant.api;
 
+import com.paymesh.merchant.application.ApiCredentialNotFoundException;
 import com.paymesh.merchant.application.KycSubmissionAlreadyOpenException;
 import com.paymesh.merchant.application.KycSubmissionNotFoundException;
+import com.paymesh.merchant.domain.ApiCredentialAlreadyRevokedException;
 import com.paymesh.merchant.domain.KycSubmissionAlreadyDecidedException;
 import com.paymesh.merchant.domain.MerchantStatusNotChangeableException;
 import com.paymesh.shared.api.ApiErrorResponse;
@@ -104,5 +106,18 @@ public final class MerchantExceptionHandler {
     @ResponseStatus(HttpStatus.NOT_FOUND)
     ApiErrorResponse handleKycNotFound(KycSubmissionNotFoundException exception) {
         return ApiErrorResponse.of("KYC_SUBMISSION_NOT_FOUND", exception.getMessage());
+    }
+
+    /** 404 for another merchant's credential too -- 403 would confirm the id exists (ADR-007). */
+    @ExceptionHandler(ApiCredentialNotFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    ApiErrorResponse handleApiCredentialNotFound(ApiCredentialNotFoundException exception) {
+        return ApiErrorResponse.of("API_CREDENTIAL_NOT_FOUND", exception.getMessage());
+    }
+
+    @ExceptionHandler(ApiCredentialAlreadyRevokedException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    ApiErrorResponse handleAlreadyRevoked(ApiCredentialAlreadyRevokedException exception) {
+        return ApiErrorResponse.of("API_CREDENTIAL_ALREADY_REVOKED", exception.getMessage());
     }
 }

@@ -1,6 +1,7 @@
 package com.paymesh.merchant.api;
 
 import com.paymesh.merchant.application.ChangeMerchantStatusService;
+import com.paymesh.merchant.application.IssueApiCredentialService;
 import com.paymesh.merchant.application.GetMerchantService;
 import com.paymesh.merchant.application.MerchantNotFoundException;
 import com.paymesh.merchant.application.RegisterMerchantCommand;
@@ -8,6 +9,7 @@ import com.paymesh.merchant.application.KycSubmissionNotFoundException;
 import com.paymesh.merchant.application.RegisterMerchantService;
 import com.paymesh.merchant.application.ReviewKycSubmissionService;
 import com.paymesh.merchant.application.UpdateMerchantService;
+import com.paymesh.merchant.domain.ApiCredentialId;
 import com.paymesh.merchant.domain.KycSubmissionId;
 import com.paymesh.merchant.domain.Merchant;
 import com.paymesh.shared.security.AuthenticatedCaller;
@@ -33,18 +35,22 @@ public final class MerchantController {
 
     private final ReviewKycSubmissionService reviewKycSubmissionService;
 
+    private final IssueApiCredentialService issueApiCredentialService;
+
     public MerchantController(
         RegisterMerchantService registerMerchantService,
         GetMerchantService getMerchantService,
         UpdateMerchantService updateMerchantService,
         ChangeMerchantStatusService changeMerchantStatusService,
-        ReviewKycSubmissionService reviewKycSubmissionService
+        ReviewKycSubmissionService reviewKycSubmissionService,
+        IssueApiCredentialService issueApiCredentialService
     ) {
         this.registerMerchantService = registerMerchantService;
         this.getMerchantService = getMerchantService;
         this.updateMerchantService = updateMerchantService;
         this.changeMerchantStatusService = changeMerchantStatusService;
         this.reviewKycSubmissionService = reviewKycSubmissionService;
+        this.issueApiCredentialService = issueApiCredentialService;
     }
 
     @PostMapping
@@ -205,6 +211,63 @@ public final class MerchantController {
             KycSubmissionId.from(kycSubmissionId),
             caller.requirePlatformAdmin(),
             request == null ? null : request.notes()
+        ));
+    }
+
+    // --- API credentials ------------------------------------------------------------------
+
+    /**
+     * SDD 9.3. THE SECRET IS IN THIS RESPONSE AND NOWHERE ELSE, EVER.
+     *
+     * <h2>MERCHANT_ADMIN ONLY, AND A KEY CANNOT MINT A KEY</h2>
+     *
+     * Issuing a credential widens access, so it needs the administrative role. It also means a
+     * leaked MERCHANT_USER key cannot escalate itself -- and a leaked MERCHANT_ADMIN key can only
+     * mint keys no more powerful than itself, because {@code ck_api_credentials_role} refuses
+     * PLATFORM_ADMIN outright.
+     */
+    @PostMapping("/{merchantId}/api-credentials")
+    @ResponseStatus(HttpStatus.CREATED)
+    CreatedApiCredentialResponse createCredential(
+        @PathVariable String merchantId,
+        @Valid @RequestBody CreateApiCredentialRequest request,
+        AuthenticatedCaller caller
+    ) {
+        MerchantId requested = requireOwn(merchantId, caller, CallerRole.MERCHANT_ADMIN);
+
+        return CreatedApiCredentialResponse.from(issueApiCredentialService.issue(
+            requested,
+            CallerRole.parse(request.role()).orElseThrow(
+                () -> new IllegalArgumentException("Unknown role " + request.role())
+            ),
+            request.label()
+        ));
+    }
+
+    /** Never returns a secret -- {@code ApiCredentialResponse} has no field for one. */
+    @GetMapping("/{merchantId}/api-credentials")
+    List<ApiCredentialResponse> listCredentials(
+        @PathVariable String merchantId,
+        AuthenticatedCaller caller
+    ) {
+        MerchantId requested = requireOwn(merchantId, caller, CallerRole.MERCHANT_ADMIN);
+
+        return issueApiCredentialService.list(requested).stream()
+            .map(ApiCredentialResponse::from)
+            .toList();
+    }
+
+    /** Revocation is a state change, not a delete -- see {@code ApiCredential}. */
+    @DeleteMapping("/{merchantId}/api-credentials/{apiCredentialId}")
+    ApiCredentialResponse revokeCredential(
+        @PathVariable String merchantId,
+        @PathVariable String apiCredentialId,
+        AuthenticatedCaller caller
+    ) {
+        MerchantId requested = requireOwn(merchantId, caller, CallerRole.MERCHANT_ADMIN);
+
+        return ApiCredentialResponse.from(issueApiCredentialService.revoke(
+            requested, ApiCredentialId.from(apiCredentialId)
         ));
     }
 

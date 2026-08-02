@@ -9,6 +9,7 @@ import org.springframework.http.MediaType;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.access.AccessDeniedHandler;
@@ -36,9 +37,18 @@ public class SecurityConfiguration {
     SecurityFilterChain securityFilterChain(
         HttpSecurity http,
         AuthenticationEntryPoint authenticationEntryPoint,
-        AccessDeniedHandler accessDeniedHandler
+        AccessDeniedHandler accessDeniedHandler,
+        ApiKeyAuthenticationFilter apiKeyAuthenticationFilter
     ) throws Exception {
         return http
+            // SERVER-TO-SERVER AUTHENTICATION, INSIDE THE CHAIN AND IT HAS TO BE (ADR-022).
+            //
+            // The chain ends with .anyRequest().authenticated(). A filter registered as an ordinary
+            // FilterRegistrationBean runs AFTER the chain, so an ApiKey request would already have
+            // been refused 401 before that filter ever saw the header. Before the bearer filter
+            // rather than after, so the context is populated by whichever scheme was presented and
+            // exactly one of them runs.
+            .addFilterBefore(apiKeyAuthenticationFilter, BearerTokenAuthenticationFilter.class)
             // No cookies, no sessions, no ambient credential for a cross-site form post to ride
             // on: every request carries its own bearer token or it is anonymous.
             .csrf(csrf -> csrf.disable())
