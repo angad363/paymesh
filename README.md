@@ -53,7 +53,7 @@ balance, which was not true of this codebase before
 **Refund** closes the loop in the other direction: money goes back out, the Ledger posts a
 reversal, and the payment reaches `REFUNDED`
 ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)).
-**1103 tests, 0 failures. Nineteen Flyway migrations (V1–V19). Twenty-three ADRs.**
+**1118 tests, 0 failures. Twenty Flyway migrations (V1–V20). Twenty-four ADRs.**
 
 **A merchant can now be stopped.** Three lifecycle enums had exactly one reachable value each —
 no merchant could be suspended, no user disabled, no customer blocked, and nothing anywhere read
@@ -64,7 +64,7 @@ the caller's role instead of discarding it
 | Capability | State | What is missing |
 |---|---|---|
 | **Merchant** | Built | Registration is unauthenticated and unrate-limited. API credentials have no expiry, so rotation is a manual discipline ([ADR-022](docs/decisions/ADR-022-authenticate-machines-with-merchant-api-credentials.md)) |
-| **Identity & Access** | Built | Authorization is binary per tenant; access tokens are not revocable before expiry |
+| **Identity & Access** | Built | Access tokens are not revocable before expiry, so a suspension bites within fifteen minutes rather than instantly ([ADR-024](docs/decisions/ADR-024-disabling-people-at-two-scopes.md)) |
 | **Customer** | Built | No list/search. PII is **plaintext** — stored in the encrypted *shape*, not encrypted ([ADR-006](docs/decisions/ADR-006-defer-customer-pii-encryption.md)) |
 | **Order** | Built | Every status is now reachable: `CANCELLED` by request, `EXPIRED` by the sweeper, `PAID` / `PARTIALLY_PAID` by consuming `payment.succeeded` |
 | **Payment** | Built | No refunds, no reconciliation, one shared provider callback secret |

@@ -31,6 +31,13 @@ final class Fakes {
         private final Map<String, User> byId = new LinkedHashMap<>();
 
         @Override
+        public java.util.List<User> findByMerchant(com.paymesh.shared.tenant.MerchantId merchantId) {
+            return byId.values().stream()
+                .filter(user -> user.hasRoleAt(merchantId.value()))
+                .toList();
+        }
+
+        @Override
         public boolean existsByEmail(String normalizedEmail) {
             return findByEmail(normalizedEmail).isPresent();
         }
@@ -92,6 +99,24 @@ final class Fakes {
             byHash.put(tokenHash, token.revoke(revokedAt));
 
             return 1;
+        }
+
+        @Override
+        public int revokeAllForUser(
+            com.paymesh.identity.domain.UserId userId, Instant revokedAt
+        ) {
+            int revoked = 0;
+
+            for (Map.Entry<String, RefreshToken> entry : byHash.entrySet()) {
+                RefreshToken token = entry.getValue();
+
+                if (token.userId().equals(userId) && !token.isRevoked()) {
+                    entry.setValue(token.revoke(revokedAt));
+                    revoked++;
+                }
+            }
+
+            return revoked;
         }
 
         @Override

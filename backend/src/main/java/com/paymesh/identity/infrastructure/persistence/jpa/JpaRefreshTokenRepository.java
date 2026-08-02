@@ -2,6 +2,7 @@ package com.paymesh.identity.infrastructure.persistence.jpa;
 
 import com.paymesh.identity.application.RefreshTokenRepository;
 import com.paymesh.identity.domain.RefreshToken;
+import com.paymesh.identity.domain.UserId;
 
 import java.time.Instant;
 import java.util.Optional;
@@ -30,6 +31,11 @@ public final class JpaRefreshTokenRepository implements RefreshTokenRepository {
     @Override
     public int revokeIfLive(String tokenHash, Instant revokedAt) {
         return refreshTokens.revokeIfLive(tokenHash, revokedAt);
+    }
+
+    @Override
+    public int revokeAllForUser(UserId userId, Instant revokedAt) {
+        return refreshTokens.revokeAllForUser(userId.value(), revokedAt);
     }
 
     @Override

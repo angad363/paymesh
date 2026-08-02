@@ -46,4 +46,19 @@ public interface SpringDataRefreshTokenRepository
            and token.revokedAt is null
         """)
     int revokeFamily(@Param("familyId") String familyId, @Param("revokedAt") Instant revokedAt);
+
+    /**
+     * Every live session this user has, across all families.
+     * <p>
+     * A suspension is about the person, not about one suspicious chain of tokens -- so it is
+     * broader than {@link #revokeFamily}, which exists for reuse detection.
+     */
+    @Modifying
+    @Query("""
+        update RefreshTokenJpaEntity token
+           set token.revokedAt = :revokedAt
+         where token.userId = :userId
+           and token.revokedAt is null
+        """)
+    int revokeAllForUser(@Param("userId") String userId, @Param("revokedAt") Instant revokedAt);
 }

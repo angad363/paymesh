@@ -1,6 +1,7 @@
 package com.paymesh.identity.application;
 
 import com.paymesh.identity.domain.RefreshToken;
+import com.paymesh.identity.domain.UserId;
 
 import java.time.Instant;
 import java.util.Optional;
@@ -36,4 +37,13 @@ public interface RefreshTokenRepository {
      * @return how many tokens were revoked
      */
     int revokeFamily(String familyId, Instant revokedAt);
+
+    /**
+     * Ends every live session this user has, across all families.
+     * <p>
+     * Used when the account is suspended or closed, or loses its last relevant role. Broader than
+     * {@link #revokeFamily} on purpose: a suspension is about the person, not about one suspicious
+     * chain of tokens.
+     */
+    int revokeAllForUser(UserId userId, Instant revokedAt);
 }

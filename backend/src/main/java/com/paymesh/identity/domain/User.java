@@ -219,6 +219,77 @@ public final class User {
         return withStatus(UserStatus.CLOSED, closedAt);
     }
 
+    /**
+     * Remove every role this user holds at one merchant.
+     *
+     * <h2>THIS IS NOT THE SAME THING AS SUSPENDING THEM, AND CONFLATING THE TWO IS THE MISTAKE</h2>
+     *
+     * A departed employee at merchant A must lose access to merchant A. They must NOT lose their
+     * account, because they may legitimately hold a role at merchant B -- an accountant serving two
+     * businesses is a case {@code AuthenticatedCaller} already accounts for. Disabling the account
+     * would let merchant A lock somebody out of merchant B.
+     * <p>
+     * So this is the merchant-scoped operation, available to that merchant's own admin, and
+     * {@link #suspend} is the platform-wide one. ADR-024.
+     *
+     * @return a user with no roles at {@code merchantId}. Losing the last role is allowed: the
+     *     account survives, and its holder simply has no tenant to act for until granted one.
+     */
+    public User revokeRolesAt(String merchantId, Instant at) {
+        if (merchantId == null || merchantId.isBlank()) {
+            throw new IllegalArgumentException("Revoking access needs a merchant");
+        }
+
+        List<RoleAssignment> remaining = roles.stream()
+            .filter(assignment -> !assignment.merchantId().equals(merchantId))
+            .toList();
+
+        if (remaining.size() == roles.size()) {
+            throw new UserHoldsNoRoleAtMerchantException(userId, merchantId);
+        }
+
+        return new User(userId, email, passwordHash, status, remaining, createdAt, requireAt(at));
+    }
+
+    /**
+     * Grant a role at a merchant.
+     *
+     * <h2>REVOCATION WITHOUT A GRANT WOULD BE ONE-WAY</h2>
+     *
+     * A merchant that removed somebody by mistake, or re-hired them, would otherwise have to ask
+     * PayMesh to intervene -- and an operation whose only undo is a support ticket is not an
+     * operation an admin will use confidently.
+     * <p>
+     * Granting a role the user already holds at that merchant is refused rather than silently
+     * deduplicated: it almost always means the caller believed something false about the current
+     * state, and returning success would confirm the wrong belief.
+     */
+    public User grantRoleAt(Role role, String merchantId, Instant at) {
+        RoleAssignment assignment = new RoleAssignment(role, merchantId);
+
+        if (roles.contains(assignment)) {
+            throw new UserAlreadyHoldsRoleException(userId, role, merchantId);
+        }
+
+        List<RoleAssignment> granted = new java.util.ArrayList<>(roles);
+        granted.add(assignment);
+
+        return new User(userId, email, passwordHash, status, List.copyOf(granted), createdAt, requireAt(at));
+    }
+
+    /** True when this user holds any role at {@code merchantId}. */
+    public boolean hasRoleAt(String merchantId) {
+        return roles.stream().anyMatch(assignment -> assignment.merchantId().equals(merchantId));
+    }
+
+    private static Instant requireAt(Instant at) {
+        if (at == null) {
+            throw new IllegalArgumentException("A user change needs an instant");
+        }
+
+        return at;
+    }
+
     private User withStatus(UserStatus next, Instant at) {
         if (at == null) {
             throw new IllegalArgumentException("A user status change needs an instant");

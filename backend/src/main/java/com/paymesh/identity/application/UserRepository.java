@@ -14,4 +14,7 @@ public interface UserRepository {
     Optional<User> findByEmail(String normalizedEmail);
 
     Optional<User> findByUserId(UserId userId);
+
+    /** Everyone holding any role at this merchant. What an admin needs before revoking anybody. */
+    java.util.List<User> findByMerchant(com.paymesh.shared.tenant.MerchantId merchantId);
 }
