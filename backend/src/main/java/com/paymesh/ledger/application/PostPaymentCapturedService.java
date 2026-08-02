@@ -53,9 +53,13 @@ public final class PostPaymentCapturedService {
     }
 
     /**
-     * @return the journal, whether it was written now or already existed
+     * @return the journal, whether it was written now or already existed; EMPTY when there was
+     *     nothing to post. Optional rather than {@code null} because the empty case is a real
+     *     outcome a second caller will meet -- the reversal path Refund needs is the obvious one --
+     *     and a bare {@code null} here would be an NPE in that caller with nothing in the signature
+     *     to warn them.
      */
-    public LedgerTransaction post(
+    public Optional<LedgerTransaction> post(
         MerchantId merchantId,
         String paymentIntentId,
         long capturedAmountMinor,
@@ -73,7 +77,7 @@ public final class PostPaymentCapturedService {
                 paymentIntentId, merchantId.value()
             );
 
-            return null;
+            return Optional.empty();
         }
 
         String idempotencyKey = LedgerTransaction.paymentCapturedIdempotencyKey(paymentIntentId);
@@ -90,7 +94,7 @@ public final class PostPaymentCapturedService {
                 idempotencyKey, merchantId.value()
             );
 
-            return alreadyPosted.get();
+            return alreadyPosted;
         }
 
         Instant now = Instant.now(clock);
@@ -143,7 +147,6 @@ public final class PostPaymentCapturedService {
             posted.currency()
         );
 
-        return posted;
+        return Optional.of(posted);
     }
-
 }

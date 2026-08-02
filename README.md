@@ -50,7 +50,7 @@ The **Provider Simulator** drives the whole loop end to end without a hand-signe
 the **Ledger** now posts a balanced double-entry journal when it does — so a merchant has a
 balance, which was not true of this codebase before
 ([ADR-018](docs/decisions/ADR-018-post-the-ledger-from-events-with-the-invariants-in-the-database.md)).
-**942 tests, 0 failures. Fifteen Flyway migrations (V1–V15). Eighteen ADRs.**
+**943 tests, 0 failures. Fifteen Flyway migrations (V1–V15). Eighteen ADRs.**
 
 | Capability | State | What is missing |
 |---|---|---|

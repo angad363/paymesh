@@ -46,6 +46,7 @@ And put every invariant that protects money in **PostgreSQL**, not in Java:
 | Positive amounts, direction stored separately | `ck_ledger_entries_amount_positive` + a `direction` column |
 | Idempotency key unique | `uq_ledger_transactions_idempotency` |
 | Entries cannot be updated or deleted | `tr_ledger_entries_immutable`, plus the same on the header |
+| A journal moves only its own merchant's money | The same deferred trigger, checked at COMMIT |
 
 The domain checks the same rules so a caller gets a readable sentence rather than a
 constraint violation. **The domain check is the error message; the constraint is the
@@ -172,6 +173,14 @@ caller.
 because it is exactly the class of guard this codebase has repeatedly found insufficient
 — the pre-check that a refactor removes and nothing notices. The deferred trigger fires
 for the application, for a migration, and for a human at a `psql` prompt.
+
+**A composite tenant foreign key for the journal/entry merchant match.** The pattern V5, V6 and
+V8 already use, and the first thing tried. It does not compose here: platform accounts carry a
+NULL `merchant_id`, and a composite key containing a NULL matches nothing — so provider clearing
+could never appear in any journal. The check moved into the deferred trigger instead. It was found
+by review after the first implementation committed a cross-tenant journal cleanly, which is worth
+recording: the balance stayed arithmetically correct (money is attributed by the account's owner)
+while the audit header named a different merchant, so nothing would have read as an error.
 
 **A per-row `CHECK` for the balance rule.** Impossible: a journal balances across rows,
 and the first entry of every transaction ever written would fail on insert. Deferring to

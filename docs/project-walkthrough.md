@@ -914,7 +914,7 @@ cd backend
 ./mvnw spring-boot:run          # port 8080
 ```
 
-The documented count is **942 tests, 0 failures**, across 15 Flyway migrations (V1–V15)
+The documented count is **943 tests, 0 failures**, across 15 Flyway migrations (V1–V15)
 and 18 ADRs.
 
 Integration tests run against a throwaway PostgreSQL container, so Flyway migrates an empty

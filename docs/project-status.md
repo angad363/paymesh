@@ -20,7 +20,7 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**942 tests, 0 failures.** Fifteen Flyway migrations (V1–V15). Eighteen ADRs. The Postman
+**943 tests, 0 failures.** Fifteen Flyway migrations (V1–V15). Eighteen ADRs. The Postman
 collection runs thirteen folders, the newest showing a payment become a balance.
 
 **The Ledger is the financial source of truth, and as of this session it exists** (ADR-018).

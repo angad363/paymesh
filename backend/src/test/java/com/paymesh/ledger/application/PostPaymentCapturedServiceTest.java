@@ -42,7 +42,7 @@ class PostPaymentCapturedServiceTest {
 
     @Test
     void postsABalancedJournalForACapturedPayment() {
-        LedgerTransaction posted = post(99900);
+        LedgerTransaction posted = post(99900).orElseThrow();
 
         assertThat(posted.totalDebitsMinor()).isEqualTo(99900);
         assertThat(posted.totalCreditsMinor()).isEqualTo(99900);
@@ -97,8 +97,8 @@ class PostPaymentCapturedServiceTest {
      */
     @Test
     void postsOnceWhenTheSameCaptureArrivesTwice() {
-        LedgerTransaction first = post(99900);
-        LedgerTransaction second = post(99900);
+        LedgerTransaction first = post(99900).orElseThrow();
+        LedgerTransaction second = post(99900).orElseThrow();
 
         assertThat(transactions.posted).hasSize(1);
         assertThat(second.ledgerTransactionId()).isEqualTo(first.ledgerTransactionId());
@@ -128,7 +128,7 @@ class PostPaymentCapturedServiceTest {
      */
     @Test
     void postsNothingWhenTheCaptureWasZero() {
-        assertThat(post(0)).isNull();
+        assertThat(post(0)).isEmpty();
         assertThat(transactions.posted).isEmpty();
         assertThat(accounts.byReference)
             .as("not even the accounts are opened for a posting that will not happen")
@@ -137,21 +137,21 @@ class PostPaymentCapturedServiceTest {
 
     @Test
     void postsNothingWhenTheCaptureWasNegative() {
-        assertThat(post(-1)).isNull();
+        assertThat(post(-1)).isEmpty();
         assertThat(transactions.posted).isEmpty();
     }
 
     // --- helpers ---------------------------------------------------------------------------------
 
-    private LedgerTransaction post(long amountMinor) {
+    private Optional<LedgerTransaction> post(long amountMinor) {
         return post(PAYMENT_INTENT_ID, amountMinor, "INR");
     }
 
-    private LedgerTransaction post(String paymentIntentId, long amountMinor) {
+    private Optional<LedgerTransaction> post(String paymentIntentId, long amountMinor) {
         return post(paymentIntentId, amountMinor, "INR");
     }
 
-    private LedgerTransaction post(String paymentIntentId, long amountMinor, String currency) {
+    private Optional<LedgerTransaction> post(String paymentIntentId, long amountMinor, String currency) {
         return service.post(MERCHANT, paymentIntentId, amountMinor, currency, OCCURRED_AT);
     }
 

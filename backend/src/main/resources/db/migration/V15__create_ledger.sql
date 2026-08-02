@@ -281,7 +281,8 @@ CREATE INDEX ix_ledger_entries_transaction
     ON ledger_entries (ledger_transaction_id);
 
 -- ----------------------------------------------------------------------------
---  SDD 15.6 invariant 1: debits equal credits.
+--  SDD 15.6 invariant 1: debits equal credits -- and the journal belongs to
+--  the merchant whose money it moves.
 -- ----------------------------------------------------------------------------
 --  A DEFERRED CONSTRAINT TRIGGER, and the deferral is the entire design.
 --
@@ -306,7 +307,44 @@ DECLARE
     total_debits  BIGINT;
     total_credits BIGINT;
     entry_count   INTEGER;
+    foreign_owner VARCHAR(40);
 BEGIN
+    -- THE JOURNAL MUST BE ABOUT THE MERCHANT WHOSE MONEY IT MOVES.
+    --
+    -- Nothing above this line ties ledger_transactions.merchant_id to the owner
+    -- of the accounts its entries touch, and the composite tenant foreign keys
+    -- that do this job in V5/V6/V8 cannot do it here: platform accounts carry a
+    -- NULL merchant_id, and a composite key containing a NULL matches nothing.
+    --
+    -- Without this, a journal headed "merchant B" can credit merchant A's
+    -- pending account and every other constraint passes. The money lands on A,
+    -- because the balance query attributes by the ACCOUNT's owner -- so the
+    -- balance is right and the audit header is a lie. "Everything posted for
+    -- this merchant" then returns a set that does not reconcile against that
+    -- merchant's own balance, which is the question the header column exists to
+    -- answer.
+    --
+    -- Unreachable through the application: PostPaymentCapturedService derives
+    -- the header merchant and both account references from a single MerchantId.
+    -- It is here for the reason every other rule in this file is here -- the
+    -- application check is the error message, the constraint is the guard.
+    SELECT a.merchant_id
+      INTO foreign_owner
+      FROM ledger_entries e
+      JOIN ledger_accounts a     ON a.ledger_account_id = e.ledger_account_id
+      JOIN ledger_transactions t ON t.ledger_transaction_id = e.ledger_transaction_id
+     WHERE e.ledger_transaction_id = NEW.ledger_transaction_id
+       AND a.merchant_id IS NOT NULL
+       AND a.merchant_id <> t.merchant_id
+     LIMIT 1;
+
+    IF foreign_owner IS NOT NULL THEN
+        RAISE EXCEPTION
+            'Ledger transaction % is headed for one merchant but moves %s money',
+            NEW.ledger_transaction_id, foreign_owner
+            USING ERRCODE = 'check_violation';
+    END IF;
+
     SELECT
         COALESCE(SUM(amount_minor) FILTER (WHERE direction = 'DEBIT'), 0),
         COALESCE(SUM(amount_minor) FILTER (WHERE direction = 'CREDIT'), 0),

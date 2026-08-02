@@ -272,6 +272,46 @@ class LedgerIntegrationTest {
     }
 
     /**
+     * A JOURNAL CANNOT BE HEADED FOR ONE MERCHANT AND MOVE ANOTHER'S MONEY.
+     * <p>
+     * Found by code review on this branch, and it committed cleanly before the check existed. The
+     * damage is subtle enough to be worth spelling out: the balance query attributes money by the
+     * ACCOUNT's owner, so the money lands on the merchant whose account was credited and the
+     * balance is arithmetically right. What breaks is the audit trail —
+     * {@code ledger_transactions.merchant_id} then names somebody else, and "everything posted for
+     * this merchant" returns a set that does not reconcile against that merchant's own balance.
+     * <p>
+     * The composite tenant foreign keys that do this job in V5/V6/V8 cannot do it here: platform
+     * accounts carry a NULL {@code merchant_id} and a composite key containing a NULL matches
+     * nothing. Hence the check inside the deferred trigger.
+     * <p>
+     * <b>Sabotage that must turn this red:</b> delete the {@code foreign_owner} block from
+     * {@code ledger_assert_balanced}. Every other test stays green, including every Java one.
+     */
+    @Test
+    void refusesAJournalThatMovesADifferentMerchantsMoney() {
+        MerchantId headerMerchant = existingMerchant();
+        MerchantId accountOwner = existingMerchant();
+
+        assertThatThrownBy(() -> transactionTemplate.execute(status -> {
+            String transactionId =
+                insertJournalHeader(headerMerchant, "cross-tenant-" + UUID.randomUUID());
+
+            insertEntry(transactionId, openAccount(null, "PROVIDER_CLEARING"), "DEBIT", 4000);
+            insertEntry(
+                transactionId, openAccount(accountOwner, "MERCHANT_PENDING"), "CREDIT", 4000
+            );
+
+            return null;
+        }))
+            .hasStackTraceContaining("moves");
+
+        assertThat(pendingBalance(accountOwner))
+            .as("and the money never reached the account it was aimed at")
+            .isEmpty();
+    }
+
+    /**
      * SDD 15.6 INVARIANT 5, ENFORCED RATHER THAN DOCUMENTED. A correction is a new reversal
      * transaction, never an edit -- and this trigger is what makes the reversal the only available
      * option when Refund arrives, rather than the disciplined one.
