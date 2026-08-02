@@ -63,7 +63,7 @@ reversal, and the payment reaches `REFUNDED`
 | **Order** | Built | Every status is now reachable: `CANCELLED` by request, `EXPIRED` by the sweeper, `PAID` / `PARTIALLY_PAID` by consuming `payment.succeeded` |
 | **Payment** | Built | No refunds, no reconciliation, one shared provider callback secret |
 | **Provider Simulator** | Built | No payouts (Settlement is Phase 2), no refund callbacks (no receiver yet), no percentage-based failure injection ([ADR-017](docs/decisions/ADR-017-simulate-providers-through-scheduled-signed-callbacks.md)) |
-| **Ledger** | Core built | Double-entry posting and `GET /api/v1/balances`. No holds, no `account_balances` projection, no reversal path (Refund brings it), no platform fee — there is no fee schedule to apply ([ADR-018](docs/decisions/ADR-018-post-the-ledger-from-events-with-the-invariants-in-the-database.md)) |
+| **Ledger** | Built | Double-entry posting, refund reversals, and `GET /api/v1/balances`. No holds, no `account_balances` projection, no platform fee — there is no fee schedule to apply ([ADR-018](docs/decisions/ADR-018-post-the-ledger-from-events-with-the-invariants-in-the-database.md)) |
 | **Refund** | Built | No provider-simulator refund callbacks yet, no ops retry route, and nothing reconciles a refund whose callback never arrives ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)) |
 
 Platform pieces, honestly:

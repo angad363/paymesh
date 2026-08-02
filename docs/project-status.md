@@ -22,7 +22,7 @@ A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliv
 consumers, and Order is the first consumer (ADR-016).
 
 **1031 tests, 0 failures.** Sixteen Flyway migrations (V1–V16). Nineteen ADRs. The Postman
-collection runs thirteen folders, the newest showing a payment become a balance.
+collection runs fourteen folders, the newest showing money go back out.
 
 **The Ledger is the financial source of truth, and as of this session it exists** (ADR-018).
 A captured payment posts a balanced double-entry journal, and `GET /api/v1/balances` reports
@@ -238,6 +238,82 @@ Properties worth not breaking:
   values are identical today; if they drift, an order could exist that no intent may
   collect.
 
+### Ledger — `com.paymesh.ledger`
+
+**The financial source of truth**, and the module SDD §30.1 schedules for extraction last.
+
+| Endpoint | Auth | Notes |
+|---|---|---|
+| `GET /api/v1/balances` | Bearer | One row per currency the merchant has been paid in; empty list, never 404 |
+
+There is **no write endpoint**, deliberately (ADR-018 §3). The only writer is a consumer of
+`payment.succeeded`, which means **every posting traces back to a committed payment**. SDD §15.3's
+`POST /internal/v1/ledger/transactions` would be a second way into the financial source of truth
+with no originating event to reconcile against.
+
+Properties worth not breaking:
+
+- **The invariants are in PostgreSQL, not in Java.** Debits-equal-credits is a DEFERRED constraint
+  trigger checked at COMMIT; immutability is a trigger refusing UPDATE and DELETE; single-currency
+  is a pair of composite foreign keys; tenant consistency is a check inside the balance trigger.
+  The integration tests insert lopsided journals with raw SQL and the database refuses them.
+  Verified by dropping the balance trigger, which turns exactly two raw-SQL tests red and leaves
+  every Java-level test green.
+- **A correction is a new reversal journal, never an edit**, and the immutability trigger is what
+  makes that the only available option rather than the disciplined one. Refund exercises it.
+- **The balance is a SUM over entries, not a projection.** SDD §15.5's `account_balances` is not
+  built: a second copy of a number the entries already determine can drift from them silently, and
+  the repair is the query being avoided. Carries a `ponytail:` marker naming the upgrade path.
+- **Accounts are opened on first use**, through an `INSERT … ON CONFLICT DO NOTHING` followed by a
+  read. Not a catch around a failed insert: this runs inside the dispatcher's transaction, and in
+  PostgreSQL *any* error aborts the enclosing transaction, so the recovery read would be the first
+  casualty.
+- **Two account types out of SDD §15.1's nine.** Each of the others needs a producer that does not
+  exist — a settlement schedule, holds, a fee schedule. An account that reads zero forever implies
+  a capability that is missing.
+- **No platform fee.** There is no fee schedule anywhere in this codebase, and a made-up rate would
+  sit in rows nothing can ever edit.
+
+### Refund — `com.paymesh.refund`
+
+| Endpoint | Auth | Notes |
+|---|---|---|
+| `POST /api/v1/refunds` | Bearer + Idempotency-Key | `ref_` id; omit `amountMinor` to refund what is **left** |
+| `GET /api/v1/refunds/{id}` | Bearer | `404` for another merchant's, never `403` |
+| `GET /api/v1/refunds` | Bearer | Keyset pagination, newest first |
+| `POST /api/v1/refunds/{id}/cancel` | Bearer + Idempotency-Key | `409` almost always — see below |
+| `POST /internal/v1/refund-callbacks/{provider}` | HMAC signature | Refund's own route (ADR-019) |
+
+`PENDING → PROCESSING → SUCCEEDED | FAILED`, or `PENDING → CANCELLED`. Create writes PENDING and
+submits in one transaction, so the merchant never observes PENDING through the API.
+
+Properties worth not breaking:
+
+- **The over-refund guard is a LOCK plus a trigger, and the lock is the mechanism.** A row lock on
+  the payment intent, taken inside the create transaction before head-room is read, serializes
+  concurrent refunds of one payment. The deferred trigger is the backstop for raw SQL and
+  migrations. <b>The trigger alone does not work</b>: a constraint trigger's query runs on the
+  snapshot of the statement that queued it, so two simultaneous refunds each see a world without
+  the other and both commit. That was measured, not reasoned — `RefundConcurrencyTest` let both
+  through before the lock existed. ADR-019 §4.1.
+- **Everything except FAILED and CANCELLED counts against the captured amount.** A refund in flight
+  has moved no money yet but the provider may be about to; counting only SUCCEEDED would let a
+  merchant queue ten full refunds while the first is with the provider, each individually valid.
+- **The comparison is against `captured_amount_minor`, never `amount_minor`.** On a partial capture
+  the two differ by money that was never collected.
+- **A second trigger pins the currency to the payment's.** 5000 JPY against a 5000 INR capture
+  passes the amount check *exactly* — integers carry no currency. Unreachable through the API,
+  because the request record has no currency field at all.
+- **Refund's callback route is its own**, with its own secret property and its own dedup table.
+  Sharing Payment's would have meant Payment knowing refunds exist in order to route the callback.
+  The HMAC filter itself moved to `shared` so there is one implementation of that check rather than
+  two copies.
+- **Cancel answers 409 almost always**, and that is honest rather than broken: PROCESSING means the
+  provider may already have moved the money, so reporting CANCELLED would be PayMesh's opinion
+  contradicting a bank statement. Its real use is clearing a refund that failed to submit.
+- **Refund is a leaf.** It imports Payment through exactly one adapter plus its configuration
+  (ADR-008); nothing imports Refund. Payment learns that a refund succeeded from an event.
+
 ### Provider Simulator — `com.paymesh.simulator`
 
 **Not the merchant API.** Everything is under `/sim/v1/**`, authenticated by a dedicated shared key
@@ -247,7 +323,7 @@ in `X-PayMesh-Simulator-Key` and nothing else — a merchant bearer token is ref
 |---|---|---|
 | `POST /sim/v1/payments` | simulator key | `sim_pay_` id; `201` on create, **`200` on a replay** |
 | `POST /sim/v1/payments/{id}/capture` | simulator key | Only from `AUTHORIZED`, else 409 |
-| `POST /sim/v1/refunds` | simulator key | `sim_ref_` id; enqueues no callback, deliberately |
+| `POST /sim/v1/refunds` | simulator key | `sim_ref_` id; **enqueues no callback — now a gap, not a decision** |
 | `GET /sim/v1/reconciliation/{date}` | simulator key | One UTC day of the provider's own truth |
 | `POST /sim/v1/failure-profile` | simulator key | Last-write-wins; not idempotency-keyed |
 
@@ -285,6 +361,11 @@ Properties worth not breaking:
   `SimulatorConfigurationTest` red.
 - **`ck_provider_payments_refunded` is the real over-refund guard**, not the aggregate's check; the
   application checks under a row lock only to turn a constraint violation into a readable 422.
+- **It cannot send refund callbacks, and that has changed meaning.** When ADR-017 was written there
+  was no receiver, so queueing nothing was correct. Refund's callback route now exists, so this is
+  the reason the one hand-signed HMAC request in the Postman collection and the test suite still
+  has to be hand-signed. Closing it means a target URL on `provider_outbound_callbacks`, a refund
+  body writer, and a migration.
 
 ### Cross-cutting — `com.paymesh.shared`
 
@@ -539,15 +620,26 @@ failing test._
 
 ## What comes next
 
-### Phase 1's remaining capabilities, in SDD order
+### Phase 1 is done; what is left is operational
 
 **Payment is feature-complete.** Create, attach, confirm, provider callbacks (deduplicated
 and ordered), manual capture and cancel are all built, alongside Order's state history, the
-expiry sweep, the `PROCESSING` timeout and the abandoned-checkout sweep. Every state in the
-intent enum is now reachable except `PARTIALLY_REFUNDED` and `REFUNDED`, which belong to the
-Refund capability and are verified unreachable by grep.
+expiry sweep, the `PROCESSING` timeout and the abandoned-checkout sweep. **Every state in the
+intent enum is now reachable** — `PARTIALLY_REFUNDED` and `REFUNDED` were the last two, declared
+in V8 and produced by nothing until Refund landed.
 
 **Phase 1 is complete.** Every capability the SDD lists for it is built.
+
+**The next PR should be reconciliation, not a Phase 2 capability.** Three separate places now
+depend on a job that does not exist:
+
+- A refund whose callback never arrives stays `PROCESSING` **forever**, holding its amount against
+  the captured total so the merchant cannot refund the rest. Payment has a sweeper for exactly this
+  shape (ADR-015); Refund has none. This is the worst of the three, because it silently reduces
+  what a merchant can do.
+- `GET /sim/v1/reconciliation/{date}` produces the provider-truth file ADR-015's recovery leans on,
+  and nothing reads it.
+- An event that fails to deliver is retried forever with no dead-letter and no alert (open item 14).
 
 Three things were waiting on the simulator, and it is worth being precise about which of them it
 actually closed, because the temptation to overclaim is real:
@@ -565,19 +657,27 @@ actually closed, because the temptation to overclaim is real:
 - **Per-provider credentials: still open**, and argued in ADR-017 §3 to be closer rather than
   further, since the signing secret is now read at exactly one place.
 
-The Ledger stays last to be extracted, and now exists (ADR-018). A `SUCCEEDED` payment is
-no longer operational state and nothing more: it posts. What the Ledger does **not** have
-is the half Refund needs — there is no reversal path, because nothing yet has anything to
-reverse. The immutability triggers are what make a reversal the only available option when
-it arrives rather than the disciplined one.
+The Ledger stays last to be extracted, and now both posts and reverses. Its immutability
+triggers turned out to do exactly the job ADR-018 claimed for them: when Refund arrived there was
+no "undo a posting" operation to reach for, so the correction could only be a new journal in the
+opposite direction. The design forced the right answer rather than relying on discipline.
+
+**One caveat worth carrying forward from ADR-019 §4.1.** The deferred-constraint-trigger pattern
+V15 introduced has a sharp edge that was found the hard way: a constraint trigger's query runs on
+the snapshot of the statement that queued it, so it *cannot* see a concurrently committed row.
+V15's balance trigger is unaffected — a journal's entries are all written by one transaction — but
+V16's over-refund trigger was not, and needed a row lock beside it. Anywhere this pattern is reused
+to check a rule across rows written by *different* transactions, the trigger alone is not enough.
 
 **Event delivery paid for itself exactly as ADR-016 predicted.** The consumer contract was
 deliberately the one a Kafka consumer would need — an envelope in, `processed_events` dedup,
 an idempotent handler — so that the Ledger could be written as a second `EventHandler` on
 `payment.succeeded` without touching anything shared. It was: the Ledger's consumer is one
 class, one `@Bean` in its own configuration, and no change to Order, Payment or `shared`.
-Two consumers now read one event and dedupe independently, which is the first real exercise
-of `processed_events` being keyed on `(consumer_name, event_id)` rather than the event alone.
+Two consumers read `payment.succeeded` and two read `refund.succeeded`, each deduping
+independently — which is what `processed_events` being keyed on `(consumer_name, event_id)` rather
+than the event alone buys. Payment is now on both sides of the bus, producing one and consuming the
+other, and still imports nothing new.
 
 What is still missing on the delivery side is the operational half rather than the mechanism:
 no dead-letter, no attempt counter, no "oldest unpublished event age" alert (open item 14).

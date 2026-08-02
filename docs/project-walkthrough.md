@@ -398,15 +398,16 @@ application completely, and the database refuses them. Delete the Java checks an
 still pass; delete the trigger and they go red. That was verified by actually deleting it.
 
 **A correction is a new entry, never an edit.** This is why the immutability trigger matters
-more than it looks: when Refund arrives it cannot "undo" a posting, because there is no such
-operation. It will have to write a *reversal* — a new journal pointing at the original, in the
-opposite direction. The history stays complete, which is the entire point of a ledger.
+more than it looks, and Refund is the proof: when it arrived there was no "undo a posting"
+operation to reach for, so it *had* to write a **reversal** — a new journal in the opposite
+direction (§3.9). The design forced the right answer rather than relying on anyone's discipline.
+Both journals stay in the history, which is the entire point of a ledger.
 
 **It does not know Payment exists.** Like Order, it reads `payment.succeeded` out of a
-`Map` and imports nothing from `com.paymesh.payment`. Two consumers now read that one event —
-Order moves its status, the Ledger posts the journal — and neither knows about the other. They
-each get their own row in `processed_events`, so one having handled an event never stops the
-other from handling it.
+`Map` and imports nothing from `com.paymesh.payment`. Two consumers read that one event — Order
+moves its status, the Ledger posts the journal — and neither knows about the other. They each get
+their own row in `processed_events`, so one having handled an event never stops the other from
+handling it. The Ledger now subscribes to `refund.succeeded` as well, for the reversal.
 
 **Two things it deliberately does not do**, both argued in ADR-018:
 
@@ -552,8 +553,25 @@ confirm the ID exists and turn the endpoint into an enumeration tool.
 | `POST /api/v1/payment-intents/{id}/confirm` | Bearer | **required** |
 | `POST /api/v1/payment-intents/{id}/capture` | Bearer | **required** |
 | `POST /api/v1/payment-intents/{id}/cancel` | Bearer | **required** |
+| `GET /api/v1/balances` | Bearer | — |
+| `POST /api/v1/refunds` | Bearer | **required** |
+| `GET /api/v1/refunds/{id}` | Bearer | — |
+| `GET /api/v1/refunds` | Bearer | — |
+| `POST /api/v1/refunds/{id}/cancel` | Bearer | **required** |
 | `POST /internal/v1/provider-callbacks/{provider}` | HMAC signature | — |
+| `POST /internal/v1/refund-callbacks/{provider}` | HMAC signature | — |
+| `POST /sim/v1/payments` | simulator key | in the body, not a header |
+| `POST /sim/v1/payments/{id}/capture` | simulator key | in the body |
+| `POST /sim/v1/refunds` | simulator key | in the body |
+| `GET /sim/v1/reconciliation/{date}` | simulator key | — |
+| `POST /sim/v1/failure-profile` | simulator key | — |
 | `GET /actuator/health`, `GET /actuator/info` | public | — |
+
+There is deliberately **no way to write to the ledger over HTTP**. Its only writer is an event
+consumer, so every posting traces back to a committed payment or refund (§3.8).
+
+The two callback routes are separate on purpose, and the `/sim/v1` ones are not the merchant API at
+all — they carry a dedicated shared key and a merchant's token is refused.
 
 ---
 
@@ -566,6 +584,19 @@ cd backend
 ./mvnw spring-boot:run     # port 8080; activates the dev profile via pom.xml
 ```
 
+**For the last four folders you need both timers on**, because the `dev` profile switches them off
+— it is the profile the test suite runs under, and a timer moving money mid-assertion is a flake
+generator:
+
+```bash
+PAYMESH_SIMULATOR_DISPATCH_ENABLED=true \
+PAYMESH_EVENTS_OUTBOX_RELAY_ENABLED=true \
+./mvnw spring-boot:run
+```
+
+Without them, "Event delivery", "Provider Simulator", "Ledger" and "Refund" exhaust their polls and
+fail — which is the honest outcome rather than a skip.
+
 If startup fails with `Property: paymesh.security.jwt.secret / Reason: must not be blank`,
 **the `dev` profile isn't active.** That's the guard working, not a misconfiguration.
 
@@ -574,13 +605,12 @@ Sanity check: `GET http://localhost:8080/actuator/health` → `{"status":"UP"}`.
 ### 5.1 The fast path — run the whole collection
 
 A Postman collection already exists at
-`docs/api/postman/paymesh.postman_collection.json`, with **10 folders and ~110 requests**
+`docs/api/postman/paymesh.postman_collection.json`, with **14 folders and ~197 requests**
 covering every route plus the failure cases. It's the fastest way to see everything work.
 
 ```bash
 npx newman run docs/api/postman/paymesh.postman_collection.json \
-  --env-var baseUrl=http://localhost:8080 \
-  --env-var providerCallbackSecret=dev-only-insecure-provider-callback-secret-change-me
+  --env-var baseUrl=http://localhost:8080
 ```
 
 Or import it into the Postman app and Run Collection.
@@ -590,12 +620,16 @@ Two things that will bite you:
 - **The folders must run top to bottom.** Folder 2 creates the merchant, folder 3 logs in
   and captures the token, and every folder after that uses it. Running one folder in
   isolation fails on missing variables.
-- **`providerCallbackSecret` is blank in the collection and you must set it**, or every
-  provider-callback request returns `401`. Use the dev value above.
+- **The four folders that wait on a timer need the environment variables from §5.0.** They poll
+  and then fail rather than skipping, so a run without them looks like a broken build.
 
-The provider-callback folder computes its HMAC in a pre-request script (`CryptoJS.HmacSHA256`
-over `t + "." + body`), because a hard-coded signature would be valid for one body at one
-second and would test nothing.
+Both callback folders compute their HMAC in a pre-request script (`CryptoJS.HmacSHA256` over
+`t + "." + body`), because a hard-coded signature would be valid for one body at one second and
+would test nothing. The dev secrets are set by those scripts, so there is nothing to pass in.
+
+The **Refund** folder's callback is the only genuinely hand-signed request left in the collection:
+the simulator can queue payment callbacks but not refund ones, so there is nothing to ask to send
+it (§3.9).
 
 ### 5.2 The slow path — the happy flow, by hand
 
@@ -889,7 +923,7 @@ for.
 The Software Design Document describes roughly **15 services across 31 sections**. Here is
 the honest accounting.
 
-### 6.1 Phase-1 capabilities not started
+### 6.1 Phase-1 capabilities: all built
 
 None are left. All three that used to head this list are built, and it is worth saying what each
 did *not* close, because it would be easy to assume otherwise:
@@ -1028,7 +1062,7 @@ Worth knowing, because you'll read them next:
 - **`CLAUDE.md`** says "only the merchant capability exists." That is badly out of date —
   six capabilities exist.
 - **`README.md`** was corrected alongside the event-delivery and simulator changes and should
-  now agree with this file. The Postman collection has **thirteen** folders.
+  now agree with this file. The Postman collection has **fourteen** folders.
 - **`docs/project-status.md`** is the most current. Its "What is built" section still
   describes Payment as create/cancel only, but its "What comes next" section correctly
   states Payment is feature-complete. Trust the latter.
