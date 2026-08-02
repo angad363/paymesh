@@ -22,9 +22,10 @@ payment method, confirms it, receives the "here's what happened" callback from a
 provider, and either collects the money or releases it. Along the way it refuses to
 double-charge, refuses to let one business see another's data, and writes an audit trail.
 
-**Five of the eight Phase-1 capabilities are built.** The remaining three — Provider
-Simulator, Ledger, Refund — are not started, and the biggest structural gap is that the
-event system has a mailbox but no postman (details in §7).
+**Five of the eight Phase-1 capabilities are built**, and the events they emit are now
+actually delivered: an order whose payment succeeds reaches `PAID` on its own, because Order
+consumes the event rather than Payment reaching across and writing the column (§7). The
+remaining three capabilities — Provider Simulator, Ledger, Refund — are not started.
 
 ---
 
@@ -653,12 +654,23 @@ GET {{baseUrl}}/api/v1/orders/{{orderId}}
 Authorization: Bearer {{accessToken}}
 ```
 
-→ **status is still `PENDING`.**
+→ **status is `PARTIALLY_PAID`, with `amountPaidMinor: 3000`** — a second or two after the
+capture, not instantly.
 
-**This is the single most important thing to understand about the current state of the
-project, and it is not a bug.** Payment deliberately never writes the orders table. The
-event announcing "this payment succeeded" *was* written — to the outbox table, in the same
-transaction as the payment — but nothing delivers it and nothing consumes it. See §7.
+Nobody called an order endpoint to make that happen. Payment wrote `payment.succeeded` to the
+outbox in the same transaction as the capture; the relay read it; Order's own consumer applied
+it and moved Order's own column. **Payment still never writes the `orders` table.** See §7,
+which used to explain why this said `PENDING`.
+
+_Two things worth knowing before you try it:_
+
+- _**The relay is switched off under the `dev` profile**, which is what `./mvnw
+  spring-boot:run` activates — the same profile the test suite uses, and a timer moving orders
+  to `PAID` mid-assertion is a flake generator. Start the app with
+  `PAYMESH_EVENTS_OUTBOX_RELAY_ENABLED=true ./mvnw spring-boot:run` or this step will keep
+  reading `PENDING` forever._
+- _Capture the **full** 4000 instead of 3000 and the order reads `PAID`. The split is decided
+  against the order's own amount, never the payment's._
 
 ---
 
@@ -715,7 +727,8 @@ the honest accounting.
 
 | Piece | SDD | State |
 |---|---|---|
-| **Kafka + event delivery** | §22.2–22.4, §24 | **The single biggest gap.** The `outbox_events` table exists and is written correctly in-transaction, but there is **no Kafka, no relay, no consumer.** Every event row sits unpublished forever. |
+| **Event delivery** | §22.3–22.4 | **Built** (ADR-016): a scheduled relay, an in-process dispatcher, a `processed_events` inbox, and Order's consumer of `payment.succeeded`. |
+| **Kafka** | §22.2, §24 | Not built, deliberately. The transport is a method call; the *consumer contract* is a broker's, so swapping it changes no consumer. What is genuinely missing is the operational half — no dead-letter, no attempt counter, no "oldest unpublished event age" alert. |
 | **Redis** | §23.3 | Not built, deliberately. PostgreSQL is the durable authority for idempotency; Redis was only ever the accelerator. |
 | **Encryption at rest / key management** | §25 | Not built. Customer PII is plaintext. |
 | **Observability** | §26 | `/actuator/health` and `/actuator/info`. No OpenTelemetry, no metrics, no tracing, no correlation IDs. |
@@ -724,25 +737,58 @@ the honest accounting.
 
 ---
 
-## 7. The one thing to remember: the mailbox with no postman
+## 7. The one thing to remember: the postman arrived
 
-If you take away a single fact about the current state, take this.
+**This section used to be called "the mailbox with no postman", and it was the single most
+important caveat in this document.** Every state change wrote two rows in one transaction —
+the change, and a description of it in `outbox_events` — and *nothing ever read that table*.
+The visible consequence was that an order whose payment succeeded still read `PENDING`.
 
-Every state change writes **two** rows in one transaction: the change itself, and a
-description of what happened, into `outbox_events`. That's the "transactional outbox"
-pattern, and it's built correctly — an event can never survive a rolled-back change, and a
-committed change can never lose its event.
+That is fixed. Here is what now happens, because it is worth understanding rather than just
+believing.
 
-**But nothing ever reads that table.** There is no Kafka, no relay process, no consumer.
+**1. The producer still writes two rows in one transaction.** Unchanged, and it is still the
+load-bearing part: an event can never survive a rolled-back change, and a committed change
+can never lose its event.
 
-The visible consequence: **an order whose payment succeeded still reads `PENDING`.** The
-`payment.succeeded` event was written. The Order module *would* consume it and set the
-status to `PAID`. That consumer does not exist yet.
+**2. A relay polls the table.** Every two seconds it claims
+`outbox_events WHERE published_at IS NULL ORDER BY occurred_at`, oldest first, up to 100 at a
+time. `published_at IS NULL` *is* the status model — there is no status column to disagree
+with it.
 
-The SDD names this exact state as non-corrupting — nothing is lost, everything is
-recoverable the moment a relay is added — which is precisely why it was built this way. But
-it does mean the API currently shows a paid order as unpaid, and anyone reading the API
-without this context will file it as a bug.
+**3. A dispatcher hands each event to whoever subscribed to its type.** In-process and
+synchronous. **Not Kafka**, and that is a decision rather than a shortcut
+([ADR-016](decisions/ADR-016-in-process-event-dispatch-before-kafka.md)): a broker between
+two packages in one JVM adds a running dependency and buys nothing, because there is no
+network between them to be unreliable.
+
+**4. But the consumer contract is the one a broker needs.** An event envelope in, a payload
+read as an untyped map, deduplication through a `processed_events` inbox, and a handler that
+must be idempotent and must throw to retry. That is deliberately more awkward than a plain
+method call. It is the whole point: **swapping the dispatcher for a Kafka listener changes no
+consumer.**
+
+**5. Order consumes `payment.succeeded` and moves its own status.** Full amount collected →
+`PAID`. Less than the full amount → `PARTIALLY_PAID`. `amountPaidMinor` moves with it, and a
+row lands in `order_state_history` with actor `SYSTEM` and no principal, because a timer and a
+consumer have nobody to name.
+
+**Payment still never writes the `orders` table.** That has not been relaxed — it has been
+*replaced with the mechanism that made it possible to keep*. The consumer lives in Order,
+reads a `Map`, and imports nothing from `com.paymesh.payment`; a test fails the build if that
+ever stops being true.
+
+### What this costs, which is not nothing
+
+- **The update is asynchronous.** Capture an order and immediately fetch it, and you may see
+  `PENDING` for a second or two. The status is eventually correct, not instantly.
+- **Delivery is at-least-once and can never be exactly-once.** The relay stamps
+  `published_at` in a *different* transaction from the one a consumer commits in, so a crash
+  between them redelivers the event. That is what the inbox is for.
+- **An event that fails forever freezes its own aggregate forever.** It is retried at the head
+  of every pass, and its aggregate's later events wait behind it so nothing is delivered out
+  of order. Everything else drains. There is no dead-letter table and no alert, only a warning
+  in the log per pass — the largest known hole in the design, and named as such in ADR-016.
 
 ---
 
@@ -754,9 +800,8 @@ cd backend
 ./mvnw spring-boot:run          # port 8080
 ```
 
-The documented count is **727 tests, 0 failures**, across 12 Flyway migrations and 15 ADRs.
-_(Those figures come from `docs/project-status.md` and `README.md`; I did not run the suite
-while writing this file.)_
+The documented count is **785 tests, 0 failures**, across 13 Flyway migrations (V1–V12 and
+V14; V13 belongs to a parallel branch) and 16 ADRs.
 
 Integration tests run against a throwaway PostgreSQL container, so Flyway migrates an empty
 database on every run and the migrations are re-proved rather than assumed.
@@ -768,6 +813,14 @@ is not evidence — it's a line of code that compiles. Several of these breaks a
 including the ones where the sabotage *didn't* turn the test red, so nobody concludes a test
 covers more than it does.
 
+The event-delivery work produced the best example of that. Deleting the inbox deduplication
+guard did **not** turn the end-to-end "a payment is applied exactly once" test red — and
+neither did deleting the consumer's own state re-check as well, because the `Order` aggregate
+refuses a payment against a non-`PENDING` order anyway. Three independent mechanisms, none
+redundant with the others, which means no order-level assertion can prove the inbox works. It
+is proved instead by a test that dispatches one event three times to a handler with no guard
+of its own and counts how many times it ran.
+
 ---
 
 ## 9. Where the other documents disagree with this one
@@ -776,12 +829,14 @@ Worth knowing, because you'll read them next:
 
 - **`CLAUDE.md`** says "only the merchant capability exists." That is badly out of date —
   five capabilities exist.
-- **`README.md`**'s per-capability table says Payment's core is built with "three more PRs"
-  remaining, and that Order has no expiry sweeper. Both are stale; its own status paragraph
-  higher up correctly says Payment is feature-complete. It also says the Postman collection
-  has seven folders; it has ten.
+- **`README.md`** was corrected alongside the event-delivery change and should now agree
+  with this file. The Postman collection has **eleven** folders.
 - **`docs/project-status.md`** is the most current. Its "What is built" section still
   describes Payment as create/cancel only, but its "What comes next" section correctly
   states Payment is feature-complete. Trust the latter.
+- **`V7__create_outbox_events.sql`**'s header still says "THERE IS NO RELAY YET, AND THAT IS A
+  NAMED SAFE STATE." That is now false and is left in place deliberately: Flyway checksums
+  applied migrations, so editing even a comment breaks validation on every existing database.
+  A migration is a historical record, not documentation to keep current.
 
 The reliable source in all cases is the code.
