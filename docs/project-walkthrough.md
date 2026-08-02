@@ -22,11 +22,12 @@ payment method, confirms it, receives the "here's what happened" callback from a
 provider, and either collects the money or releases it. Along the way it refuses to
 double-charge, refuses to let one business see another's data, and writes an audit trail.
 
-**Six of the eight Phase-1 capabilities are built**, and the events they emit are now
+**Seven of the eight Phase-1 capabilities are built**, and the events they emit are now
 actually delivered: an order whose payment succeeds reaches `PAID` on its own, because Order
 consumes the event rather than Payment reaching across and writing the column (§7). The
-Provider Simulator drives that loop end to end over real HTTP. The remaining two
-capabilities — Ledger, Refund — are not started.
+Provider Simulator drives that loop end to end over real HTTP, and the **Ledger** records
+the money — a merchant has a balance, which was not true of this project before. The one
+remaining capability is Refund.
 
 ---
 
@@ -360,7 +361,70 @@ the app with `PAYMESH_SIMULATOR_DISPATCH_ENABLED=true`.
 
 ---
 
-### 3.8 The cross-cutting platform
+### 3.8 The Ledger — where the money is actually written down
+
+`GET /api/v1/balances`, and one event consumer nobody calls directly.
+
+Until this existed, a payment reaching `SUCCEEDED` meant PayMesh had a row saying a payment
+succeeded. It did not mean anybody's money had moved anywhere, because there was nowhere for
+money to be. That is the gap this closes.
+
+**Double-entry, which is the whole idea.** Every movement is written twice — once as a debit,
+once as a credit, always equal. A ₹999.00 capture becomes:
+
+```
+DEBIT   provider-clearing:INR        99900     ← the provider owes us this
+CREDIT  merchant:mrc_x:pending:INR   99900     ← we owe the merchant this
+                        ────────────────
+         debits = credits = 99900  ✓
+```
+
+Nothing is ever a single-sided "add 99900 to a balance". Money always comes *from* somewhere
+and goes *to* somewhere, and if the two sides do not match, the write is refused. A balance is
+not a stored number — it is the sum of the entries, computed when you ask.
+
+**What makes it trustworthy is not the Java.** The application checks that a journal balances,
+but that check is only there so you get a readable error. The *guarantee* is in PostgreSQL:
+
+| Rule | What enforces it |
+|---|---|
+| Debits equal credits | A trigger checked at COMMIT — deferred, because a journal only balances once all its lines exist |
+| An entry can never be edited or deleted | A trigger that refuses UPDATE and DELETE outright |
+| One currency per journal | The foreign keys carry the currency, so a mismatched row cannot be inserted |
+| The same payment cannot post twice | A unique key on `payment-captured:<intent id>` |
+
+The integration tests insert deliberately lopsided journals with raw SQL, going round the
+application completely, and the database refuses them. Delete the Java checks and those tests
+still pass; delete the trigger and they go red. That was verified by actually deleting it.
+
+**A correction is a new entry, never an edit.** This is why the immutability trigger matters
+more than it looks: when Refund arrives it cannot "undo" a posting, because there is no such
+operation. It will have to write a *reversal* — a new journal pointing at the original, in the
+opposite direction. The history stays complete, which is the entire point of a ledger.
+
+**It does not know Payment exists.** Like Order, it reads `payment.succeeded` out of a
+`Map` and imports nothing from `com.paymesh.payment`. Two consumers now read that one event —
+Order moves its status, the Ledger posts the journal — and neither knows about the other. They
+each get their own row in `processed_events`, so one having handled an event never stops the
+other from handling it.
+
+**Two things it deliberately does not do**, both argued in ADR-018:
+
+- **No platform fee.** SDD §15.2 splits the capture three ways, taking a cut. There is no fee
+  schedule anywhere in this codebase — no rate, no rounding rule — so the merchant is credited
+  the gross. Inventing a rate would bake a made-up number into rows nothing can ever edit.
+- **No `POST /internal/v1/ledger/transactions`.** The SDD specifies one; nothing would call it.
+  The only writer is the event consumer, which means **every posting traces back to a real
+  payment**. An API would be a second way in with no originating event to check it against.
+
+**The balance is a second or two behind.** It is posted by the same relay that moves orders to
+`PAID`, so `GET /api/v1/balances` immediately after a capture may read nothing yet. Correct, not
+instant — and under `./mvnw spring-boot:run` the relay is off entirely unless you start with
+`PAYMESH_EVENTS_OUTBOX_RELAY_ENABLED=true`.
+
+---
+
+### 3.9 The cross-cutting platform
 
 Not user-visible, but three pieces do most of the safety work.
 
@@ -749,16 +813,18 @@ the honest accounting.
 
 ### 6.1 Phase-1 capabilities not started
 
-Two are left. The Provider Simulator used to head this list and is now built — see §3.7. Worth
-saying what it did *not* close, because it would be easy to assume otherwise: it produced the
-reconciliation **file** the 1-hour timeout's recovery leans on, but **not the recovery job**, which
-still does not exist. A provider *sequence number* and per-provider secrets also remain open, and
-ADR-017 says why each is somebody else's PR.
+One is left. The Provider Simulator (§3.7) and the Ledger (§3.8) both used to head this list.
+Worth saying what each did *not* close, because it would be easy to assume otherwise:
+
+- **The simulator** produced the reconciliation **file** the 1-hour timeout's recovery leans on,
+  but **not the recovery job**, which still does not exist. A provider *sequence number* and
+  per-provider secrets also remain open, and ADR-017 says why each is somebody else's PR.
+- **The Ledger** posts and reports a balance, but has **no reversal path, no holds, and no fee
+  split** — each waits on the thing that would use it, and ADR-018 argues each one separately.
 
 | Capability | SDD | What it would do | Why it's next / not next |
 |---|---|---|---|
-| **Ledger** | §15 | Double-entry bookkeeping. Every transaction's debits equal its credits, entries are immutable, corrections are new reversal transactions | **Deliberately last in Phase 1**, and last to be extracted into a service. It is the financial source of truth. Until it exists, a `SUCCEEDED` payment is operational state and nothing more — **no balance moves anywhere in this codebase.** |
-| **Refund** | §16 | Give money back, in full or part | Needs the Ledger first — a refund without double-entry is an untraceable subtraction. This is why `PARTIALLY_REFUNDED` and `REFUNDED` are unreachable. |
+| **Refund** | §16 | Give money back, in full or part | **The last one.** The Ledger exists now (§3.8) but has no reversal path, because nothing had anything to reverse — that is the piece Refund brings. This is why `PARTIALLY_REFUNDED` and `REFUNDED` are unreachable. |
 
 ### 6.2 Phase-2+ services, none started
 
@@ -848,8 +914,8 @@ cd backend
 ./mvnw spring-boot:run          # port 8080
 ```
 
-The documented count is **872 tests, 0 failures**, across 14 Flyway migrations (V1–V14)
-and 17 ADRs.
+The documented count is **943 tests, 0 failures**, across 15 Flyway migrations (V1–V15)
+and 18 ADRs.
 
 Integration tests run against a throwaway PostgreSQL container, so Flyway migrates an empty
 database on every run and the migrations are re-proved rather than assumed.
@@ -878,7 +944,7 @@ Worth knowing, because you'll read them next:
 - **`CLAUDE.md`** says "only the merchant capability exists." That is badly out of date —
   six capabilities exist.
 - **`README.md`** was corrected alongside the event-delivery and simulator changes and should
-  now agree with this file. The Postman collection has **twelve** folders.
+  now agree with this file. The Postman collection has **thirteen** folders.
 - **`docs/project-status.md`** is the most current. Its "What is built" section still
   describes Payment as create/cancel only, but its "What comes next" section correctly
   states Payment is feature-complete. Trust the latter.
