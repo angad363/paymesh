@@ -66,6 +66,12 @@ paymesh:
       #     PAYMESH_EVENTS_OUTBOX_RELAY_ENABLED=true ./mvnw spring-boot:run
       # to pass. The default interval (2s) is already short enough to watch by hand.
       enabled: false
+  refund:
+    # Same deal as the provider callback secret above, and it matters as much: this key is the only
+    # authentication on the endpoint that marks a refund SUCCEEDED, which posts a ledger reversal
+    # and lowers what PayMesh owes the merchant. DevelopmentSecretGuard refuses this exact value
+    # unless the dev profile is the sole active one.
+    callback-secret: dev-only-insecure-refund-callback-secret-change-me
   simulator:
     # Same deal again, and it matters as much as the callback secret rather than less: this key
     # is the only authentication on /sim/v1/**, and POST /sim/v1/payments queues the callback

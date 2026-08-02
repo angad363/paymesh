@@ -43,7 +43,15 @@ public class IdempotencyConfiguration {
         // response, not attempt a second collection -- and while the state machine would refuse the
         // second one anyway (SUCCEEDED is not capturable), a 409 is the wrong answer to a network
         // retry of a request that worked.
-        "POST /api/v1/payment-intents/{paymentIntentId}/capture"
+        "POST /api/v1/payment-intents/{paymentIntentId}/capture",
+        // REFUNDS BELONG HERE FOR THE SAME REASON CAPTURE DOES, in the opposite direction: a
+        // retried create whose first attempt already committed must replay the stored response
+        // rather than send a second lot of money back. Unlike capture there is no state machine to
+        // catch the second one -- two refunds of one payment are perfectly legal, which is exactly
+        // what makes a network retry dangerous here. The over-refund trigger would stop a full
+        // duplicate, and would NOT stop two halves of one.
+        "POST /api/v1/refunds",
+        "POST /api/v1/refunds/{refundId}/cancel"
     );
 
     @Bean
