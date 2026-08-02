@@ -228,6 +228,50 @@ class MerchantGovernanceIntegrationTest {
         mockMvc.perform(submitKyc(merchantId)).andExpect(status().isConflict());
     }
 
+    /**
+     * AN ALREADY-ACTIVE MERCHANT MAY RESUBMIT, AND APPROVING THAT MUST NOT 409.
+     * <p>
+     * Resubmitting after a legal name change is legitimate. {@code activate()} refuses
+     * ACTIVE -> ACTIVE, so approving without checking first threw and rolled the approval back --
+     * the operator saw a conflict and the decision was lost, for a merchant already in the state
+     * they were trying to reach. Found by review.
+     */
+    @Test
+    void approvesAResubmissionFromAnAlreadyActiveMerchant() throws Exception {
+        MerchantId merchantId = activated();
+
+        String submissionId = mockMvc.perform(submitKyc(merchantId))
+            .andExpect(status().isCreated())
+            .andReturn().getResponse().getContentAsString()
+            .replaceAll(".*\"id\":\"(kyc_[^\"]+)\".*", "$1");
+
+        mockMvc.perform(post("/api/v1/merchants/kyc-submissions/" + submissionId + "/approve")
+                .with(platformAdmin())
+                .header("Idempotency-Key", UUID.randomUUID().toString()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("APPROVED"));
+
+        mockMvc.perform(newOrder(merchantId)).andExpect(status().isCreated());
+    }
+
+    /**
+     * THE EXEMPTION LIST IS SCOPED TO THE MERCHANT ROUTES.
+     * <p>
+     * A bare {@code endsWith} on "/activate" or "/close" would exempt any future endpoint ending in
+     * those generic verbs from the status gate. This pins that a non-merchant path is still guarded
+     * even though it ends in an exempt word.
+     */
+    @Test
+    void doesNotExemptANonMerchantPathThatEndsInAnExemptWord() throws Exception {
+        MerchantId merchantId = register();
+
+        mockMvc.perform(post("/api/v1/payment-intents/pi_" + UUID.randomUUID() + "/cancel")
+                .with(merchantAdmin(merchantId))
+                .header("Idempotency-Key", UUID.randomUUID().toString()))
+            .andExpect(status().isForbidden())
+            .andExpect(jsonPath("$.code").value("MERCHANT_NOT_ACTIVE"));
+    }
+
     // --- helpers ------------------------------------------------------------------------------
 
     private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder submitKyc(

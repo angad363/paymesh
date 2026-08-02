@@ -66,10 +66,21 @@ public final class ReviewKycSubmissionService {
             KycSubmission submission = require(id);
             KycSubmission approved = submissions.save(submission.approve(reviewerId, notes, now));
 
-            // Activation and approval commit together. See the class comment.
-            merchantStatus.activate(
-                approved.merchantId(), reviewerId, "KYC approved: " + id.value()
-            );
+            // ONLY ACTIVATE IF IT IS NOT ALREADY ACTIVE.
+            //
+            // Nothing stops an already-ACTIVE merchant submitting verification again -- resubmitting
+            // after a name change is legitimate -- and activate() refuses ACTIVE -> ACTIVE, so
+            // approving that submission would throw and roll the approval back. The operator would
+            // see a 409 and the decision would be lost, for a merchant that is already in the state
+            // they were trying to reach.
+            //
+            // Activation and approval still commit together when activation happens at all, which
+            // is what stops a green submission sitting beside a frozen merchant.
+            if (!merchantStatus.canTransact(approved.merchantId())) {
+                merchantStatus.activate(
+                    approved.merchantId(), reviewerId, "KYC approved: " + id.value()
+                );
+            }
 
             log.warn(
                 "KYC approved kycSubmissionId={} merchantId={} reviewer={}",

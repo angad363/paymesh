@@ -50,6 +50,11 @@ public final class ChangeMerchantStatusService {
         this.clock = clock;
     }
 
+    /** Whether this merchant is already able to trade. Lets a caller avoid a redundant transition. */
+    public boolean canTransact(MerchantId merchantId) {
+        return getMerchantService.getById(merchantId).canTransact();
+    }
+
     public Merchant activate(MerchantId merchantId, String operatorId, String reason) {
         return change(merchantId, MerchantStatus.ACTIVE, operatorId, reason);
     }

@@ -53,7 +53,7 @@ balance, which was not true of this codebase before
 **Refund** closes the loop in the other direction: money goes back out, the Ledger posts a
 reversal, and the payment reaches `REFUNDED`
 ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)).
-**1061 tests, 0 failures. Seventeen Flyway migrations (V1–V17). Twenty-one ADRs.**
+**1063 tests, 0 failures. Seventeen Flyway migrations (V1–V17). Twenty-one ADRs.**
 
 **A merchant can now be stopped.** Three lifecycle enums had exactly one reachable value each —
 no merchant could be suspended, no user disabled, no customer blocked, and nothing anywhere read

@@ -56,6 +56,9 @@ public final class MerchantStatusFilter extends OncePerRequestFilter {
 
     private static final String GUARDED_PREFIX = "/api/v1/";
 
+    /** Every exempt route lives under this one resource. See {@link #shouldNotFilter}. */
+    private static final String MERCHANT_PREFIX = "/api/v1/merchants";
+
     /**
      * Paths that must work for a non-ACTIVE merchant, matched on the path's tail.
      *
@@ -103,7 +106,14 @@ public final class MerchantStatusFilter extends OncePerRequestFilter {
             return true;
         }
 
-        return EXEMPT_SUFFIXES.stream().anyMatch(path::endsWith);
+        // SCOPED TO THE MERCHANT ROUTES, and the scoping is load-bearing rather than tidiness.
+        //
+        // A bare endsWith on "/activate" and "/close" would silently exempt ANY future endpoint
+        // ending in those words -- POST /api/v1/customers/{id}/activate, or a subscription close --
+        // from the merchant status gate, with nobody noticing until a suspended merchant used one.
+        // They are generic verbs; only these routes on this resource are meant to be exempt.
+        return path.startsWith(MERCHANT_PREFIX)
+            && EXEMPT_SUFFIXES.stream().anyMatch(path::endsWith);
     }
 
     @Override
