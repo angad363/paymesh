@@ -242,6 +242,54 @@ class ApiCredentialIntegrationTest {
         assertThat(listed).doesNotContain("\"lastUsedAt\":null");
     }
 
+    /**
+     * NO KEY CAN REACH THE PLATFORM ROUTES, WHICH IS THE ESCALATION PATH WORTH PINNING.
+     * <p>
+     * Two things have to hold: no credential may be issued as PLATFORM_ADMIN, and a merchant-scoped
+     * key must fail {@code requirePlatformAdmin}. If either slipped, a leaked config file could
+     * suspend merchants and approve its own KYC.
+     */
+    @Test
+    void cannotSuspendAMerchantWithAnyKey() throws Exception {
+        MerchantId merchantId = activated();
+
+        for (String role : List.of("MERCHANT_ADMIN", "MERCHANT_USER")) {
+            String key = issueKey(merchantId, role);
+
+            mockMvc.perform(post("/api/v1/merchants/" + merchantId.value() + "/suspend")
+                    .header("Authorization", "ApiKey " + key)
+                    .header("Idempotency-Key", UUID.randomUUID().toString())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{ \"reason\": \"let me out\" }"))
+                .andExpect(status().isForbidden());
+        }
+    }
+
+    /**
+     * THE LAST-USED WRITE IS THROTTLED, so it is not a row update on the authentication path of
+     * every single call. Found in review: a busy key's row would otherwise be the hottest in the
+     * system, with a WAL write and a row lock per request.
+     * <p>
+     * What must still hold is that it is recorded at all -- staleness within the window is the
+     * whole point, but a permanently null column would mean nobody can find unrotated keys.
+     */
+    @Test
+    void recordsUseOnceRatherThanOnEveryCall() throws Exception {
+        MerchantId merchantId = activated();
+        String key = issueKey(merchantId, "MERCHANT_USER");
+
+        for (int call = 0; call < 3; call++) {
+            mockMvc.perform(orderWithKey(key)).andExpect(status().isCreated());
+        }
+
+        String listed = mockMvc.perform(
+                get("/api/v1/merchants/" + merchantId.value() + "/api-credentials")
+                    .with(merchantAdmin(merchantId)))
+            .andReturn().getResponse().getContentAsString();
+
+        assertThat(listed).doesNotContain("\"lastUsedAt\":null");
+    }
+
     // --- helpers ---------------------------------------------------------------------------------
 
     private MockHttpServletRequestBuilder orderWithKey(String key) {

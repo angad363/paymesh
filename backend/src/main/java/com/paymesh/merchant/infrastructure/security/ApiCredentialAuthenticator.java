@@ -7,6 +7,7 @@ import com.paymesh.shared.security.ApiKeyAuthenticator;
 import com.paymesh.shared.security.ApiKeyIdentity;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
 
@@ -26,14 +27,26 @@ import java.util.Optional;
  * confirm which prefixes exist, and a revoked key answering differently from an unknown one tells
  * an attacker they once had something real.
  *
- * <h2>Last-used is recorded, and it is allowed to fail</h2>
+ * <h2>Last-used is throttled, best-effort, and allowed to fail</h2>
  *
- * Best effort, in its own transaction, with failure swallowed to a debug line. It is an operational
- * convenience for spotting unrotated keys; if writing it fails the correct outcome is a stale
- * timestamp, not a rejected payment. Letting it throw would make an observability column able to
- * take the platform down.
+ * Writing it on every request would put a row update -- with its WAL write and its row lock -- on
+ * the authentication path of every single call, and a busy key's row would be the hottest in the
+ * system. It is written at most once per {@link #TOUCH_INTERVAL} instead.
+ * <p>
+ * That is not a correctness compromise, because of what the column is for: finding keys nobody has
+ * rotated. Ten minutes of staleness makes no difference to that question, and the alternative costs
+ * a write per payment.
+ * <p>
+ * It is also allowed to fail, swallowed to a debug line in the adapter. If writing an observability
+ * column fails, the correct outcome is a stale timestamp, not a rejected payment.
  */
 public final class ApiCredentialAuthenticator implements ApiKeyAuthenticator {
+
+    /**
+     * How stale {@code last_used_at} may get. Ten minutes answers "has anyone used this key
+     * lately" exactly as well as ten seconds would, at a fraction of the writes.
+     */
+    private static final Duration TOUCH_INTERVAL = Duration.ofMinutes(10);
 
     private final ApiCredentialRepository credentials;
     private final Clock clock;
@@ -58,7 +71,7 @@ public final class ApiCredentialAuthenticator implements ApiKeyAuthenticator {
             .filter(ApiCredential::isLive)
             .filter(credential -> ApiCredentialSecrets.matches(secret, credential.secretHash()));
 
-        verified.ifPresent(credential ->
+        verified.filter(ApiCredentialAuthenticator::isStale).ifPresent(credential ->
             credentials.touchLastUsed(credential.apiCredentialId(), Instant.now(clock)));
 
         return verified.map(credential -> new ApiKeyIdentity(
@@ -68,5 +81,11 @@ public final class ApiCredentialAuthenticator implements ApiKeyAuthenticator {
             credential.role(),
             credential.merchantId()
         ));
+    }
+
+    /** True when the recorded use is old enough to be worth another write. */
+    private static boolean isStale(ApiCredential credential) {
+        return credential.lastUsedAt() == null
+            || credential.lastUsedAt().isBefore(Instant.now().minus(TOUCH_INTERVAL));
     }
 }

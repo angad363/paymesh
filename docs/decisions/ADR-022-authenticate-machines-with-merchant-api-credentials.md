@@ -101,10 +101,10 @@ differing byte — a plain `equals` leaks the secret to anyone who can measure r
 
 **Bad, and known.**
 
-- **`last_used_at` is written on every authenticated request.** It is best-effort in its own
-  transaction with failure swallowed, so it cannot fail a payment — but it is still a write per
-  call on one row. If it measures hot, the fix is to sample it or move it out of band, not to make
-  it strict.
+- **`last_used_at` is throttled to one write per ten minutes**, found in review: writing it on
+  every request put a row UPDATE — WAL write and row lock — on the authentication path of every
+  call, making a busy key's row the hottest in the system. Ten minutes of staleness answers "has
+  anyone used this key lately" exactly as well. It remains best-effort and cannot fail a payment.
 - **There is no key expiry.** A credential is live until revoked. Rotation is therefore a manual
   discipline rather than something the platform enforces, and nothing surfaces "this key is two
   years old" beyond `last_used_at` and `created_at` being visible.
