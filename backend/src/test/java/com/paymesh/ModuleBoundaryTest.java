@@ -91,10 +91,66 @@ class ModuleBoundaryTest {
      * {@code PaymentActivityLookup} as its own interface and Payment implements it, so the arrow
      * still points one way and this list stays empty. If a name ever appears in it, that trade has
      * been undone.
+     * <p>
+     * <b>STILL EMPTY AFTER ADR-016, WHICH IS THE HARDER CASE.</b> Order now CONSUMES a Payment event
+     * and writes {@code orders.status} on the strength of it. The obvious way to read
+     * {@code payment.succeeded} would be to import {@code PaymentIntentStatus} to compare against, or
+     * a shared payload record owned by Payment; both would put Payment in Order's import graph for a
+     * fact Order is being told rather than asking for. Instead the consumer reads
+     * {@code Map<String, Object>} out of the envelope, exactly as a consumer in another process
+     * would -- see {@link #orderConsumesPaymentEventsWithoutNamingPaymentTypes}.
      */
     @Test
     void orderNeverImportsPayment() throws IOException {
         assertOnlyTheseImport("com/paymesh/order", "com.paymesh.payment.", List.of());
+    }
+
+    /**
+     * THE SAME RULE, ONE LEVEL DOWN, BECAUSE AN EMPTY ALLOWLIST ALONE WOULD ALSO PASS IF THE
+     * CONSUMER WERE SIMPLY DELETED.
+     * <p>
+     * {@link #orderNeverImportsPayment} says "no import of {@code com.paymesh.payment}". That is
+     * satisfied by a consumer that reads a Map -- and equally by no consumer at all, with Payment
+     * quietly writing {@code orders.status} through a direct call instead. So this test asserts the
+     * consumer is still there and still subscribed, and that it names Payment's types nowhere in its
+     * source text: not as an import, which the test above covers, and not as a fully-qualified name,
+     * which it does not.
+     * <p>
+     * If this file disappears or stops naming {@code payment.succeeded}, the event-driven design has
+     * been abandoned and the build should say so rather than staying green on a rule that no longer
+     * has anything to constrain.
+     */
+    @Test
+    void orderConsumesPaymentEventsWithoutNamingPaymentTypes() throws IOException {
+        Path consumer = Path.of(
+            "src/main/java/com/paymesh/order/infrastructure/events/PaymentSucceededHandler.java"
+        );
+
+        assertThat(Files.exists(consumer))
+            .as("Order's consumer of payment.succeeded must exist; ADR-016 is what makes"
+                + " orders.status reach PAID without Payment writing the column")
+            .isTrue();
+
+        List<String> lines = Files.readAllLines(consumer);
+
+        assertThat(String.join("\n", lines))
+            .as("the consumer must still subscribe to the event")
+            .contains("payment.succeeded");
+
+        // COMMENTS ARE EXCLUDED, and they have to be: this file's javadoc explains at length why it
+        // may not name com.paymesh.payment, and a check over the raw text would fail on its own
+        // documentation. What must not appear is a fully-qualified reference in CODE -- the loophole
+        // the import-based test above cannot see.
+        List<String> offendingLines = lines.stream()
+            .map(String::strip)
+            .filter(line -> !line.startsWith("*") && !line.startsWith("//") && !line.startsWith("/*"))
+            .filter(line -> line.contains("com.paymesh.payment"))
+            .toList();
+
+        assertThat(offendingLines)
+            .as("the payload is read as a Map, which is what a consumer in another process would be"
+                + " handed; a fully-qualified Payment type here is the same violation as an import")
+            .isEmpty();
     }
 
     private static void assertOnlyTheseImport(

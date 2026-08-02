@@ -1,6 +1,7 @@
 package com.paymesh.order.infrastructure.config;
 
 import com.paymesh.customer.application.GetCustomerService;
+import com.paymesh.order.application.ApplyPaymentSucceededService;
 import com.paymesh.order.application.CancelOrderService;
 import com.paymesh.order.application.CreateOrderService;
 import com.paymesh.order.application.CustomerLookup;
@@ -11,6 +12,7 @@ import com.paymesh.order.application.OrderRepository;
 import com.paymesh.order.application.OrderStateHistoryRepository;
 import com.paymesh.order.application.PaymentActivityLookup;
 import com.paymesh.order.infrastructure.customer.CustomerModuleLookup;
+import com.paymesh.order.infrastructure.events.PaymentSucceededHandler;
 import com.paymesh.order.infrastructure.persistence.jpa.JpaOrderRepository;
 import com.paymesh.order.infrastructure.persistence.jpa.JpaOrderStateHistoryRepository;
 import com.paymesh.order.infrastructure.persistence.jpa.SpringDataOrderRepository;
@@ -161,5 +163,45 @@ public class OrderConfiguration {
     )
     OrderExpirySweeper orderExpirySweeper(ExpireOrdersService expireOrdersService) {
         return new OrderExpirySweeper(expireOrdersService);
+    }
+
+    /**
+     * The rules a successful payment applies to an order (ADR-016).
+     * <p>
+     * NOTE THE MISSING ARGUMENT: there is no {@code TransactionTemplate}, and every other write
+     * service above takes one. This one runs inside the transaction {@code EventDispatcher} opened
+     * around the {@code processed_events} claim, and opening a second would let the state change
+     * commit independently of the row saying the event was consumed. Its javadoc says so; this is
+     * where a reviewer sees it without opening the file.
+     */
+    @Bean
+    ApplyPaymentSucceededService applyPaymentSucceededService(
+        OrderRepository orderRepository,
+        OrderStateHistoryRepository orderStateHistoryRepository,
+        GetOrderService getOrderService,
+        OutboxWriter outboxWriter
+    ) {
+        return new ApplyPaymentSucceededService(
+            orderRepository, orderStateHistoryRepository, getOrderService, outboxWriter
+        );
+    }
+
+    /**
+     * ORDER'S SUBSCRIPTION TO {@code payment.succeeded}, DECLARED ON ORDER'S SIDE.
+     * <p>
+     * {@code EventDispatcher} takes {@code List<EventHandler>} and Spring fills it from beans like
+     * this one, so the platform's wiring never names a capability and a capability's subscriptions
+     * are visible in its own configuration. Deleting this bean unsubscribes Order, and nothing in
+     * {@code shared} needs to know.
+     * <p>
+     * <b>This does not put Payment in Order's import graph.</b> The bean's type is Order's own class
+     * and the event type is a string; {@code ModuleBoundaryTest.orderNeverImportsPayment} keeps its
+     * empty allowlist, which is the constraint the whole consumer design had to satisfy.
+     */
+    @Bean
+    PaymentSucceededHandler paymentSucceededHandler(
+        ApplyPaymentSucceededService applyPaymentSucceededService
+    ) {
+        return new PaymentSucceededHandler(applyPaymentSucceededService);
     }
 }
