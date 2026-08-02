@@ -9586,9 +9586,13 @@
               {
                 "key": "Authorization",
                 "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{lgAttachKey}}"
               }
             ],
-            "description": "An intent must carry a payment method before it can be confirmed."
+            "description": "An intent must carry a payment method before it can be confirmed.\n\nThe Idempotency-Key is REQUIRED here -- attach is a registered idempotent route, and without the header this answers 400 IDEMPOTENCY_KEY_REQUIRED rather than attaching anything. Found by running this folder against a live app rather than by reading the controller."
           },
           "event": [
             {
