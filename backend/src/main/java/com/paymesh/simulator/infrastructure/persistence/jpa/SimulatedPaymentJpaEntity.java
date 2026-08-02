@@ -52,6 +52,9 @@ public class SimulatedPaymentJpaEntity {
     @Column(name = "amount_minor", nullable = false)
     private long amountMinor;
 
+    // CHAR(3) in the migration, not VARCHAR. Hibernate maps String to VARCHAR by default and schema
+    // validation compares JDBC type codes, so the fixed-width column must say so.
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "currency", nullable = false, length = 3)
     private String currency;
 
