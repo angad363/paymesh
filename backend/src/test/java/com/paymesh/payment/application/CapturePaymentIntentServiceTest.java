@@ -18,6 +18,7 @@ import java.time.ZoneOffset;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -325,6 +326,15 @@ class CapturePaymentIntentServiceTest {
      * {@code previousStatus: AUTHORIZED} is what distinguishes a merchant capture from an automatic
      * one. A consumer that needed a second event type to tell them apart would be reading the wrong
      * field.
+     * <p>
+     * <b>AND NOW THE SAME KEYS, WHICH IS A FIX RATHER THAN A RESTATEMENT (ADR-016 section 6).</b>
+     * Sharing the event NAME across two emitters was always the design; sharing only some of the
+     * PAYLOAD was a bug that no consumer had ever been able to notice, because until the relay
+     * existed no event had ever been delivered to anything. This payload carried
+     * {@code customerId}, {@code captureMethod} and {@code capturedAt}; the provider path carried
+     * {@code occurredAt} and none of the other three -- at the same envelope version 1. Order's
+     * consumer reads {@code capturedAmountMinor} and {@code occurredAt}, and it must get both
+     * whichever authority collected the money.
      */
     @Test
     void announcesPaymentSucceededCarryingTheCapturedAmount() {
@@ -353,7 +363,13 @@ class CapturePaymentIntentServiceTest {
         assertEquals("MANUAL", payload.get("captureMethod"));
         assertEquals("AUTHORIZED", payload.get("previousStatus"));
         assertEquals("SUCCEEDED", payload.get("status"));
-        assertEquals(NOW.toString(), payload.get("capturedAt"));
+        // occurredAt, and capturedAt is GONE. One key across both emitters, meaning "when the
+        // authority that decided this says it happened": the capture instant here, the provider's
+        // clock on the callback path. No data was lost -- on this path the two were the same Instant
+        // by construction. The absence is asserted as well as the presence, because a payload
+        // carrying BOTH would let a consumer read the one the other emitter does not send.
+        assertEquals(NOW.toString(), payload.get("occurredAt"));
+        assertFalse(payload.containsKey("capturedAt"));
         // Explicit JSON null rather than dropped, so a guest checkout reads the same shape.
         assertTrue(payload.containsKey("customerId"));
         assertNull(payload.get("customerId"));

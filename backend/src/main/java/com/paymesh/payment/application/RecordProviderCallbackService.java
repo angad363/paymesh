@@ -342,6 +342,22 @@ public final class RecordProviderCallbackService {
      * SDD 22.1 names these four. The payload is the design's section 4.4 list plus the state the
      * intent came from, which every other payment event in this codebase also carries -- a consumer
      * reconciling a timeline cannot order two events without it.
+     *
+     * <h2>ONE SHAPE WITH THE CAPTURE PATH, AND IT USED NOT TO BE (ADR-016 section 6)</h2>
+     *
+     * {@code payment.succeeded} is emitted from here and from {@code CapturePaymentIntentService},
+     * and the two payloads disagreed at the same envelope version 1: that one carried
+     * {@code customerId}, {@code captureMethod} and {@code capturedAt}, this one carried
+     * {@code occurredAt} and none of the other three. Same event name, two shapes, nothing in the
+     * envelope to distinguish them. It never bit because nothing had ever read an event; the relay
+     * (ADR-016) is what makes it a live defect, so it is fixed in the same change.
+     * <p>
+     * {@code customerId} and {@code captureMethod} are added here rather than removed there: both are
+     * facts about the intent, this method already holds the intent, and dropping data a consumer
+     * might need is the worse half of the trade. They land on all four outcomes, not just
+     * {@code payment.succeeded} -- a uniform shape across one aggregate's events is worth more than a
+     * minimal one, and a reconciler reading {@code payment.failed} wants the customer as much as a
+     * ledger reading {@code payment.succeeded} does.
      */
     private static OutboxEvent announcement(
         PaymentIntent intent,
@@ -349,20 +365,24 @@ public final class RecordProviderCallbackService {
         ProviderEvent event,
         Instant now
     ) {
-        // HashMap, not Map.of: orderId is always present but capturedAmountMinor is zero rather than
-        // absent, and a future optional field added to Map.of is a NullPointerException at runtime.
+        // HashMap, not Map.of: customerId is legitimately absent on a guest checkout, capturedAmount
+        // is zero rather than absent, and a future optional field added to Map.of is a
+        // NullPointerException at runtime.
         Map<String, Object> payload = new HashMap<>();
         payload.put("paymentIntentId", intent.paymentIntentId().value());
         payload.put("merchantId", intent.merchantId().value());
         payload.put("orderId", intent.orderId());
+        payload.put("customerId", intent.customerId());
         payload.put("amountMinor", intent.amountMinor());
         payload.put("capturedAmountMinor", intent.capturedAmountMinor());
         payload.put("currency", intent.currency());
+        payload.put("captureMethod", intent.captureMethod().name());
         payload.put("previousStatus", from.name());
         payload.put("status", intent.status().name());
-        // THE PROVIDER'S CLOCK, in the payload only. A consumer needs to know when the provider says
-        // it happened; the envelope's occurredAt below is when PayMesh recorded it, and a late
-        // delivery makes those two genuinely different facts.
+        // THE PROVIDER'S CLOCK, in the payload only, and the same key the capture path uses for the
+        // capture instant: both mean "when the authority that decided this says it happened". The
+        // envelope's occurredAt below is when PayMesh recorded it, and a late delivery makes those
+        // two genuinely different facts -- which is exactly why both exist.
         payload.put("occurredAt", event.occurredAt().toString());
 
         return new OutboxEvent(
