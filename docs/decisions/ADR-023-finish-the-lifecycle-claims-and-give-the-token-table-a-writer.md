@@ -47,6 +47,16 @@ already supplied it, and echoing it would turn every list into a way to harvest 
 **Detach is a timestamp.** Same rule as `api_credentials.revoked_at` — a deleted token cannot answer
 "was this card on file when that payment was taken".
 
+**The row and its event commit together**, which is ADR-010 and was missing in the first draft of
+this change — found in review. Without the transaction the two are separate auto-commits, so a
+crash between them leaves either a card on file that nothing was told about, or an event announcing
+a card that does not exist. Every other producer in the codebase already did this; this one did not.
+
+**Attach is idempotency-registered**, also found in review. It is a create under a unique
+constraint, so a retried attach whose first attempt committed would collide and answer 409 — the
+wrong answer to a network retry of a request that worked, which is the reasoning capture is on that
+list for.
+
 ### The two unique constraints mean different things
 
 `uq_payment_method_tokens_provider_token` (V3) is **not** partial: a provider token is unique per

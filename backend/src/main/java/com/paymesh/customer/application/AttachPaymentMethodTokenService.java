@@ -8,6 +8,7 @@ import com.paymesh.shared.tenant.MerchantId;
 import com.paymesh.shared.outbox.application.OutboxWriter;
 import com.paymesh.shared.outbox.domain.EventId;
 import com.paymesh.shared.outbox.domain.OutboxEvent;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -32,17 +33,20 @@ public final class AttachPaymentMethodTokenService {
     private final PaymentMethodTokenRepository tokens;
     private final GetCustomerService getCustomerService;
     private final OutboxWriter outbox;
+    private final TransactionTemplate transactions;
     private final Clock clock;
 
     public AttachPaymentMethodTokenService(
         PaymentMethodTokenRepository tokens,
         GetCustomerService getCustomerService,
         OutboxWriter outbox,
+        TransactionTemplate transactions,
         Clock clock
     ) {
         this.tokens = tokens;
         this.getCustomerService = getCustomerService;
         this.outbox = outbox;
+        this.transactions = transactions;
         this.clock = clock;
     }
 
@@ -65,14 +69,20 @@ public final class AttachPaymentMethodTokenService {
 
         Instant now = Instant.now(clock);
 
-        PaymentMethodToken saved = tokens.save(PaymentMethodToken.attach(
-            merchantId, customerId, provider, providerToken, fingerprint,
-            brand, lastFour, expiryMonth, expiryYear, now
-        ));
+        // THE ROW AND ITS EVENT COMMIT TOGETHER, which is ADR-010 and was missing here -- found in
+        // review. Without the transaction the two are separate auto-commits, so a crash between
+        // them leaves either a card on file that nothing was told about, or an event announcing a
+        // card that does not exist. The whole outbox pattern is that neither is representable.
+        return transactions.execute(status -> {
+            PaymentMethodToken saved = tokens.save(PaymentMethodToken.attach(
+                merchantId, customerId, provider, providerToken, fingerprint,
+                brand, lastFour, expiryMonth, expiryYear, now
+            ));
 
-        outbox.append(attached(saved, now));
+            outbox.append(attached(saved, now));
 
-        return saved;
+            return saved;
+        });
     }
 
     /** Allowed whatever the customer's status: removing a blocked customer's card is reasonable. */

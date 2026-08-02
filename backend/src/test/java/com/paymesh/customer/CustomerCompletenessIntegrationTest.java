@@ -81,12 +81,14 @@ class CustomerCompletenessIntegrationTest {
 
         mockMvc.perform(post("/api/v1/customers/" + customerId + "/block")
                 .with(admin(merchantId))
+                .header("Idempotency-Key", UUID.randomUUID().toString())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{ \"reason\": \"Chargeback abuse\" }"))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.status").value("BLOCKED"));
 
-        mockMvc.perform(post("/api/v1/customers/" + customerId + "/unblock").with(admin(merchantId)))
+        mockMvc.perform(post("/api/v1/customers/" + customerId + "/unblock").with(admin(merchantId))
+                .header("Idempotency-Key", UUID.randomUUID().toString()))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.status").value("ACTIVE"));
     }
@@ -99,6 +101,7 @@ class CustomerCompletenessIntegrationTest {
 
         mockMvc.perform(post("/api/v1/customers/" + customerId + "/block")
                 .with(admin(merchantId))
+                .header("Idempotency-Key", UUID.randomUUID().toString())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{ \"reason\": \"Chargeback abuse\" }"))
             .andExpect(status().isOk());
@@ -121,6 +124,7 @@ class CustomerCompletenessIntegrationTest {
 
         mockMvc.perform(post("/api/v1/customers/" + customerId + "/block")
                 .with(user(merchantId))
+                .header("Idempotency-Key", UUID.randomUUID().toString())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{ \"reason\": \"nope\" }"))
             .andExpect(status().isForbidden());
@@ -231,6 +235,7 @@ class CustomerCompletenessIntegrationTest {
 
         mockMvc.perform(post("/api/v1/customers/" + customerId + "/block")
                 .with(admin(merchantId))
+                .header("Idempotency-Key", UUID.randomUUID().toString())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{ \"reason\": \"Chargeback abuse\" }"))
             .andExpect(status().isOk());
@@ -290,6 +295,42 @@ class CustomerCompletenessIntegrationTest {
             .andExpect(jsonPath("$.email").exists());
     }
 
+    /**
+     * ATTACH IS IDEMPOTENCY-REGISTERED, so a retry replays rather than colliding.
+     * <p>
+     * Found in review: without it, a retried attach whose first attempt committed hits V3's
+     * non-partial provider-token constraint and answers 409 -- the wrong answer to a network retry
+     * of a request that worked, which is the exact reasoning capture is on that list for.
+     */
+    @Test
+    void replaysARetriedAttachRatherThanColliding() throws Exception {
+        MerchantId merchantId = activated();
+        String customerId = customer(merchantId);
+        String key = UUID.randomUUID().toString();
+
+        String body = """
+            {
+              "provider": "SIMULATOR",
+              "providerToken": "tok_retry",
+              "fingerprint": "%s",
+              "brand": "VISA",
+              "lastFour": "4242"
+            }
+            """.formatted(FINGERPRINT);
+
+        mockMvc.perform(post("/api/v1/customers/" + customerId + "/payment-methods")
+                .with(admin(merchantId)).header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isCreated());
+
+        mockMvc.perform(post("/api/v1/customers/" + customerId + "/payment-methods")
+                .with(admin(merchantId)).header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isCreated())
+            .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                .header().string("Idempotency-Replayed", "true"));
+    }
+
     // --- helpers -------------------------------------------------------------------------------------
 
     private String emailHash(String customerId) {
@@ -310,6 +351,7 @@ class CustomerCompletenessIntegrationTest {
     ) {
         return post("/api/v1/customers/" + customerId + "/payment-methods")
             .with(admin(merchantId))
+            .header("Idempotency-Key", UUID.randomUUID().toString())
             .contentType(MediaType.APPLICATION_JSON)
             .content("""
                 {

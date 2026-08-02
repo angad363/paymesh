@@ -86,10 +86,12 @@ public class CustomerConfiguration {
         PaymentMethodTokenRepository paymentMethodTokenRepository,
         GetCustomerService getCustomerService,
         OutboxWriter outboxWriter,
+        TransactionTemplate transactionTemplate,
         Clock clock
     ) {
         return new AttachPaymentMethodTokenService(
-            paymentMethodTokenRepository, getCustomerService, outboxWriter, clock
+            paymentMethodTokenRepository, getCustomerService, outboxWriter, transactionTemplate,
+            clock
         );
     }
 }
