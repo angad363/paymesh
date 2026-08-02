@@ -149,6 +149,21 @@ public final class ManageUserAccessService {
      * <p>
      * The user must already exist -- this adds a role to a person, it does not create one. Creating
      * an account is registration, which is a different thing with a password in it.
+     *
+     * <h2>THERE IS NO CONSENT STEP, AND THAT IS A KNOWN LIMITATION</h2>
+     *
+     * Any merchant admin may grant a role to any user id, without that user agreeing to it. The
+     * proper shape is an invitation the user accepts, and this is not that. Two things keep the
+     * exposure small rather than absent, and neither is a substitute:
+     * <ul>
+     *   <li>User ids are {@code usr_} + UUID, so a caller cannot enumerate targets -- they have to
+     *       already know an id.</li>
+     *   <li>The granted role reaches into the GRANTING merchant's data, not the user's. There is
+     *       nothing of the user's to steal by adding them.</li>
+     * </ul>
+     * What it does leak is existence: a grant to a real id answers 200 and to an unknown one 404,
+     * where {@link #revokeAccessAt} deliberately answers 404 for both. Recorded in ADR-024 and in
+     * project-status rather than left for the next audit.
      */
     public User grantAccessAt(MerchantId merchantId, UserId userId, Role role, String actorId) {
         User granted = users.save(require(userId).grantRoleAt(role, merchantId.value(), now()));

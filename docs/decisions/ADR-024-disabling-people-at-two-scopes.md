@@ -116,6 +116,20 @@ for platform staff to have issued it.
 
 **Bad, and known.**
 
+- **Granting a role needs no consent from the user.** Any merchant admin may add any user id to
+  their merchant. The proper shape is an invitation the user accepts; this is grant-by-id. Two
+  things keep the exposure small and neither is a substitute: ids are UUIDs so nothing can be
+  enumerated, and the granted role reaches into the *granting* merchant's data rather than the
+  user's. It does leak existence — a grant to a real id answers 200 and an unknown one 404, where
+  revocation deliberately answers 404 for both. Pinned by a test so closing it later is a
+  deliberate change.
+- **The platform routes cannot be made idempotent**, and this was found by trying. An idempotency
+  record is scoped by merchant and foreign-keyed to `merchants` (V4, ADR-009), because the durable
+  key is "merchant + endpoint + Idempotency-Key". A platform action has no merchant, so registering
+  these produced a foreign key violation on a synthetic merchant id — the schema correctly refusing
+  to pretend a platform act belongs to a tenant. A retried suspend therefore answers 409 rather than
+  replaying. Fixing it needs a platform-scoped idempotency record, which is a change to that model
+  rather than a line on a list.
 - **Suspension is not instant.** Up to fifteen minutes of access-token lifetime remains, and closing
   that is open item 11 — a denylist or much shorter tokens, neither of which is free.
 - **There is no "list every user" for platform staff.** They can act on a user id they already have;

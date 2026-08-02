@@ -21,7 +21,7 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1114 tests, 0 failures.** Twenty Flyway migrations (V1–V20). Twenty-four ADRs. The Postman
+**1118 tests, 0 failures.** Twenty Flyway migrations (V1–V20). Twenty-four ADRs. The Postman
 collection runs fourteen folders, the newest showing money go back out.
 
 **The Ledger is the financial source of truth, and as of this session it exists** (ADR-018).
@@ -525,8 +525,13 @@ failing test._
    question turned out to be two questions: a merchant admin revokes a user's roles at their own
    merchant (the departed-employee case, account survives), and platform staff suspend the account
    platform-wide. Conflating them would have let merchant A lock somebody out of merchant B.
-   **Every lifecycle enum in the platform is now reachable.** Still open: `GET /v1/customers`
-   (SDD 10.3's search).
+   **Every lifecycle enum in the platform is now reachable.**
+
+   Two things ADR-024 surfaced and did NOT close, recorded here rather than left for the next
+   audit: **granting a user a role needs no consent from that user** (grant-by-id rather than an
+   invitation, and it leaks existence where revoke deliberately does not), and **platform-scoped
+   writes cannot be made idempotent** because an idempotency record is merchant-scoped and
+   foreign-keyed to `merchants`. Also still open: `GET /v1/customers` (SDD 10.3's search).
 
 1. **Timing a stranded payment out can kill the order it exists to rescue.** ADR-015 says
    `FAILED` releases the slot so the merchant can retry. But the intent has been stranded for

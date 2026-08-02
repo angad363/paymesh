@@ -60,7 +60,24 @@ public class IdempotencyConfiguration {
         // And the two state changes, for the reason orders/cancel is on this list: the state
         // machine refuses the second one, and a 409 is the wrong answer to a retry.
         "POST /api/v1/customers/{customerId}/block",
-        "POST /api/v1/customers/{customerId}/unblock"
+        "POST /api/v1/customers/{customerId}/unblock",
+        // Granting a user a role, for the same reason: a retried grant collides with the role it
+        // already created and answers 409, which is the wrong answer to a network retry of a
+        // request that worked.
+        //
+        // THE PLATFORM ROUTES -- suspend, reactivate, close -- ARE DELIBERATELY NOT HERE, and the
+        // reason is structural rather than an oversight. An idempotency record is scoped by
+        // MERCHANT and foreign-keyed to the merchants table (V4), because the durable key is
+        // "merchant + endpoint + Idempotency-Key". A platform action has no merchant: registering
+        // these produced a foreign key violation on a synthetic merchant id, which is the schema
+        // correctly refusing to pretend a platform act belongs to a tenant.
+        //
+        // Making them idempotent needs a platform-scoped record, which is a change to the
+        // idempotency model rather than a line on this list. Recorded in ADR-024.
+        //
+        // The revoke is a DELETE and is not here either: this registry is keyed on POST templates,
+        // and a repeated DELETE answering 404 is the conventional reading of "already gone".
+        "POST /api/v1/users/{userId}/merchant-access"
     );
 
     @Bean

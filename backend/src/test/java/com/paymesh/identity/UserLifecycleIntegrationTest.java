@@ -312,6 +312,40 @@ class UserLifecycleIntegrationTest {
             .single();
     }
 
+    /**
+     * GRANTING TO AN UNKNOWN USER LEAKS EXISTENCE, where revoking deliberately does not.
+     * <p>
+     * Pinned rather than fixed. User ids are UUIDs so nothing can be enumerated, and the granted
+     * role reaches into the granting merchant's own data rather than the user's -- but the
+     * asymmetry with revoke is real and is recorded in ADR-024 and project-status. This test exists
+     * so that closing it later is a deliberate change rather than an accident.
+     */
+    @Test
+    void grantingToAnUnknownUserAnswersDifferentlyFromGrantingToARealOne() throws Exception {
+        MerchantId merchantId = activatedMerchant();
+
+        mockMvc.perform(post("/api/v1/users/usr_" + UUID.randomUUID() + "/merchant-access")
+                .with(admin(merchantId))
+                .header("Idempotency-Key", UUID.randomUUID().toString())
+                .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                .content("{ \"role\": \"MERCHANT_USER\" }"))
+            .andExpect(status().isNotFound());
+    }
+
+    /** A tenant promoting somebody to platform staff is the escalation the role model prevents. */
+    @Test
+    void refusesGrantingPlatformAdmin() throws Exception {
+        MerchantId merchantId = activatedMerchant();
+        UserId userId = register(merchantId, email());
+
+        mockMvc.perform(post("/api/v1/users/" + userId.value() + "/merchant-access")
+                .with(admin(merchantId))
+                .header("Idempotency-Key", UUID.randomUUID().toString())
+                .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                .content("{ \"role\": \"PLATFORM_ADMIN\" }"))
+            .andExpect(status().isBadRequest());
+    }
+
     // --- helpers -------------------------------------------------------------------------------------
 
     private UserId register(MerchantId merchantId, String email) {
@@ -327,6 +361,7 @@ class UserLifecycleIntegrationTest {
     private void grantAt(MerchantId merchantId, UserId userId) throws Exception {
         mockMvc.perform(post("/api/v1/users/" + userId.value() + "/merchant-access")
                 .with(admin(merchantId))
+                .header("Idempotency-Key", UUID.randomUUID().toString())
                 .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
                 .content("{ \"role\": \"MERCHANT_USER\" }"))
             .andExpect(status().isOk());
