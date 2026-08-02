@@ -508,6 +508,94 @@
     {
       "key": "lgPollAttempt",
       "value": ""
+    },
+    {
+      "key": "rfOrderKey",
+      "value": ""
+    },
+    {
+      "key": "rfOrderId",
+      "value": ""
+    },
+    {
+      "key": "rfIntentKey",
+      "value": ""
+    },
+    {
+      "key": "rfIntentId",
+      "value": ""
+    },
+    {
+      "key": "rfAttachKey",
+      "value": ""
+    },
+    {
+      "key": "rfConfirmKey",
+      "value": ""
+    },
+    {
+      "key": "rfRefundKey",
+      "value": ""
+    },
+    {
+      "key": "rfPartialKey",
+      "value": ""
+    },
+    {
+      "key": "rfOverKey",
+      "value": ""
+    },
+    {
+      "key": "rfCancelKey",
+      "value": ""
+    },
+    {
+      "key": "rfCrossKey",
+      "value": ""
+    },
+    {
+      "key": "rfRefundId",
+      "value": ""
+    },
+    {
+      "key": "rfPollAttempt",
+      "value": ""
+    },
+    {
+      "key": "refundCallbackSecret",
+      "value": ""
+    },
+    {
+      "key": "refundCallbackBody",
+      "value": ""
+    },
+    {
+      "key": "refundCallbackSignature",
+      "value": ""
+    },
+    {
+      "key": "rfBalanceBefore",
+      "value": ""
+    },
+    {
+      "key": "simE2eAttachKey",
+      "value": ""
+    },
+    {
+      "key": "lgSettleLast",
+      "value": ""
+    },
+    {
+      "key": "lgSettleTries",
+      "value": ""
+    },
+    {
+      "key": "rfSettleLast",
+      "value": ""
+    },
+    {
+      "key": "rfSettleTries",
+      "value": ""
     }
   ],
   "item": [
@@ -9202,15 +9290,28 @@
               {
                 "key": "Authorization",
                 "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{simE2eAttachKey}}"
               }
             ],
-            "description": "Attach, then confirm. The intent cannot be confirmed without an instrument.",
+            "description": "Attach, then confirm. The intent cannot be confirmed without an instrument.\n\nThe Idempotency-Key is REQUIRED: attach is a registered idempotent route, and without it this answers 400 IDEMPOTENCY_KEY_REQUIRED and every request after it in this chain fails on the state it never reached.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"paymentMethodType\": \"CARD\"\n}"
             }
           },
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('simE2eAttachKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
             {
               "listen": "test",
               "script": {
@@ -9274,7 +9375,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
                   "pm.test('PROCESSING', () => pm.expect(pm.response.json().status).to.eql('PROCESSING'));"
                 ]
               }
@@ -9380,7 +9481,11 @@
                   "} else {",
                   "  pm.test('the simulator drove the intent to SUCCEEDED', () => pm.expect(status).to.eql('SUCCEEDED'));",
                   "  pm.test('for exactly the order amount', () => pm.expect(pm.response.json().capturedAmountMinor).to.eql(1999));",
-                  "  postman.setNextRequest(null);",
+                  "  // NO setNextRequest(null) HERE. It used to say that, and it halted the WHOLE RUN --",
+                  "  // harmless while this was the last folder in the collection, and silently fatal the",
+                  "  // moment anything was added after it. The Ledger and Refund folders were unreachable",
+                  "  // in a full newman run until this line was deleted. Falling off the end of a script",
+                  "  // continues to the next request, which is what was wanted all along.",
                   "}"
                 ]
               }
@@ -9427,7 +9532,10 @@
                   "pm.collectionVariables.set('lgAttachKey', pm.variables.replaceIn('{{$guid}}'));",
                   "pm.collectionVariables.set('lgConfirmKey', pm.variables.replaceIn('{{$guid}}'));",
                   "pm.collectionVariables.set('lgReference', 'sim_pay_' + pm.variables.replaceIn('{{$guid}}'));",
-                  "pm.collectionVariables.set('lgPollAttempt', 0);"
+                  "pm.collectionVariables.set('lgPollAttempt', 0);",
+                  "// A pause each pass so the relay has a tick to drain between the two reads the settle",
+                  "// check compares.",
+                  "setTimeout(() => {}, 1500);"
                 ]
               }
             },
@@ -9436,26 +9544,28 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "// SETTLE BEFORE MEASURING. Every folder shares one merchant, and the relay moves that",
+                  "// merchant's balance asynchronously -- so an earlier folder's collection can land in the",
+                  "// middle of this one and be counted as ours. Poll until two consecutive reads agree, which",
+                  "// means the backlog is drained, and only then record the baseline.",
+                  "//",
+                  "// Without this the delta assertions below measure whatever happened to be in flight. That is",
+                  "// exactly how they failed the first time this collection was run end to end.",
+                  "const inr = pm.response.json().balances.find(r => r.currency === 'INR');",
+                  "const now = inr ? inr.pendingMinor : 0;",
+                  "const last = pm.collectionVariables.get('lgSettleLast');",
+                  "const tries = Number(pm.collectionVariables.get('lgSettleTries') || 0) + 1;",
+                  "",
                   "pm.test('200 OK', () => pm.response.to.have.status(200));",
-                  "const rows = pm.response.json().balances;",
-                  "const inr = rows.find(r => r.currency === 'INR');",
-                  "const before = inr ? inr.pendingMinor : 0;",
-                  "pm.collectionVariables.set('lgBalanceBefore', before);",
-                  "console.log('INR pending before: ' + before);",
                   "",
-                  "pm.test('money is an integer in minor units, never a decimal', () => {",
-                  "    rows.forEach(r => pm.expect(Number.isInteger(r.pendingMinor)).to.be.true);",
-                  "});",
-                  "",
-                  "// SDD 15.3 also specifies available/reserved/inSettlement. They are OMITTED rather than",
-                  "// returned as zero -- a zero availableMinor would claim this merchant has nothing they can",
-                  "// withdraw, when the truth is that 'available' is not a concept this ledger has yet.",
-                  "pm.test('the balances Settlement has not made real yet are absent, not zero', () => {",
-                  "    rows.forEach(r => {",
-                  "        pm.expect(r).to.not.have.property('availableMinor');",
-                  "        pm.expect(r).to.not.have.property('reservedMinor');",
-                  "    });",
-                  "});"
+                  "if ((last === undefined || last === '' || Number(last) !== now) && tries < 20) {",
+                  "    pm.collectionVariables.set('lgSettleLast', now);",
+                  "    pm.collectionVariables.set('lgSettleTries', tries);",
+                  "    postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "    pm.collectionVariables.set('lgBalanceBefore', now);",
+                  "    console.log('settled baseline: ' + now);",
+                  "}"
                 ]
               }
             }
@@ -9607,7 +9717,7 @@
           ]
         },
         {
-          "name": "Setup: confirm, sending it to the provider (200)",
+          "name": "Setup: confirm, sending it to the provider (202)",
           "request": {
             "method": "POST",
             "url": {
@@ -9649,7 +9759,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
                   "pm.test('PROCESSING', () => pm.expect(pm.response.json().status).to.eql('PROCESSING'));"
                 ]
               }
@@ -9866,6 +9976,1021 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Refund (money back out, ADR-019)",
+      "description": "GIVING IT BACK, AND THE LAST PHASE-1 CAPABILITY.\n\nCollects 99900, refunds 30000 of it, and watches three modules move without any of them calling another: Refund announces refund.succeeded, the Ledger posts a REVERSAL journal, and Payment reaches PARTIALLY_REFUNDED. Then refunds the remainder.\n\nTHE DANGER HERE IS THE MIRROR OF PAYMENT'S. Payment's is collecting twice; Refund's is paying out more than was collected -- reachable by ordinary concurrency, since two partial refunds sent at the same moment each read a total that excludes the other. A row lock on the payment is what settles that; a deferred trigger backs it up for anything reaching the table another way. ADR-019 section 4 explains why the trigger alone is NOT enough, which was found by measuring rather than by reasoning.\n\nA REVERSAL IS A NEW JOURNAL, NEVER AN EDIT. Ledger entries refuse UPDATE and DELETE outright, so a correction can only be another posting in the opposite direction. Both stay in the history.\n\nTHE REFUND CALLBACK IS HAND-SIGNED, and it is the only such request left in this collection. The simulator can queue payment callbacks but not refund ones -- its outbound-callback model is shaped around payments.\n\nSTART THE APP WITH BOTH TIMERS ON:\n    PAYMESH_SIMULATOR_DISPATCH_ENABLED=true \\\n    PAYMESH_EVENTS_OUTBOX_RELAY_ENABLED=true \\\n    ./mvnw spring-boot:run\n\nRuns after the Ledger folder and reuses its access tokens.",
+      "item": [
+        {
+          "name": "Setup: an order to collect and then give back (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amountMinor\": 99900,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{rfOrderKey}}"
+              }
+            ],
+            "description": "Its own order and its own payment. Refunds are the last folder and everything above has already spent its intents (ADR-011: one live intent per order)."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "['rfOrderKey','rfIntentKey','rfAttachKey','rfConfirmKey','rfRefundKey','rfPartialKey',",
+                  " 'rfOverKey','rfCancelKey','rfCrossKey'].forEach(k =>",
+                  "    pm.collectionVariables.set(k, pm.variables.replaceIn('{{$guid}}')));",
+                  "pm.collectionVariables.set('refundCallbackSecret', 'dev-only-insecure-refund-callback-secret-change-me');",
+                  "pm.collectionVariables.set('rfPollAttempt', 0);",
+                  "// This folder's OWN baseline, read below before anything is collected. Deriving it",
+                  "// from the Ledger folder's variable would make this folder fail whenever it is run",
+                  "// on its own -- and a folder that only passes in sequence is a folder nobody trusts."
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('rfOrderId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Baseline: the balance before this folder does anything (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/balances",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "balances"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "Read first so the assertions later are about a DELTA this folder caused, not about an absolute figure that depends on which folders ran before it."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 1500);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// SETTLE BEFORE MEASURING. Every folder shares one merchant, and the relay moves that",
+                  "// merchant's balance asynchronously -- so an earlier folder's collection can land in the",
+                  "// middle of this one and be counted as ours. Poll until two consecutive reads agree, which",
+                  "// means the backlog is drained, and only then record the baseline.",
+                  "//",
+                  "// Without this the delta assertions below measure whatever happened to be in flight. That is",
+                  "// exactly how they failed the first time this collection was run end to end.",
+                  "const inr = pm.response.json().balances.find(r => r.currency === 'INR');",
+                  "const now = inr ? inr.pendingMinor : 0;",
+                  "const last = pm.collectionVariables.get('rfSettleLast');",
+                  "const tries = Number(pm.collectionVariables.get('rfSettleTries') || 0) + 1;",
+                  "",
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "",
+                  "if ((last === undefined || last === '' || Number(last) !== now) && tries < 20) {",
+                  "    pm.collectionVariables.set('rfSettleLast', now);",
+                  "    pm.collectionVariables.set('rfSettleTries', tries);",
+                  "    postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "    pm.collectionVariables.set('rfBalanceBefore', now);",
+                  "    console.log('settled baseline: ' + now);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: intent, attach, confirm (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{rfOrderId}}\",\n  \"amountMinor\": 99900,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{rfIntentKey}}"
+              }
+            ],
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('rfIntentId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: attach a card (200)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{rfIntentId}}/payment-method",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{rfIntentId}}",
+                "payment-method"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentMethodType\": \"CARD\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{rfAttachKey}}"
+              }
+            ],
+            "description": "The Idempotency-Key is REQUIRED -- attach is a registered idempotent route."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: confirm (202)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{rfIntentId}}/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{rfIntentId}}",
+                "confirm"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{rfConfirmKey}}"
+              }
+            ],
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('PROCESSING', () => pm.expect(pm.response.json().status).to.eql('PROCESSING'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: the simulator collects the full 99900 (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sim/v1/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sim",
+                "v1",
+                "payments"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idempotencyKey\": \"{{rfOrderKey}}-collect\",\n  \"callbackReference\": \"{{rfIntentId}}\",\n  \"method\": \"CARD\",\n  \"token\": \"tok_sim_success\",\n  \"amountMinor\": 99900,\n  \"currency\": \"INR\",\n  \"captureMethod\": \"AUTOMATIC\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Simulator-Key",
+                "value": "{{simulatorKey}}"
+              }
+            ],
+            "description": "There has to be money before there can be a refund. tok_sim_success, full amount."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Wait for the payment to reach SUCCEEDED (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{rfIntentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{rfIntentId}}"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "Polls: the simulator's dispatcher and the outbox relay both have to tick. Needs both timers on -- see the folder description."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 2000);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const attempt = Number(pm.collectionVariables.get('rfPollAttempt') || 0) + 1;",
+                  "pm.collectionVariables.set('rfPollAttempt', attempt);",
+                  "const b = pm.response.json();",
+                  "if (b.status !== 'SUCCEEDED' && attempt < 15) {",
+                  "    console.log('waiting for the collection, attempt ' + attempt + ' of 15');",
+                  "    postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "    pm.test('SUCCEEDED', () => pm.expect(b.status).to.eql('SUCCEEDED'));",
+                  "    pm.collectionVariables.set('rfPollAttempt', 0);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refuse a refund larger than what was captured (422)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/refunds",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "refunds"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentIntentId\": \"{{rfIntentId}}\",\n  \"amountMinor\": 100000\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{rfOverKey}}"
+              }
+            ],
+            "description": "THE RULE THE MODULE EXISTS FOR, in its readable form. The message names the requested amount, what is already spoken for, and what was captured -- all three, because 'too much' without the figures leaves a merchant guessing at what would fit.\n\nThis is the application's pre-check. It is NOT the guard: two simultaneous refunds each read a total that excludes the other and both would pass. A row lock on the payment is what settles that, and a deferred trigger backs it up for anything that reaches the table another way (ADR-019 section 4)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable Entity', () => pm.response.to.have.status(422));",
+                  "pm.test('REFUND_EXCEEDS_CAPTURED_AMOUNT', () =>",
+                  "    pm.expect(pm.response.json().code).to.eql('REFUND_EXCEEDS_CAPTURED_AMOUNT'));",
+                  "pm.test('names the captured figure', () =>",
+                  "    pm.expect(pm.response.json().message).to.include('99900'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refund 30000 of it (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/refunds",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "refunds"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentIntentId\": \"{{rfIntentId}}\",\n  \"amountMinor\": 30000,\n  \"reason\": \"Customer returned one item\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{rfPartialKey}}"
+              }
+            ],
+            "description": "A partial refund. Created and handed to the provider in one transaction, so it comes back PROCESSING rather than PENDING.\n\nNOTE THERE IS NO CURRENCY FIELD. A refund is denominated in whatever the payment collected, so there is nothing for a caller to get wrong -- and no way to ask for 30000 JPY back from an INR capture. A database trigger enforces the same thing."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('rfRefundId', b.id);",
+                  "pm.test('ref_ prefixed id', () => pm.expect(b.id).to.match(/^ref_/));",
+                  "pm.test('PROCESSING', () => pm.expect(b.status).to.eql('PROCESSING'));",
+                  "pm.test('denominated in the payment currency', () => pm.expect(b.currency).to.eql('INR'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refuse a cancel once the provider has it (409)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/refunds/{{rfRefundId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "refunds",
+                "{{rfRefundId}}",
+                "cancel"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{rfCancelKey}}"
+              }
+            ],
+            "description": "SDD 16.3 asks for a cancel endpoint and this is it answering honestly. A refund is PROCESSING by the time the caller sees it, and PROCESSING means the provider may already have moved the money -- reporting CANCELLED then would be PayMesh's opinion contradicting the customer's bank statement.\n\nThe endpoint's real use is clearing a refund that failed to submit and is holding its amount against the captured total."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('REFUND_NOT_CANCELLABLE', () =>",
+                  "    pm.expect(pm.response.json().code).to.eql('REFUND_NOT_CANCELLABLE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refuse an unsigned refund callback (401)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/internal/v1/refund-callbacks/SIMULATOR",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "v1",
+                "refund-callbacks",
+                "SIMULATOR"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"eventId\": \"unsigned\",\n  \"occurredAt\": \"2026-08-02T12:00:00Z\",\n  \"refundId\": \"{{rfRefundId}}\",\n  \"outcome\": \"SUCCEEDED\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "description": "REFUND'S OWN CALLBACK ROUTE (ADR-019), not a branch of the payment one. It is permitAll on the Spring chain because a provider holds no PayMesh token -- the HMAC signature is the whole authentication, and it must not be reachable with a merchant's token either, because this route decides that money went back.\n\nSame filter class as the payment route, a separate instance with its own secret. Two instances of one implementation, not two implementations."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('and says nothing about which check failed', () =>",
+                  "    pm.expect(pm.response.json().code).to.eql('PROVIDER_SIGNATURE_INVALID'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The provider says the refund succeeded (200)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/internal/v1/refund-callbacks/SIMULATOR",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "v1",
+                "refund-callbacks",
+                "SIMULATOR"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{refundCallbackBody}}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Signature",
+                "value": "{{refundCallbackSignature}}"
+              }
+            ],
+            "description": "THE SIGNATURE IS COMPUTED IN THE PRE-REQUEST SCRIPT, not pasted -- a fixed one would be valid for one body at one second.\n\nThis is the one hand-signed request left in the collection. The simulator can queue payment callbacks but not refund ones: its outbound-callback model is shaped around payments, and closing that is its own migration (ADR-019)."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = JSON.stringify({",
+                  "    eventId: 'sim_ref_evt_' + pm.variables.replaceIn('{{$guid}}'),",
+                  "    occurredAt: new Date().toISOString(),",
+                  "    refundId: pm.collectionVariables.get('rfRefundId'),",
+                  "    providerReference: 'prov_re_' + pm.variables.replaceIn('{{$guid}}'),",
+                  "    outcome: 'SUCCEEDED'",
+                  "});",
+                  "const t = Math.floor(Date.now() / 1000);",
+                  "// t + '.' + body, so a captured signature cannot be replayed onto a different body or time.",
+                  "const v1 = CryptoJS.HmacSHA256(",
+                  "    t + '.' + body,",
+                  "    pm.collectionVariables.get('refundCallbackSecret')",
+                  ").toString(CryptoJS.enc.Hex);",
+                  "// The request body is literally {{refundCallbackBody}}, so what is sent is byte-for-byte what",
+                  "// was signed. Building the JSON in the request pane would sign one string and send another.",
+                  "pm.collectionVariables.set('refundCallbackBody', body);",
+                  "pm.collectionVariables.set('refundCallbackSignature', 't=' + t + ',v1=' + v1);",
+                  "pm.collectionVariables.set('rfPollAttempt', 0);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('APPLIED', () => pm.expect(pm.response.json().result).to.eql('APPLIED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The same callback again changes nothing (200 DUPLICATE)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/internal/v1/refund-callbacks/SIMULATOR",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "v1",
+                "refund-callbacks",
+                "SIMULATOR"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{refundCallbackBody}}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Signature",
+                "value": "{{refundCallbackSignature}}"
+              }
+            ],
+            "description": "Deduplicated on (provider, external_event_id), which is the PRIMARY KEY of refund_callbacks rather than a unique index consulted by a read -- two concurrent deliveries of one callback both find nothing on a read, and only the index can decide between them.\n\nStill a 200: a duplicate is not the provider's error, and answering 4xx would make a correct provider retry forever."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The SAME body and a fresh timestamp: the signature covers t + '.' + body, so re-signing is",
+                  "// required, but the eventId inside the body is unchanged -- which is what makes it a duplicate.",
+                  "const body = pm.collectionVariables.get('refundCallbackBody');",
+                  "const t = Math.floor(Date.now() / 1000);",
+                  "const v1 = CryptoJS.HmacSHA256(",
+                  "    t + '.' + body,",
+                  "    pm.collectionVariables.get('refundCallbackSecret')",
+                  ").toString(CryptoJS.enc.Hex);",
+                  "pm.collectionVariables.set('refundCallbackSignature', 't=' + t + ',v1=' + v1);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('DUPLICATE', () => pm.expect(pm.response.json().result).to.eql('DUPLICATE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "THE POINT: the balance drops and the payment reads PARTIALLY_REFUNDED (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/balances",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "balances"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "THREE MODULES MOVED AND NONE OF THEM CALLED ANOTHER. Refund announced refund.succeeded; the Ledger posted a REVERSAL journal because it subscribed; Payment moved its own status because it subscribed too.\n\nThe reversal is a NEW journal, not an edit -- ledger entries refuse UPDATE and DELETE outright, so a correction can only ever be another posting in the opposite direction:\n\n    capture:   DEBIT provider-clearing    CREDIT merchant-pending\n    reversal:  DEBIT merchant-pending     CREDIT provider-clearing\n\nBoth stay in the history. 99900 collected minus 30000 given back leaves 69900."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 2000);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const attempt = Number(pm.collectionVariables.get('rfPollAttempt') || 0) + 1;",
+                  "pm.collectionVariables.set('rfPollAttempt', attempt);",
+                  "",
+                  "const inr = pm.response.json().balances.find(r => r.currency === 'INR');",
+                  "const before = Number(pm.collectionVariables.get('rfBalanceBefore'));",
+                  "const delta = (inr ? inr.pendingMinor : 0) - before;",
+                  "",
+                  "// 99900 collected minus 30000 given back. Asserted as a DELTA so the folder does",
+                  "// not care what any earlier folder left behind.",
+                  "if (delta !== 69900 && attempt < 15) {",
+                  "    console.log('waiting for the reversal, delta ' + delta + ', attempt ' + attempt + ' of 15');",
+                  "    postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "    pm.test('collected 99900, gave back 30000, balance rose by 69900', () =>",
+                  "        pm.expect(delta).to.eql(69900));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The payment now reads PARTIALLY_REFUNDED (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{rfIntentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{rfIntentId}}"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "A STATUS THAT WAS UNREACHABLE UNTIL THIS CAPABILITY EXISTED. PARTIALLY_REFUNDED and REFUNDED have been declared since V8 and produced by nothing -- project-status.md verified it by grep. Every status in the payment enum is now reachable.\n\nPayment moved its own column because Refund may not write it, exactly as Payment may not write orders.status."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('PARTIALLY_REFUNDED', () => pm.expect(b.status).to.eql('PARTIALLY_REFUNDED'));",
+                  "pm.test('refundedAmountMinor moved with it', () =>",
+                  "    pm.expect(b.refundedAmountMinor).to.eql(30000));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Read the refund back (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/refunds/{{rfRefundId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "refunds",
+                "{{rfRefundId}}"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('SUCCEEDED', () => pm.expect(b.status).to.eql('SUCCEEDED'));",
+                  "pm.test('carries the provider reference', () =>",
+                  "    pm.expect(b.providerReference).to.be.a('string'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List this merchant's refunds (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/refunds",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "refunds"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "Keyset pagination, newest first, same shape as orders and payment intents. Scoped to the caller's merchant -- not filtered."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('contains the refund just made', () =>",
+                  "    pm.expect(pm.response.json().data.map(r => r.id)).to.include(",
+                  "        pm.collectionVariables.get('rfRefundId')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Another merchant cannot see it (404)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/refunds/{{rfRefundId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "refunds",
+                "{{rfRefundId}}"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherAccessToken}}"
+              }
+            ],
+            "description": "404, NOT 403. A 403 would confirm the refund exists and let anyone enumerate every refund on the platform by watching which ids answer which (ADR-007)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('REFUND_NOT_FOUND', () =>",
+                  "    pm.expect(pm.response.json().code).to.eql('REFUND_NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Another merchant cannot refund this payment either (422)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/refunds",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "refunds"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentIntentId\": \"{{rfIntentId}}\",\n  \"amountMinor\": 100\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherAccessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{rfCrossKey}}"
+              }
+            ],
+            "description": "And the answer is byte-for-byte what a payment that never existed returns. Three causes -- no such payment, not yours, collected nothing -- one code, so nothing is learned from the difference."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable Entity', () => pm.response.to.have.status(422));",
+                  "pm.test('PAYMENT_NOT_REFUNDABLE', () =>",
+                  "    pm.expect(pm.response.json().code).to.eql('PAYMENT_NOT_REFUNDABLE'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refund the rest -- no amount means what is LEFT (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/refunds",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "refunds"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentIntentId\": \"{{rfIntentId}}\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{rfRefundKey}}"
+              }
+            ],
+            "description": "NO amountMinor, which means 'refund what is LEFT' -- 69900, not the 99900 captured. Reading it as the captured total would fail the over-refund check every time against a partly-refunded payment, making the convenience useless exactly when it is most wanted.\n\nIT STOPS AT PROCESSING, deliberately. Taking this one to SUCCEEDED needs a second hand-signed callback, and the point here is the amount rather than the loop -- the loop is proved above. The payment reaching REFUNDED once both refunds settle is covered by RefundIntegrationTest.accumulatesPartialRefundsToRefunded."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('the remainder, not the whole capture', () =>",
+                  "    pm.expect(b.amountMinor).to.eql(69900));",
+                  "pm.test('PROCESSING -- nothing has settled it yet', () =>",
+                  "    pm.expect(b.status).to.eql('PROCESSING'));"
                 ]
               }
             }
