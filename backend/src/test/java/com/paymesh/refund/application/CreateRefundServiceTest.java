@@ -65,6 +65,23 @@ class CreateRefundServiceTest {
     }
 
     /**
+     * THE READ MUST BE THE LOCKING ONE. The plain read would give the same answer here and be
+     * wrong in production, where two concurrent refunds each need the other to have committed
+     * before they compute head-room -- and the deferred trigger cannot supply that, because a
+     * constraint trigger's query runs on its triggering statement's snapshot.
+     */
+    @Test
+    void locksThePaymentBeforeComputingHeadroom() {
+        payments.captured(99900, "INR");
+
+        service.create(command(30000L));
+
+        assertThat(payments.lockedForUpdate)
+            .as("findRefundableForUpdate, not findRefundable")
+            .isTrue();
+    }
+
+    /**
      * THE CURRENCY COMES FROM THE PAYMENT, and the request has no field for it. A refund in a
      * currency the payment was not collected in would compare bare integers across currencies.
      */
@@ -230,6 +247,7 @@ class CreateRefundServiceTest {
     private static final class FakePayments implements PaymentLookup {
 
         private RefundablePayment payment;
+        private boolean lockedForUpdate;
 
         void captured(long capturedMinor, String currency) {
             payment = new RefundablePayment(PAYMENT, capturedMinor, currency, true);
@@ -245,6 +263,12 @@ class CreateRefundServiceTest {
 
         @Override
         public Optional<RefundablePayment> findRefundable(MerchantId merchantId, String id) {
+            return Optional.ofNullable(payment);
+        }
+
+        @Override
+        public Optional<RefundablePayment> findRefundableForUpdate(MerchantId merchantId, String id) {
+            lockedForUpdate = true;
             return Optional.ofNullable(payment);
         }
     }

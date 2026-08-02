@@ -10,6 +10,7 @@ import com.paymesh.refund.application.RefundablePayment;
 import com.paymesh.shared.tenant.MerchantId;
 
 import java.util.Optional;
+import java.util.function.BiFunction;
 
 /**
  * THE ONLY FILE IN {@code com.paymesh.refund} PERMITTED TO NAME PAYMENT.
@@ -43,10 +44,26 @@ public final class PaymentModuleLookup implements PaymentLookup {
 
     @Override
     public Optional<RefundablePayment> findRefundable(MerchantId merchantId, String paymentIntentId) {
+        return lookUp(merchantId, paymentIntentId, paymentIntents::getById);
+    }
+
+    @Override
+    public Optional<RefundablePayment> findRefundableForUpdate(
+        MerchantId merchantId,
+        String paymentIntentId
+    ) {
+        return lookUp(merchantId, paymentIntentId, paymentIntents::getByIdForUpdate);
+    }
+
+    private Optional<RefundablePayment> lookUp(
+        MerchantId merchantId,
+        String paymentIntentId,
+        BiFunction<MerchantId, PaymentIntentId, PaymentIntent> read
+    ) {
         PaymentIntent intent;
 
         try {
-            intent = paymentIntents.getById(merchantId, PaymentIntentId.from(paymentIntentId));
+            intent = read.apply(merchantId, PaymentIntentId.from(paymentIntentId));
         } catch (PaymentIntentNotFoundException | IllegalArgumentException exception) {
             // IllegalArgumentException too: a malformed "pi_" id is a payment that does not exist,
             // and answering 400 here would tell a caller that a well-formed id they guessed was at

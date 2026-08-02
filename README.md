@@ -52,8 +52,8 @@ balance, which was not true of this codebase before
 ([ADR-018](docs/decisions/ADR-018-post-the-ledger-from-events-with-the-invariants-in-the-database.md)).
 **Refund** closes the loop in the other direction: money goes back out, the Ledger posts a
 reversal, and the payment reaches `REFUNDED`
-([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-their-over-refund-guard.md)).
-**1028 tests, 0 failures. Sixteen Flyway migrations (V1–V16). Nineteen ADRs.**
+([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)).
+**1031 tests, 0 failures. Sixteen Flyway migrations (V1–V16). Nineteen ADRs.**
 
 | Capability | State | What is missing |
 |---|---|---|
@@ -64,7 +64,7 @@ reversal, and the payment reaches `REFUNDED`
 | **Payment** | Built | No refunds, no reconciliation, one shared provider callback secret |
 | **Provider Simulator** | Built | No payouts (Settlement is Phase 2), no refund callbacks (no receiver yet), no percentage-based failure injection ([ADR-017](docs/decisions/ADR-017-simulate-providers-through-scheduled-signed-callbacks.md)) |
 | **Ledger** | Core built | Double-entry posting and `GET /api/v1/balances`. No holds, no `account_balances` projection, no reversal path (Refund brings it), no platform fee — there is no fee schedule to apply ([ADR-018](docs/decisions/ADR-018-post-the-ledger-from-events-with-the-invariants-in-the-database.md)) |
-| **Refund** | Built | No provider-simulator refund callbacks yet, no ops retry route, and nothing reconciles a refund whose callback never arrives ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-their-over-refund-guard.md)) |
+| **Refund** | Built | No provider-simulator refund callbacks yet, no ops retry route, and nothing reconciles a refund whose callback never arrives ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)) |
 
 Platform pieces, honestly:
 

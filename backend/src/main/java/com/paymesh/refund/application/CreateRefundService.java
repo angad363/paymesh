@@ -65,23 +65,36 @@ public final class CreateRefundService {
     public Refund create(CreateRefundCommand command) {
         Instant now = Instant.now(clock);
 
-        RefundablePayment payment = payments
-            .findRefundable(command.merchantId(), command.paymentIntentId())
-            .filter(RefundablePayment::refundable)
-            .orElseThrow(() -> new PaymentNotRefundableException(command.paymentIntentId()));
-
-        // FULL REFUND WHEN NO AMOUNT IS GIVEN, and "full" means what is LEFT rather than what was
-        // captured. Against a payment already half refunded, omitting the amount refunds the other
-        // half; reading it as the captured total would fail the over-refund check every time and
-        // make the convenience useless exactly when it is most wanted.
-        long alreadySpokenFor = refunds.activeTotalMinor(payment.paymentIntentId());
-        long amountMinor = command.amountMinor() == null
-            ? payment.capturedAmountMinor() - alreadySpokenFor
-            : command.amountMinor();
-
-        requireHeadroom(payment, amountMinor, alreadySpokenFor);
-
         return transactions.execute(status -> {
+            // THE LOCK, AND EVERYTHING BELOW DEPENDS ON IT BEING FIRST.
+            //
+            // Locking the PAYMENT serializes every refund of that payment, which is the only thing
+            // that makes the head-room read below trustworthy. Two concurrent refunds otherwise
+            // each read a total that excludes the other, both pass, and both commit -- and the
+            // deferred trigger does NOT catch it, because a constraint trigger's query runs on the
+            // snapshot of the statement that queued it rather than a fresh one. That was measured,
+            // not assumed: RefundConcurrencyTest let two full refunds through before this line
+            // existed.
+            //
+            // The lock is on the payment rather than on the refunds, because the rule is about a
+            // set of rows that does not exist yet -- there is nothing to lock until the row is
+            // written, and by then it is too late.
+            RefundablePayment payment = payments
+                .findRefundableForUpdate(command.merchantId(), command.paymentIntentId())
+                .filter(RefundablePayment::refundable)
+                .orElseThrow(() -> new PaymentNotRefundableException(command.paymentIntentId()));
+
+            // FULL REFUND WHEN NO AMOUNT IS GIVEN, and "full" means what is LEFT rather than what
+            // was captured. Against a payment already half refunded, omitting the amount refunds
+            // the other half; reading it as the captured total would fail the over-refund check
+            // every time and make the convenience useless exactly when it is most wanted.
+            long alreadySpokenFor = refunds.activeTotalMinor(payment.paymentIntentId());
+            long amountMinor = command.amountMinor() == null
+                ? payment.capturedAmountMinor() - alreadySpokenFor
+                : command.amountMinor();
+
+            requireHeadroom(payment, amountMinor, alreadySpokenFor);
+
             Refund requested = refunds.save(Refund.request(
                 RefundId.generate(),
                 command.merchantId(),

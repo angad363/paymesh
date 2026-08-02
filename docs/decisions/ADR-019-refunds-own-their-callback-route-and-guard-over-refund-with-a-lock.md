@@ -1,4 +1,4 @@
-# ADR-019: Refunds own their callback route, and the over-refund guard lives in the database
+# ADR-019: Refunds own their callback route, and over-refund is guarded by a lock and a trigger
 
 - **Status:** Accepted
 - **Date:** 2 August 2026
@@ -38,7 +38,8 @@ Build SDD §16's core:
 - `refunds`, `refund_state_history`, `refund_callbacks` (V16).
 - `POST/GET /api/v1/refunds`, `GET /api/v1/refunds/{id}`, `POST /api/v1/refunds/{id}/cancel`.
 - `POST /internal/v1/refund-callbacks/{provider}` — **Refund's own route** (§3).
-- The over-refund rule as a **deferred constraint trigger** (§4).
+- The over-refund rule enforced by **a row lock on the payment plus a deferred constraint
+  trigger** — the lock for the concurrent case, the trigger for everything else (§4).
 - `refund.succeeded` consumed by the Ledger (a reversal journal) and by Payment (its own
   status and refunded total).
 
@@ -75,8 +76,32 @@ of one fact can disagree — the same argument that kept `account_balances` out 
 would not fix the race on its own: a `UNIQUE` reference stops the same reservation twice, not two
 *different* reservations that jointly overshoot.
 
-What settles it is an aggregate check when the set of rows is final, which is a deferred
-constraint trigger — the shape V15 established for debits-equal-credits:
+### 4.1 The trigger alone does NOT settle the race, and this was measured
+
+The first version of this ADR claimed a deferred constraint trigger was sufficient. **It is
+not**, and the reason is worth stating precisely because it is easy to get wrong twice:
+
+> A DEFERRED constraint trigger fires at COMMIT, but the query inside it runs on the snapshot of
+> the **statement that queued it** — not a fresh one taken at commit time.
+
+So when two transactions each insert a full refund, the second one's trigger looks at the database
+as it was *before* the first committed, sees only its own row, and passes. Both commit. A
+`RefundConcurrencyTest` written during review — two threads, one barrier, two full refunds of one
+payment — let **both** through against a real PostgreSQL.
+
+**What actually settles it is a row lock on the payment intent**, taken inside the create
+transaction before head-room is read, through `PaymentLookup.findRefundableForUpdate`. Concurrent
+refunds of one payment then take turns: the loser blocks until the winner commits, reads a total
+that includes the winner's refund, and is refused by the ordinary pre-check with a readable
+message. This is the `OrderLookup.findForUpdate` shape the codebase already uses.
+
+Note what this means for the choice recorded in §4 above: the reservation table was rejected for
+good reasons, but the *reason it was rejected in favour of* — the trigger — turned out not to be
+the mechanism either. The mechanism is the lock; the trigger is the backstop.
+
+### 4.2 The trigger stays anyway, as a backstop
+
+It is still worth having, and it is still checked at COMMIT:
 
 ```sql
 sum(amount_minor) WHERE status NOT IN ('FAILED','CANCELLED')
@@ -101,9 +126,14 @@ every constraint satisfied. Unreachable through the API, because `CreateRefundRe
 currency field at all; present because "unreachable through the API" is not the standard this
 codebase holds the money path to.
 
-Both were verified by deleting them: removing the over-refund trigger turns four tests red and
-removing the currency trigger turns one red, with every Java-level test staying green in both
-cases.
+It catches what the lock cannot: a raw `INSERT`, a migration, or a future caller that does not
+take this path at all. It is a guard against everything except the concurrent case, and the lock
+is the guard for that one. Neither is redundant.
+
+Both triggers were verified by deleting them: removing the over-refund trigger turns four tests
+red and removing the currency trigger turns one red, with every Java-level test staying green in
+both cases. The lock was verified the same way — removing it turns `RefundConcurrencyTest` red and
+leaves every other test green.
 
 ## 5. Why Refund may import Payment when Order may not
 
@@ -176,11 +206,16 @@ money returned to a customer and never recorded, which is the worst failure this
 Rejected for the same reason Payment does not write `orders.status`: it makes the two modules one
 deployable and puts the money path back inside the module that does not own the row.
 
-**A row lock on the payment intent instead of the trigger.** `SELECT … FOR UPDATE` before summing,
-which the codebase already does elsewhere. It serializes correctly and it is an application-layer
-guard — a direct INSERT still over-refunds. The service takes the lock anyway on the callback
-path, where two callbacks for one refund can race; the trigger is what makes the rule true
-regardless of who is writing.
+**A row lock on the payment intent instead of the trigger.** This was considered and rejected at
+design time, on the grounds that a lock is an application-layer guard a direct INSERT bypasses.
+That reasoning was right about the lock and wrong about the alternative: the trigger does not
+cover the concurrent case at all (§4.1). Both are now in place, each covering what the other
+cannot.
+
+**SERIALIZABLE isolation for the create transaction.** Would also settle the race, by making the
+loser fail with a serialization error. Rejected: it turns a readable 422 into a retryable 40001
+the caller has to understand, and it puts an isolation-level requirement on a transaction that
+other code may later join.
 
 **One signature filter matching both callback paths.** Correct today, because both routes share a
 secret. It would keep working silently on the day they stop, which is the failure mode worth

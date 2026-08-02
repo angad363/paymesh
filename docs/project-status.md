@@ -21,7 +21,7 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1028 tests, 0 failures.** Sixteen Flyway migrations (V1–V16). Nineteen ADRs. The Postman
+**1031 tests, 0 failures.** Sixteen Flyway migrations (V1–V16). Nineteen ADRs. The Postman
 collection runs thirteen folders, the newest showing a payment become a balance.
 
 **The Ledger is the financial source of truth, and as of this session it exists** (ADR-018).
@@ -421,7 +421,7 @@ The collection is not decorative: dropping the tenant predicate in
 | 016 | Deliver events in-process on a broker-shaped consumer contract, before Kafka |
 | 017 | Simulate providers through scheduled, signed callbacks — never an inline call |
 | 018 | Post the ledger from events, and keep its invariants in the database |
-| 019 | Refunds own their callback route, and the over-refund guard lives in the database |
+| 019 | Refunds own their callback route, and over-refund is guarded by a lock and a trigger |
 
 Note that the SDD's Appendix D has its own ADR list with the same numbers and
 different decisions. When citing one, say which source you mean.

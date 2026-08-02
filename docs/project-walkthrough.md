@@ -433,7 +433,17 @@ is **paying out more than was collected**. And it is not exotic — two partial 
 the same moment each read a total that excludes the other, both pass the check, and both are
 written. Neither request did anything wrong.
 
-**So the rule lives in the database, as a trigger checked at commit:**
+**So the rule is enforced twice, and the two catch different things.**
+
+First, a **row lock on the payment** while a refund is being created, so concurrent refunds of one
+payment take turns. This is the part that actually stops the race — and it is worth saying why the
+obvious alternative does not. A deferred database trigger fires at commit, but the query inside it
+sees the database as it was when the row was written, *not* as it is at commit time. So two
+simultaneous refunds each look at a world where the other does not exist, and both pass. That was
+not reasoned out; a two-thread test let both through before the lock existed.
+
+Second, that trigger, kept as a backstop for everything the lock cannot cover — a hand-written
+`INSERT`, a migration, a future caller that forgets:
 
 ```
 sum(refunds that are not FAILED and not CANCELLED) <= what the payment captured
@@ -988,7 +998,7 @@ cd backend
 ./mvnw spring-boot:run          # port 8080
 ```
 
-The documented count is **1028 tests, 0 failures**, across 16 Flyway migrations (V1–V16)
+The documented count is **1031 tests, 0 failures**, across 16 Flyway migrations (V1–V16)
 and 19 ADRs.
 
 Integration tests run against a throwaway PostgreSQL container, so Flyway migrates an empty
