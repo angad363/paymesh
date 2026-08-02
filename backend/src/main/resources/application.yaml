@@ -221,6 +221,69 @@ paymesh:
       # How many abandoned intents one sweep may take. Each is its own transaction.
       batch-size: 100
 
+  # --- Provider simulator (SDD 13, ADR-017) -----------------------------------
+  # The fake card/UPI/bank provider the payment flow can be driven against
+  # deterministically. It is a module in this deployable, but it is built as though it
+  # were not: it writes no PayMesh table, imports no other capability, and its only
+  # influence is an HTTP POST of a signed body at /internal/v1/provider-callbacks.
+  simulator:
+    # THE ONLY AUTHENTICATION ON /sim/v1/**. Declared but deliberately EMPTY, and the
+    # application refuses to start without it (@NotBlank on SimulatorProperties).
+    #
+    # This is a third money-moving secret and not a lesser one. POST /sim/v1/payments
+    # queues a callback that will mark a PayMesh payment SUCCEEDED, so anyone holding
+    # this value can collect any payment on the platform -- the same outcome as forging
+    # a callback, reached one step earlier and without signing anything. Supply it as:
+    #     PAYMESH_SIMULATOR_API_KEY=<32+ random bytes>
+    # or run the dev profile, which supplies a throwaway value from application-dev.yaml.
+    #
+    # It is deliberately NOT paymesh.provider.callback-secret. One value doing both jobs
+    # means one leak does both, and it would make per-provider secrets harder rather than
+    # easier -- the single secret would then carry two unrelated meanings and could not be
+    # split without changing both directions at once. ADR-017 section 3.1.
+    api-key:
+    # Where signed callbacks are POSTed. Configurable rather than derived from server.port,
+    # because a URL computed from local settings could only ever reach a PayMesh in the same
+    # process -- precisely the coupling this module is designed without (SDD 13.6).
+    callback-url: http://localhost:8080/internal/v1/provider-callbacks/simulator
+    dispatch:
+      # true: register the scheduled bean. Off -> the timer does not exist at all (the bean
+      # is @ConditionalOnProperty), rather than running and doing nothing.
+      #
+      # ON BY DEFAULT for the same reason as the sweeps above, and OFF UNDER dev for a
+      # sharper one: dev is the profile the whole test suite runs under, and a dispatcher
+      # POSTing callbacks at PayMesh while a test asserts on a payment intent is the purest
+      # flake generator in this codebase. DispatchProviderCallbacksService is a plain bean
+      # that exists either way, and every test calls dispatch() directly.
+      enabled: true
+      # How long after one pass FINISHES the next begins (fixedDelay, not fixedRate: a slow
+      # batch must never be re-entered). Resolved by Spring straight from the environment
+      # into @Scheduled -- NOT bound into SimulatorDispatchProperties, because two places to
+      # read one value means one of them eventually drifts. Same note as OrderExpiryProperties.
+      #
+      # Two seconds, not the sweeps' five minutes. This is a test fixture: a callback that
+      # takes minutes to arrive makes the module useless for the thing it exists for.
+      interval: 2s
+      # How many due callbacks one pass may take. Each is its own transaction and its own
+      # socket, so this bounds how many calls one pass makes rather than lock duration.
+      batch-size: 20
+      # How many times one callback may be delivered before it is ABANDONED. A real provider's
+      # retry budget is finite; unbounded retries against a 401 would be an infinite loop
+      # wearing the costume of resilience.
+      max-attempts: 5
+      # How far deliver_after is pushed out after a failed attempt. A 404 is expected and
+      # retried on purpose -- ADR-012 section 7 says it most likely means the callback
+      # overtook the transaction that created the intent it names.
+      retry-delay: 5s
+      # How long to wait for PayMesh to answer.
+      #
+      # SHORT ON PURPOSE, and the first number to look at if callbacks start piling up. The
+      # HTTP call happens INSIDE the row's transaction, so this is also the longest a hung
+      # receiver can hold one row lock and one database connection. The shape that does not
+      # have this property is claim-then-send-then-ack with a lease expiry; ADR-017 lists it
+      # under accepted costs rather than pretending the cost is not there.
+      read-timeout: 2s
+
 # --- Web server --------------------------------------------------------------
 server:
   # HTTP port. Omit -> defaults to 8080 anyway; pinned for clarity.
