@@ -1,5 +1,10 @@
 package com.paymesh.shared.infrastructure;
 
+import com.paymesh.shared.tenant.MerchantStatusFilter;
+import com.paymesh.shared.tenant.MerchantStatusGate;
+import org.springframework.boot.security.autoconfigure.web.servlet.SecurityFilterProperties;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
+import tools.jackson.databind.ObjectMapper;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -39,5 +44,31 @@ public class SharedConfiguration {
     @Bean
     TransactionTemplate transactionTemplate(PlatformTransactionManager transactionManager) {
         return new TransactionTemplate(transactionManager);
+    }
+
+    /**
+     * THE ENFORCEMENT THAT MAKES MERCHANT STATUS MEAN SOMETHING (ADR-021).
+     * <p>
+     * Registered here rather than in the Merchant module, because it guards every capability's
+     * writes and belongs to the platform rather than to the module that happens to own the column.
+     * The Merchant module supplies the answer through {@code MerchantStatusGate}; this decides what
+     * to do with it.
+     * <p>
+     * Ordered after the security chain so a caller has already been authenticated, and constructed
+     * inline so Boot cannot also auto-register it and run it twice.
+     */
+    @Bean
+    FilterRegistrationBean<MerchantStatusFilter> merchantStatusFilterRegistration(
+        MerchantStatusGate merchantStatusGate,
+        ObjectMapper objectMapper
+    ) {
+        FilterRegistrationBean<MerchantStatusFilter> registration =
+            new FilterRegistrationBean<>(
+                new MerchantStatusFilter(merchantStatusGate, objectMapper)
+            );
+
+        // AFTER the API-key filter, which may be what establishes the caller in the first place.
+        registration.setOrder(SecurityFilterProperties.DEFAULT_FILTER_ORDER + 2);
+        return registration;
     }
 }

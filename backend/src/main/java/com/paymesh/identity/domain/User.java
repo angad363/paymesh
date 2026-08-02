@@ -180,6 +180,64 @@ public final class User {
         return passwordHash;
     }
 
+    /**
+     * Disable a user without deleting them.
+     *
+     * <h2>{@code isActive()} WAS CHECKED AT LOGIN AND COULD NEVER BE FALSE</h2>
+     *
+     * {@code UserStatus} has had three values since V2 and only ACTIVE was ever produced, so the
+     * login gate was dead code and there was no way to disable a departed employee's account. One
+     * of the three frozen lifecycle enums the Phase 1 audit found. ADR-021.
+     *
+     * <h2>What it does and does not stop</h2>
+     *
+     * It stops LOGIN and it stops REFRESH -- both read the user. It does <b>not</b> invalidate an
+     * access token already issued, which survives its remaining lifetime because nothing checks a
+     * denylist (open item 11, unchanged by this). Suspension therefore takes effect within the
+     * access-token lifetime rather than instantly, and revoking the refresh-token family is what
+     * makes it stick.
+     */
+    public User suspend(Instant suspendedAt) {
+        requireStatusChange(UserStatus.SUSPENDED, suspendedAt);
+
+        return withStatus(UserStatus.SUSPENDED, suspendedAt);
+    }
+
+    /** Reversible: a suspension is an investigation, not a verdict. */
+    public User reactivate(Instant reactivatedAt) {
+        requireStatusChange(UserStatus.ACTIVE, reactivatedAt);
+
+        return withStatus(UserStatus.ACTIVE, reactivatedAt);
+    }
+
+    /** Terminal, like a merchant closure and for the same reason. */
+    public User close(Instant closedAt) {
+        if (status == UserStatus.CLOSED) {
+            throw new UserStatusNotChangeableException(userId, status, UserStatus.CLOSED);
+        }
+
+        return withStatus(UserStatus.CLOSED, closedAt);
+    }
+
+    private User withStatus(UserStatus next, Instant at) {
+        if (at == null) {
+            throw new IllegalArgumentException("A user status change needs an instant");
+        }
+
+        return new User(userId, email, passwordHash, next, roles, createdAt, at);
+    }
+
+    private void requireStatusChange(UserStatus next, Instant at) {
+        if (at == null) {
+            throw new IllegalArgumentException("A user status change needs an instant");
+        }
+
+        // CLOSED is terminal; anything else may move to anything else.
+        if (status == UserStatus.CLOSED || status == next) {
+            throw new UserStatusNotChangeableException(userId, status, next);
+        }
+    }
+
     public UserStatus status() {
         return status;
     }
