@@ -4,6 +4,7 @@ import com.paymesh.identity.application.AccessTokenService;
 import com.paymesh.identity.application.AuthenticationService;
 import com.paymesh.identity.application.PasswordHasher;
 import com.paymesh.identity.application.RefreshTokenRepository;
+import com.paymesh.identity.application.ManageUserAccessService;
 import com.paymesh.identity.application.RegisterUserService;
 import com.paymesh.identity.application.SecurityEventRepository;
 import com.paymesh.identity.application.UserRepository;
@@ -113,6 +114,20 @@ public class IdentityConfiguration {
             passwordHasher,
             accessTokenService,
             jwtProperties.refreshTokenTtl(),
+            clock
+        );
+    }
+
+    @Bean
+    ManageUserAccessService manageUserAccessService(
+        UserRepository userRepository,
+        RefreshTokenRepository refreshTokenRepository,
+        SecurityEventRepository securityEventRepository,
+        org.springframework.transaction.support.TransactionTemplate transactionTemplate,
+        Clock clock
+    ) {
+        return new ManageUserAccessService(
+            userRepository, refreshTokenRepository, securityEventRepository, transactionTemplate,
             clock
         );
     }

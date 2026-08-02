@@ -46,6 +46,14 @@ public final class JpaUserRepository implements UserRepository {
     }
 
     @Override
+    public java.util.List<User> findByMerchant(com.paymesh.shared.tenant.MerchantId merchantId) {
+        return users.findByMerchant(merchantId.value())
+            .stream()
+            .map(UserJpaMapper::toDomain)
+            .toList();
+    }
+
+    @Override
     public Optional<User> findByUserId(UserId userId) {
         return users.findById(userId.value()).map(UserJpaMapper::toDomain);
     }

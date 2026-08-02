@@ -375,6 +375,13 @@ class AuthenticationServiceTest {
             }
 
             @Override
+            public int revokeAllForUser(
+                com.paymesh.identity.domain.UserId userId, java.time.Instant revokedAt
+            ) {
+                return 0;
+            }
+
+            @Override
             public int revokeFamily(String familyId, Instant revokedAt) {
                 return refreshTokens.revokeFamily(familyId, revokedAt);
             }

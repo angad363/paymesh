@@ -7,5 +7,22 @@ public enum SecurityEventType {
     TOKEN_REFRESHED,
     /** A refresh token was presented twice. The whole family is revoked in response. */
     REFRESH_TOKEN_REUSE_DETECTED,
-    LOGGED_OUT
+    LOGGED_OUT,
+
+    /**
+     * PLATFORM SCOPE: the human is barred from PayMesh entirely, across every tenant they belong
+     * to. Distinct from LOGGED_OUT even though suspension revokes sessions -- logging a suspension
+     * as a sign-out would make "who was barred and when" unanswerable from the table that exists
+     * to answer it.
+     */
+    USER_SUSPENDED,
+    USER_REACTIVATED,
+    USER_CLOSED,
+
+    /**
+     * MERCHANT SCOPE: they lost their roles at one merchant and kept their account. The
+     * departed-employee case, and deliberately not the same event as a suspension -- one is the
+     * merchant's own business, the other is the platform's (ADR-024).
+     */
+    MERCHANT_ACCESS_REVOKED
 }
