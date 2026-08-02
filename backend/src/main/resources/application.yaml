@@ -270,6 +270,18 @@ paymesh:
     # No default: DevelopmentSecretGuard refuses the committed dev value outside the dev profile,
     # and a blank one fails startup through @NotBlank rather than accepting unsigned callbacks.
     callback-secret:
+  refunds:
+    processing-timeout:
+      # A refund the provider never answered for holds its amount against the captured total
+      # FOREVER, so a single lost callback permanently reduces what the merchant can refund
+      # (ADR-023). This gives up on it.
+      #
+      # SIX HOURS, deliberately longer than payments' one. A premature timeout risks believing
+      # money did not go back when it did; a slow one only delays freeing head-room.
+      enabled: true
+      age: 6h
+      interval: 5m
+      batchSize: 100
   simulator:
     # THE ONLY AUTHENTICATION ON /sim/v1/**. Declared but deliberately EMPTY, and the
     # application refuses to start without it (@NotBlank on SimulatorProperties).

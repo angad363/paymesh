@@ -10,6 +10,7 @@ import com.paymesh.shared.tenant.MerchantId;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Limit;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
@@ -68,6 +69,14 @@ public final class JpaRefundRepository implements RefundRepository {
         return refunds.findPage(
                 merchantId.value(), cursor.createdAt(), cursor.refundId(), Limit.of(limit)
             )
+            .stream()
+            .map(RefundJpaMapper::toDomain)
+            .toList();
+    }
+
+    @Override
+    public List<Refund> findProcessingOlderThan(Instant threshold, int limit) {
+        return refunds.findProcessingOlderThan(threshold, Limit.of(limit))
             .stream()
             .map(RefundJpaMapper::toDomain)
             .toList();

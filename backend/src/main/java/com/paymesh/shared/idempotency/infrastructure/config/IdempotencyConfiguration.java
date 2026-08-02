@@ -51,7 +51,16 @@ public class IdempotencyConfiguration {
         // what makes a network retry dangerous here. The over-refund trigger would stop a full
         // duplicate, and would NOT stop two halves of one.
         "POST /api/v1/refunds",
-        "POST /api/v1/refunds/{refundId}/cancel"
+        "POST /api/v1/refunds/{refundId}/cancel",
+        // ATTACHING A CARD IS A CREATE WITH A UNIQUE CONSTRAINT, which is exactly the shape that
+        // needs this: a retried attach whose first attempt committed collides on
+        // uq_payment_method_tokens_provider_token and answers 409 -- the wrong answer to a network
+        // retry of a request that worked. Same reasoning as capture above.
+        "POST /api/v1/customers/{customerId}/payment-methods",
+        // And the two state changes, for the reason orders/cancel is on this list: the state
+        // machine refuses the second one, and a 409 is the wrong answer to a retry.
+        "POST /api/v1/customers/{customerId}/block",
+        "POST /api/v1/customers/{customerId}/unblock"
     );
 
     @Bean

@@ -2,7 +2,13 @@ package com.paymesh.customer.api;
 
 import com.paymesh.customer.application.CustomerNotFoundException;
 import com.paymesh.customer.application.CustomerReferenceAlreadyExistsException;
+import com.paymesh.customer.application.CustomerNotChargeableException;
+import com.paymesh.customer.application.PaymentMethodAlreadyAttachedException;
+import com.paymesh.customer.application.PaymentMethodTokenNotFoundException;
+import com.paymesh.customer.domain.CustomerStatusNotChangeableException;
+import com.paymesh.customer.domain.PaymentMethodTokenAlreadyDetachedException;
 import com.paymesh.shared.api.ApiErrorResponse;
+import com.paymesh.shared.security.InsufficientRoleException;
 import com.paymesh.shared.security.NoMerchantScopeException;
 import org.springframework.http.HttpStatus;
 import org.springframework.validation.FieldError;
@@ -62,5 +68,43 @@ public final class CustomerExceptionHandler {
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     ApiErrorResponse handleInvalidInput(IllegalArgumentException exception) {
         return ApiErrorResponse.of("INVALID_REQUEST", exception.getMessage());
+    }
+
+    @ExceptionHandler(InsufficientRoleException.class)
+    @ResponseStatus(HttpStatus.FORBIDDEN)
+    ApiErrorResponse handleInsufficientRole(InsufficientRoleException exception) {
+        return ApiErrorResponse.of("INSUFFICIENT_ROLE", exception.getMessage());
+    }
+
+    /** 422, not 409: the request is well formed and the customer is fine, they are just blocked. */
+    @ExceptionHandler(CustomerNotChargeableException.class)
+    @ResponseStatus(HttpStatus.UNPROCESSABLE_ENTITY)
+    ApiErrorResponse handleNotChargeable(CustomerNotChargeableException exception) {
+        return ApiErrorResponse.of("CUSTOMER_NOT_CHARGEABLE", exception.getMessage());
+    }
+
+    @ExceptionHandler(PaymentMethodAlreadyAttachedException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    ApiErrorResponse handleAlreadyAttached(PaymentMethodAlreadyAttachedException exception) {
+        return ApiErrorResponse.of("PAYMENT_METHOD_ALREADY_ATTACHED", exception.getMessage());
+    }
+
+    @ExceptionHandler(PaymentMethodTokenAlreadyDetachedException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    ApiErrorResponse handleAlreadyDetached(PaymentMethodTokenAlreadyDetachedException exception) {
+        return ApiErrorResponse.of("PAYMENT_METHOD_ALREADY_DETACHED", exception.getMessage());
+    }
+
+    /** 404 for another merchant's token too -- 403 would confirm the id exists (ADR-007). */
+    @ExceptionHandler(PaymentMethodTokenNotFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    ApiErrorResponse handleTokenNotFound(PaymentMethodTokenNotFoundException exception) {
+        return ApiErrorResponse.of("PAYMENT_METHOD_NOT_FOUND", exception.getMessage());
+    }
+
+    @ExceptionHandler(CustomerStatusNotChangeableException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    ApiErrorResponse handleStatusNotChangeable(CustomerStatusNotChangeableException exception) {
+        return ApiErrorResponse.of("CUSTOMER_STATUS_NOT_CHANGEABLE", exception.getMessage());
     }
 }

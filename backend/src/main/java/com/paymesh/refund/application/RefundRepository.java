@@ -27,4 +27,12 @@ public interface RefundRepository {
 
     /** Every non-terminal-and-not-failed refund of one payment. Used to report the refundable head-room. */
     long activeTotalMinor(String paymentIntentId);
+
+    /**
+     * Refunds stuck in PROCESSING since before {@code threshold}, oldest first.
+     * <p>
+     * Oldest first so a backlog drains in the order it accumulated, and bounded so one pass cannot
+     * take an unbounded lock footprint.
+     */
+    List<Refund> findProcessingOlderThan(java.time.Instant threshold, int limit);
 }

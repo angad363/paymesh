@@ -235,6 +235,39 @@ public final class Customer {
         return withStatus(CustomerStatus.ACTIVE, unblockedAt);
     }
 
+    /**
+     * Correct the contact details. SDD 10.3's PATCH.
+     *
+     * <h2>NULL MEANS "LEAVE IT ALONE", AND THE HASHES MOVE WITH THE VALUES</h2>
+     *
+     * {@code email_hash} and {@code phone_hash} are what the indexes are on -- the plaintext
+     * columns are display-only, which is the shape encryption would need (ADR-006). Updating an
+     * email without recomputing its hash would leave the row findable by its OLD address and
+     * invisible under its new one, and nothing would report an error.
+     *
+     * <h2>The merchant reference is not editable</h2>
+     *
+     * It is the merchant's own key for this customer, unique per merchant, and very likely the
+     * join key in their system. Changing it is creating a different customer.
+     */
+    public Customer updateContact(String newEmail, String newName, String newPhone, Instant at) {
+        if (at == null) {
+            throw new IllegalArgumentException("A customer update needs an instant");
+        }
+
+        String email = newEmail == null ? this.email : normalizeEmail(newEmail);
+        String name = newName == null ? this.name : normalizeName(newName);
+        String phone = newPhone == null ? this.phone : normalizePhone(newPhone);
+
+        return new Customer(
+            customerId, merchantId, merchantReference,
+            email, LookupHash.of(email),
+            name,
+            phone, LookupHash.of(phone),
+            status, createdAt, at
+        );
+    }
+
     /** True when this customer may be named on a new order or payment intent. */
     public boolean canBeCharged() {
         return status == CustomerStatus.ACTIVE;

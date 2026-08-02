@@ -29,6 +29,10 @@ import com.paymesh.refund.application.RecordRefundCallbackCommand;
 import com.paymesh.refund.application.RecordRefundCallbackService;
 import com.paymesh.refund.application.RefundAlreadyRequestedException;
 import com.paymesh.refund.application.RefundExceedsCapturedAmountException;
+import com.paymesh.refund.application.RefundRepository;
+import com.paymesh.refund.application.RefundStateHistoryRepository;
+import com.paymesh.refund.application.TimeOutProcessingRefundsService;
+import com.paymesh.shared.outbox.application.OutboxWriter;
 import com.paymesh.refund.domain.Refund;
 import com.paymesh.refund.domain.RefundCallbackOutcome;
 import com.paymesh.refund.domain.RefundEvent;
@@ -44,6 +48,8 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -73,6 +79,9 @@ class RefundIntegrationTest {
     private static final Instant PROVIDER_EVENT = Instant.parse("2026-08-02T11:00:00Z");
     private static final Instant REFUND_EVENT = Instant.parse("2026-08-02T12:00:00Z");
     private static final long CAPTURED = 99900;
+
+    /** The production default. See application.yaml for why it is longer than payments'. */
+    private static final Duration TIMEOUT_AGE = Duration.ofHours(6);
     private static final String PROVIDER = "SIMULATOR";
 
     @Autowired
@@ -110,6 +119,15 @@ class RefundIntegrationTest {
 
     @Autowired
     private TransactionTemplate transactionTemplate;
+
+    @Autowired
+    private RefundRepository refundRepository;
+
+    @Autowired
+    private RefundStateHistoryRepository refundStateHistory;
+
+    @Autowired
+    private OutboxWriter outboxWriter;
 
     @Autowired
     private JdbcClient jdbc;
@@ -456,6 +474,112 @@ class RefundIntegrationTest {
         assertThatThrownBy(() -> refund(fixture, CAPTURED + 1))
             .isInstanceOf(RefundExceedsCapturedAmountException.class)
             .hasMessageContaining(String.valueOf(CAPTURED));
+    }
+
+    // --- the timeout sweeper --------------------------------------------------------------------
+
+    /**
+     * A LOST CALLBACK USED TO HOLD HEAD-ROOM HOSTAGE FOREVER.
+     * <p>
+     * A PROCESSING refund counts against the captured amount, so a refund the provider never
+     * answered for permanently reduced what the merchant could refund on that payment -- and
+     * nothing reported it. They found out when a legitimate refund was rejected as an over-refund.
+     * ADR-019 recorded it as the known gap; ADR-023 closes it.
+     * <p>
+     * <b>Sabotage that must turn this red:</b> have the sweeper skip the status re-check, or drop
+     * the {@code refunds.save} -- either way the amount stays spoken for and the second refund is
+     * refused.
+     */
+    @Test
+    void freesTheHeadroomARefundTheProviderNeverAnsweredWasHolding() {
+        Fixture fixture = collected();
+
+        refund(fixture, CAPTURED);
+
+        // Every minor unit is now spoken for by a refund nobody will ever answer.
+        assertThatThrownBy(() -> refund(fixture, 1))
+            .isInstanceOf(RefundExceedsCapturedAmountException.class);
+
+        TimeOutProcessingRefundsService.SweepResult result = sweeperPastTheAge().sweep();
+
+        assertThat(result.failed()).isGreaterThanOrEqualTo(1);
+        assertThat(result.errored()).isZero();
+
+        // And the merchant can refund again.
+        assertThat(refund(fixture, CAPTURED).amountMinor()).isEqualTo(CAPTURED);
+    }
+
+    /** It announces the timeout, so a consumer sees the same shape a decline produces. */
+    @Test
+    void announcesATimedOutRefundAsRefundFailed() {
+        Fixture fixture = collected();
+        Refund refund = refund(fixture, CAPTURED);
+
+        sweeperPastTheAge().sweep();
+
+        assertThat(statusOf(refund)).isEqualTo(RefundStatus.FAILED.name());
+
+        String payload = jdbc.sql("""
+                select payload::text from outbox_events
+                 where aggregate_id = ? and event_type = 'refund.failed'
+                """)
+            .param(refund.refundId().value())
+            .query(String.class)
+            .single();
+
+        assertThat(payload).contains("provider_timeout");
+    }
+
+    /** A refund the provider DID answer must not be touched. */
+    @Test
+    void leavesASettledRefundAlone() {
+        Fixture fixture = collected();
+        Refund refund = refund(fixture, CAPTURED);
+        settle(refund, RefundOutcome.SUCCEEDED);
+
+        sweeperPastTheAge().sweep();
+
+        assertThat(statusOf(refund)).isEqualTo(RefundStatus.SUCCEEDED.name());
+    }
+
+    /**
+     * A LATE CALLBACK AFTER A TIMEOUT IS RECORDED AND NOT APPLIED. It finds the refund FAILED
+     * rather than PROCESSING, so the state machine refuses it -- and the row is on the record for
+     * whoever reconciles later, which is exactly what should happen.
+     */
+    @Test
+    void recordsButDoesNotApplyACallbackThatArrivesAfterTheTimeout() {
+        Fixture fixture = collected();
+        Refund refund = refund(fixture, CAPTURED);
+
+        sweeperPastTheAge().sweep();
+
+        assertThat(record(new RefundEvent(
+            "evt-" + UUID.randomUUID(), REFUND_EVENT.plusSeconds(600), refund.refundId().value(),
+            "prov_re_late", RefundOutcome.SUCCEEDED, null, null
+        )))
+            .isEqualTo(RefundCallbackOutcome.NOT_APPLICABLE);
+
+        assertThat(statusOf(refund)).isEqualTo(RefundStatus.FAILED.name());
+    }
+
+    /**
+     * A sweeper whose clock has moved past the timeout, rather than a test that waits six hours.
+     * <p>
+     * Built by hand rather than autowired for the same reason the payment timeout test does it:
+     * the age is the whole subject, so it has to be an argument the test controls. Everything else
+     * is the real wiring.
+     */
+    private TimeOutProcessingRefundsService sweeperPastTheAge() {
+        return new TimeOutProcessingRefundsService(
+            refundRepository,
+            refundStateHistory,
+            outboxWriter,
+            transactionTemplate,
+            TIMEOUT_AGE,
+            100,
+            Clock.fixed(Instant.now().plus(TIMEOUT_AGE).plusSeconds(60), ZoneOffset.UTC)
+        );
     }
 
     // --- helpers ----------------------------------------------------------------------------------

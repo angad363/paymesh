@@ -8,6 +8,9 @@ import com.paymesh.refund.application.GetRefundService;
 import com.paymesh.refund.application.ListRefundsService;
 import com.paymesh.refund.application.PaymentLookup;
 import com.paymesh.refund.application.RecordRefundCallbackService;
+import com.paymesh.refund.application.TimeOutProcessingRefundsService;
+import com.paymesh.refund.infrastructure.schedule.RefundTimeoutSweeper;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import com.paymesh.refund.application.RefundCallbackRepository;
 import com.paymesh.refund.application.RefundRepository;
 import com.paymesh.refund.application.RefundStateHistoryRepository;
@@ -37,7 +40,7 @@ import java.time.Clock;
  * {@code final} classes instantiated here (java-coding-conventions.md 13).
  */
 @Configuration
-@EnableConfigurationProperties(RefundProperties.class)
+@EnableConfigurationProperties({RefundProperties.class, RefundTimeoutProperties.class})
 public class RefundConfiguration {
 
     @Bean
@@ -151,5 +154,35 @@ public class RefundConfiguration {
 
         registration.setOrder(SecurityFilterProperties.DEFAULT_FILTER_ORDER + 1);
         return registration;
+    }
+
+    @Bean
+    TimeOutProcessingRefundsService timeOutProcessingRefundsService(
+        RefundRepository refundRepository,
+        RefundStateHistoryRepository refundStateHistoryRepository,
+        OutboxWriter outboxWriter,
+        TransactionTemplate transactionTemplate,
+        RefundTimeoutProperties properties,
+        Clock clock
+    ) {
+        return new TimeOutProcessingRefundsService(
+            refundRepository, refundStateHistoryRepository, outboxWriter, transactionTemplate,
+            properties.age(), properties.batchSize(), clock
+        );
+    }
+
+    /**
+     * CONDITIONAL, so switching it off REMOVES the bean rather than leaving a timer running and
+     * doing nothing. That matters under the {@code dev} profile the whole test suite uses, where a
+     * sweeper failing refunds mid-assertion is a flake generator -- the service is a plain bean
+     * either way, so the tests drive sweep() directly.
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "paymesh.refunds.processing-timeout", name = "enabled",
+        havingValue = "true", matchIfMissing = true)
+    RefundTimeoutSweeper refundTimeoutSweeper(
+        TimeOutProcessingRefundsService timeOutProcessingRefundsService
+    ) {
+        return new RefundTimeoutSweeper(timeOutProcessingRefundsService);
     }
 }

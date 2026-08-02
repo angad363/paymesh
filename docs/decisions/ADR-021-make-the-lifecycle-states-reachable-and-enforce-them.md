@@ -1,6 +1,6 @@
 # ADR-021: Make the lifecycle states reachable, and enforce them
 
-- **Status:** Accepted
+- **Status:** Accepted, **partially corrected by [ADR-023](ADR-023-finish-the-lifecycle-claims-and-give-the-token-table-a-writer.md)** — §6's claim that a user and a customer could be disabled was not true when written
 - **Date:** 2 August 2026
 - **Related:** [ADR-007](ADR-007-enforce-authentication-and-tenant-scoping.md) (authn + tenancy),
   [ADR-008](ADR-008-cross-module-reads-through-a-consumer-owned-port.md) (consumer-owned ports),
@@ -113,8 +113,11 @@ staff able to lift their own suspension, which would make suspension advisory.
 
 **Good.**
 
-- A merchant can be stopped. A user can be disabled. A customer can be blocked. All three are on
-  the record with an actor and, where it matters, a required reason enforced by a CHECK.
+- A merchant can be stopped, on the record with an actor and a required reason enforced by a CHECK.
+- ~~A user can be disabled. A customer can be blocked.~~ **This was wrong when written.** Both had
+  aggregate methods that nothing called, so both states stayed as unreachable as before — the same
+  defect this ADR exists to fix, one layer up. ADR-023 closes the customer half and records the user
+  half as still outstanding.
 - Every state in all three enums is reachable, and `MerchantGovernanceIntegrationTest` drives
   register → refused → submit → approve → transacting → suspend → refused → reinstate → transacting.
 - `merchant.activate()` exists, so CLAUDE.md stops citing a method that was never written.

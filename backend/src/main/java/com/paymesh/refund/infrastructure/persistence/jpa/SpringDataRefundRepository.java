@@ -47,6 +47,17 @@ public interface SpringDataRefundRepository extends JpaRepository<RefundJpaEntit
      * two ever disagree the trigger wins, and the merchant gets a constraint violation instead of a
      * sentence.
      */
+    /** Oldest first, so a backlog drains in the order it accumulated. */
+    @Query("""
+        select r from RefundJpaEntity r
+        where r.status = 'PROCESSING' and r.createdAt < :threshold
+        order by r.createdAt asc
+        """)
+    List<RefundJpaEntity> findProcessingOlderThan(
+        @Param("threshold") Instant threshold,
+        Limit limit
+    );
+
     @Query("""
         select coalesce(sum(r.amountMinor), 0) from RefundJpaEntity r
         where r.paymentIntentId = :paymentIntentId
