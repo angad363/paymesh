@@ -66,6 +66,19 @@ paymesh:
       #     PAYMESH_EVENTS_OUTBOX_RELAY_ENABLED=true ./mvnw spring-boot:run
       # to pass. The default interval (2s) is already short enough to watch by hand.
       enabled: false
+  simulator:
+    # Same deal again, and it matters as much as the callback secret rather than less: this key
+    # is the only authentication on /sim/v1/**, and POST /sim/v1/payments queues the callback
+    # that marks a payment SUCCEEDED. DevelopmentSecretGuard refuses this exact value unless the
+    # dev profile is the sole active one.
+    api-key: dev-only-insecure-simulator-api-key-change-me
+    dispatch:
+      # OFF under dev, and this one is not optional. Every @SpringBootTest runs under this
+      # profile, and a timer POSTing signed callbacks at PayMesh while a test asserts on a
+      # payment intent would mutate the very rows under assertion. To watch it locally:
+      #     PAYMESH_SIMULATOR_DISPATCH_ENABLED=true
+      # The service is a plain bean, so the tests drive dispatch() directly and never need it.
+      enabled: false
   orders:
     expiry-sweep:
       enabled: false

@@ -89,6 +89,20 @@ public class SecurityConfiguration {
                 // payment collected. Placing it here rather than under /api/ is what keeps the two
                 // audiences from sharing a surface at all.
                 .requestMatchers(POST, "/internal/v1/provider-callbacks/**").permitAll()
+                // THE PROVIDER SIMULATOR IS NOT UNAUTHENTICATED EITHER, AND IT IS NOT THE MERCHANT
+                // API.
+                //
+                // Same shape as the line above and for the same reason: this chain has no bearer
+                // token to evaluate on these routes, so it says so rather than leaving the
+                // default-deny rule to look like the decision. SimulatorApiKeyFilter is what stands
+                // in front of them -- a dedicated shared key, constant-time compared, fail-closed.
+                //
+                // It must NOT be reachable with a merchant's token, which is the sharper half.
+                // POST /sim/v1/payments enqueues a callback that will mark a PayMesh payment
+                // SUCCEEDED, so a merchant who could drive the provider could authorize their own
+                // collection. Keeping /sim/ off /api/ is what stops the two audiences sharing a
+                // surface at all. ADR-017.
+                .requestMatchers("/sim/v1/**").permitAll()
                 // Default deny. A new endpoint is protected by virtue of existing; opening one is
                 // an explicit line above, never an omission.
                 .anyRequest().authenticated()

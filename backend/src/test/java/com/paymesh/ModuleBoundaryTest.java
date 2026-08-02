@@ -153,6 +153,50 @@ class ModuleBoundaryTest {
             .isEmpty();
     }
 
+    /**
+     * THE SIMULATOR'S ALLOWLIST IS EMPTY IN BOTH DIRECTIONS, WHICH IS A STRICTER CLAIM THAN ANY
+     * ABOVE.
+     * <p>
+     * Every other pair in this file permits an adapter, because reading another module's data
+     * legitimately requires naming it. The simulator needs no such exception: SDD 13.2 says it does
+     * not own PayMesh state, and its only influence is an HTTP POST of a signed body at
+     * {@code /internal/v1/provider-callbacks} -- exactly what a third party's would be. If the
+     * simulator were deleted, every test outside its own package would still pass.
+     * <p>
+     * <b>The temptation this closes is a one-liner.</b> {@code CallbackBody} restates the wire
+     * contract that {@code ProviderCallbackRequest} defines, and {@code SimulatedOutcome} restates
+     * {@code ProviderOutcome}'s four names. Importing either would be shorter and would delete the
+     * boundary -- the two would then be one deployable by definition, contradicting SDD 13.6. The
+     * duplication is the contract being PUBLISHED rather than SHARED, as it would be if the
+     * simulator read an OpenAPI document; and when PayMesh changes the contract, the delivery
+     * integration test goes red, which is the notification a shared type would have suppressed.
+     */
+    @Test
+    void theSimulatorImportsNoOtherCapability() throws IOException {
+        for (String capability : CAPABILITIES) {
+            assertOnlyTheseImport("com/paymesh/simulator", "com.paymesh." + capability + ".", List.of());
+        }
+    }
+
+    /**
+     * The reverse, and the one that would break silently. Nothing in PayMesh may reach into the
+     * simulator -- not a test helper promoted to main, not a shared enum, not the configuration.
+     * A dependency this way round would mean the simulator could not be removed from a production
+     * deployment, which is the first thing anyone would want to do with it.
+     */
+    @Test
+    void noCapabilityImportsTheSimulator() throws IOException {
+        for (String capability : CAPABILITIES) {
+            assertOnlyTheseImport("com/paymesh/" + capability, "com.paymesh.simulator.", List.of());
+        }
+
+        assertOnlyTheseImport("com/paymesh/shared", "com.paymesh.simulator.", List.of());
+    }
+
+    /** Every capability package except the simulator itself. */
+    private static final List<String> CAPABILITIES =
+        List.of("merchant", "identity", "customer", "order", "payment");
+
     private static void assertOnlyTheseImport(
         String moduleDirectory,
         String forbiddenImportPrefix,

@@ -12,17 +12,22 @@ architecture, read the SDD.
 
 ## Where the project is
 
-Five of Phase 1's eight capabilities are built: **Merchant**, **Identity & Access**,
-**Customer**, **Order**, and **Payment**. Underneath them sit four pieces of platform work
-that had to land first: the application refuses to boot on the committed JWT signing key,
-public writes are idempotent through PostgreSQL, a transactional outbox lets a state change
-and the event announcing it commit together, and — new this session — **that outbox is
-finally read**. A scheduled relay, an in-process dispatcher and a `processed_events` inbox
-deliver events to consumers, and Order is the first consumer (ADR-016).
+Six of Phase 1's eight capabilities are built: **Merchant**, **Identity & Access**,
+**Customer**, **Order**, **Payment**, and the **Provider Simulator**. Underneath them sit four
+pieces of platform work that had to land first: the application refuses to boot on the committed
+JWT signing key, public writes are idempotent through PostgreSQL, a transactional outbox lets a
+state change and the event announcing it commit together, and **that outbox is finally read**.
+A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
+consumers, and Order is the first consumer (ADR-016).
 
-**785 tests, 0 failures.** Thirteen Flyway migrations (V1–V12 and V14; V13 is reserved for a
-parallel branch). Sixteen ADRs. The Postman collection runs eleven folders, the newest
-proving an order reaching `PAID` without anyone calling an order endpoint.
+**872 tests, 0 failures.** Fourteen Flyway migrations (V1–V14). Seventeen ADRs. The Postman
+collection runs twelve folders, the newest two covering the Provider Simulator and proving an
+order reaching `PAID` without anyone calling an order endpoint.
+
+The Provider Simulator is the first module written to be **removed from a deployment**. Every other
+capability is built to be extracted eventually; this one holds no reference to PayMesh at all — no
+shared type, no shared table, no import in either direction — so its only influence is an HTTP POST
+of a signed body at the callback route, exactly as a third party's would be.
 
 The application is still a single deployable with strict module boundaries — the
 modular-monolith-first plan from ADR-001 and SDD §30.1. Nothing has been extracted
@@ -70,7 +75,7 @@ The SDD describes ~15 services across 31 sections. This is what the code actuall
 | Idempotency & concurrency | §23.1–§23.2 | Built in PostgreSQL. §23.3's Redis accelerator: not built, deliberately. |
 | Events / outbox | §22.1 envelope, §22.3 outbox, §22.4 inbox, §24 durability | Built: in-transaction write, a scheduled relay, an in-process dispatcher, `processed_events`, and one consumer (ADR-016). **§22.2 (Kafka topics and partition keys) does not exist, deliberately** — the consumer contract is a broker's, so the transport can be swapped without touching a consumer. §24's alerting does not exist either. |
 | API Gateway / Edge | §7 | Not built. Its concerns (rate limiting, API keys, HMAC) are absent. |
-| Provider Simulator | §13 | Not started — next after Payment. |
+| Provider Simulator | §13.1–§13.2, §13.5–§13.6 | Built. **§13.3's payouts and §13.4's `provider_payouts` are not** — Settlement is Phase 2 and has no consumer. Percentage-based injection is deliberately absent (ADR-017 §5). |
 | Risk & Fraud | §14 | Not started. |
 | Ledger | §15 | Not started — deliberately last in Phase 1. |
 | Refund | §16 | Not started. |
@@ -226,6 +231,54 @@ Properties worth not breaking:
   values are identical today; if they drift, an order could exist that no intent may
   collect.
 
+### Provider Simulator — `com.paymesh.simulator`
+
+**Not the merchant API.** Everything is under `/sim/v1/**`, authenticated by a dedicated shared key
+in `X-PayMesh-Simulator-Key` and nothing else — a merchant bearer token is refused (ADR-017 §3).
+
+| Endpoint | Auth | Notes |
+|---|---|---|
+| `POST /sim/v1/payments` | simulator key | `sim_pay_` id; `201` on create, **`200` on a replay** |
+| `POST /sim/v1/payments/{id}/capture` | simulator key | Only from `AUTHORIZED`, else 409 |
+| `POST /sim/v1/refunds` | simulator key | `sim_ref_` id; enqueues no callback, deliberately |
+| `GET /sim/v1/reconciliation/{date}` | simulator key | One UTC day of the provider's own truth |
+| `POST /sim/v1/failure-profile` | simulator key | Last-write-wins; not idempotency-keyed |
+
+Deterministic tokens, and **the token wins where it names a behaviour; the profile fills in where it
+does not**: `tok_sim_success`, `tok_sim_decline`, `tok_sim_3ds`, `tok_sim_timeout` (**no callback row
+at all**), `tok_sim_duplicate`, `tok_sim_stale`.
+
+Properties worth not breaking:
+
+- **It holds no reference to PayMesh in either direction, and `ModuleBoundaryTest` asserts it with an
+  empty allowlist on both.** That is stricter than every other pair in that file, all of which permit
+  an adapter. `CallbackBody` restates `ProviderCallbackRequest` and `SimulatedOutcome` restates
+  `ProviderOutcome` rather than importing them: the contract is *published*, not *shared*. The cost
+  is that the two can drift, and `SimulatorCallbackDeliveryIntegrationTest` is what goes red when
+  they do — the notification a shared type would have suppressed.
+- **The dispatcher is the design; an inline POST would make the module worthless.** Every failure
+  mode worth simulating is a property of *when and how often* a callback arrives, and none of them is
+  expressible from inside the create handler. Delayed, lost, duplicated, out-of-order and retried all
+  fall out of `deliver_after`, `external_event_id` and `occurred_at` on `provider_outbound_callbacks`.
+- **The body is serialized once at enqueue time and stored as `TEXT`, not `JSONB`.** A `JSONB` round
+  trip normalises key order and whitespace, so the bytes read back would not be the bytes signed. The
+  dispatcher signs the stored string and posts that same string. Verified by re-serializing after
+  signing, which turns 6 of the 7 delivery tests red.
+- **The signature timestamp is taken at delivery, not enqueue.** A callback deliberately delayed ten
+  minutes must not arrive carrying a ten-minute-old `t` and be refused as stale. `occurred_at` and
+  `t` are different facts produced at different moments; conflating them makes every delayed-callback
+  case fail with a 401.
+- **A third guarded secret.** `paymesh.simulator.api-key` is in `DevelopmentSecretGuard.GUARDED`
+  alongside the JWT and callback secrets, and it is not the lesser one: `POST /sim/v1/payments`
+  queues the callback that marks a payment `SUCCEEDED`, which is the same power as forging a
+  callback, reached one step earlier and without signing anything.
+- **The timer is absent under `dev`, not merely idle.** `@ConditionalOnProperty` removes the bean.
+  `dev` is the profile every `@SpringBootTest` runs under, and a dispatcher POSTing at PayMesh
+  mid-test would mutate the rows under assertion. Verified by flipping the flag, which turns
+  `SimulatorConfigurationTest` red.
+- **`ck_provider_payments_refunded` is the real over-refund guard**, not the aggregate's check; the
+  application checks under a row lock only to turn a constraint violation into a readable 422.
+
 ### Cross-cutting — `com.paymesh.shared`
 
 `MerchantId` (the tenant identifier every capability carries), the `Clock` bean,
@@ -359,6 +412,7 @@ The collection is not decorative: dropping the tenant predicate in
 | 014 | Expire orders, but never one holding a live collection |
 | 015 | Time a stranded `PROCESSING` payment out to `FAILED`, with the risk stated |
 | 016 | Deliver events in-process on a broker-shaped consumer contract, before Kafka |
+| 017 | Simulate providers through scheduled, signed callbacks — never an inline call |
 
 Note that the SDD's Appendix D has its own ADR list with the same numbers and
 different decisions. When citing one, say which source you mean.
@@ -408,11 +462,18 @@ failing test._
    fix in #39: the status is now right where it used to be a wrong `401`, but the body is
    `{timestamp,status,error,path}` rather than `{code,message,fieldErrors}`. Belongs with the
    existing RFC-7807 divergence.
-7. **The provider-callback Postman folder has never been run.** The HMAC pre-request script
-   encodes the same contract the server-side tests prove, but the collection itself is
-   unexercised, and running it needs a live server plus `newman`.
-8. **One global provider callback secret.** Anyone holding it can name any merchant's intent.
-   A documented deferral until per-provider credentials exist.
+7. **Two Postman folders have never been run — and the simulator's is now one of them.** The
+   provider-callback folder's HMAC pre-request script encodes the same contract the server-side tests
+   prove; the new Provider Simulator folder is in the same position. Both need a live server plus
+   `newman`, and the simulator's last six requests additionally need
+   `PAYMESH_SIMULATOR_DISPATCH_ENABLED=true`, because `./mvnw spring-boot:run` activates `dev`, which
+   switches the dispatcher off. The Java tests cover the same ground and are run; the collections are
+   documentation that has not been executed.
+8. **One global provider callback secret**, and now a second simulator key beside it. Anyone holding
+   the callback secret can name any merchant's intent; anyone holding the simulator key can make the
+   provider collect one. A documented deferral until per-provider credentials exist — ADR-017 §3
+   argues the split moves this closer rather than further, because the signing secret is now read at
+   exactly one place.
 9. **`POST /api/v1/merchants` is unauthenticated by design** and has no rate limit.
    It is the obvious abuse vector: an open write endpoint that creates rows.
 10. **Authorization is binary per tenant.** Holding any role at a merchant grants
@@ -477,14 +538,23 @@ expiry sweep, the `PROCESSING` timeout and the abandoned-checkout sweep. Every s
 intent enum is now reachable except `PARTIALLY_REFUNDED` and `REFUNDED`, which belong to the
 Refund capability and are verified unreachable by grep.
 
-What is left in Phase 1: **Provider Simulator** → **Ledger** → **Refund**.
+**The Provider Simulator is built.** What is left in Phase 1: **Ledger** → **Refund**.
 
-The Provider Simulator is the natural next one, and not only because the SDD orders it that
-way. Three things already written down are waiting on it: reconciliation, which is the
-mitigation ADR-015 leans on and which does not exist; a provider **sequence number**, which is
-the proper fix for the tie-refusal trade ADR-012 accepts; and per-provider credentials in
-place of the single shared callback secret. The callback endpoint was deliberately built as
-the seam it plugs into, so it needs no rework.
+Three things were waiting on the simulator, and it is worth being precise about which of them it
+actually closed, because the temptation to overclaim is real:
+
+- **Reachability: closed.** Every provider-driven state — `SUCCEEDED`, `FAILED`, `AUTHORIZED`,
+  `REQUIRES_ACTION`, and the stranded `PROCESSING` that ADR-015's sweeper exists for — is now
+  reachable from outside, deterministically, with no hand-signed request. So are all four callback
+  outcomes PayMesh can answer.
+- **Reconciliation: not closed, but unblocked.** `GET /sim/v1/reconciliation/{date}` produces the
+  input ADR-015 leans on. The *job* that compares the provider's truth to PayMesh's and repairs a
+  divergence does not exist. This removed the reason it could not be written; it did not write it.
+- **A provider sequence number: not closed.** The simulator could emit one, but nothing reads it —
+  the field would have to be added to `payment_attempts`, the request record, `ProviderEvent` and the
+  guard, all of which live in the module the simulator may not import. That is Payment's PR.
+- **Per-provider credentials: still open**, and argued in ADR-017 §3 to be closer rather than
+  further, since the signing secret is now read at exactly one place.
 
 The Ledger stays last in Phase 1 and last to be extracted. It is the financial source of
 truth: double-entry, immutable entries, corrections as reversal transactions rather than

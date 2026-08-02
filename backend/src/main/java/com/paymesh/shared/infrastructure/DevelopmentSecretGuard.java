@@ -13,11 +13,13 @@ import java.util.List;
  * that requirement while achieving nothing. The failure is silent, which is what makes it worth a
  * startup check.
  * <p>
- * <b>Two secrets now, and the second is not the lesser one.</b> The JWT key signs every access
+ * <b>Three secrets now, and none of them is the lesser one.</b> The JWT key signs every access
  * token; the provider callback key is the ONLY authentication on the endpoint that moves payments to
- * SUCCEEDED. A published value there means anyone can mark any payment on the platform collected --
- * so the guard is a loop over a list rather than one check with a sibling bolted on, and a third
- * secret is a line in {@link #GUARDED}.
+ * SUCCEEDED; the simulator key is the ONLY authentication on the routes that queue such a callback,
+ * which is the same power reached one step earlier and without needing to sign anything. A published
+ * value in any of the three means anyone can mark any payment on the platform collected -- so the
+ * guard is a loop over a list rather than one check with siblings bolted on, and a fourth secret is
+ * a line in {@link #GUARDED}.
  * <p>
  * This lives in {@code shared} rather than in a capability module because it is a deployment rule,
  * not a payment or identity rule -- it says where a value may come from, not what the value means.
@@ -50,6 +52,14 @@ public class DevelopmentSecretGuard {
             "PAYMESH_PROVIDER_CALLBACK_SECRET",
             "is the only authentication on the endpoint that marks payments SUCCEEDED, so anyone "
                 + "could forge a callback for any payment"
+        ),
+        new GuardedSecret(
+            "paymesh.simulator.api-key",
+            "dev-only-insecure-simulator-api-key-change-me",
+            "PAYMESH_SIMULATOR_API_KEY",
+            "is the only authentication on /sim/v1/**, and POST /sim/v1/payments queues a callback "
+                + "that marks a payment SUCCEEDED -- so anyone could collect any payment on the "
+                + "platform without ever forging a signature"
         )
     );
 

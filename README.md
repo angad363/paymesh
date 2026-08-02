@@ -6,7 +6,7 @@ balances, settlements and webhooks. It exists to model the parts of a payment pl
 that are genuinely hard (retries, duplicate delivery, tenant isolation, state machines,
 auditability) rather than the parts that are CRUD.
 
-It is a single Spring Boot application, Java 21, PostgreSQL, Flyway. Five of Phase 1's
+It is a single Spring Boot application, Java 21, PostgreSQL, Flyway. Six of Phase 1's
 eight capabilities are built.
 
 ## What this is not
@@ -41,12 +41,13 @@ tests bypass it and still pass, because the constraint is the guard.
 
 ## Current status
 
-Five of Phase 1's eight capabilities are built, and **Payment is feature-complete**:
+Six of Phase 1's eight capabilities are built, and **Payment is feature-complete**:
 create, attach, confirm, provider callbacks, capture and cancel, with order expiry and
 stranded-payment sweeps behind them. **Domain events are now delivered**: the outbox has a
 relay, an in-process dispatcher and a `processed_events` inbox, and Order consumes
 `payment.succeeded` ([ADR-016](docs/decisions/ADR-016-in-process-event-dispatch-before-kafka.md)).
-**785 tests, 0 failures. Thirteen Flyway migrations (V1–V12, V14). Sixteen ADRs.**
+The **Provider Simulator** drives the whole loop end to end without a hand-signed request.
+**872 tests, 0 failures. Fourteen Flyway migrations (V1–V14). Seventeen ADRs.**
 
 | Capability | State | What is missing |
 |---|---|---|
@@ -55,7 +56,7 @@ relay, an in-process dispatcher and a `processed_events` inbox, and Order consum
 | **Customer** | Built | PII is **plaintext** — stored in the encrypted *shape*, not encrypted ([ADR-006](docs/decisions/ADR-006-defer-customer-pii-encryption.md)) |
 | **Order** | Built | Every status is now reachable: `CANCELLED` by request, `EXPIRED` by the sweeper, `PAID` / `PARTIALLY_PAID` by consuming `payment.succeeded` |
 | **Payment** | Built | No refunds, no reconciliation, one shared provider callback secret |
-| **Provider Simulator** | Not started | — |
+| **Provider Simulator** | Built | No payouts (Settlement is Phase 2), no refund callbacks (no receiver yet), no percentage-based failure injection ([ADR-017](docs/decisions/ADR-017-simulate-providers-through-scheduled-signed-callbacks.md)) |
 | **Ledger** | Not started | — |
 | **Refund** | Not started | — |
 
@@ -103,6 +104,7 @@ com.paymesh
 ├── order                + infrastructure/customer   ← the CustomerLookup adapter
 │                        + infrastructure/events     ← the payment.succeeded consumer
 ├── payment              + infrastructure/order      ← the OrderLookup adapter
+├── simulator            the fake provider; imports no other capability and none imports it
 └── shared
     ├── api              ApiErrorResponse
     ├── security         SecurityConfiguration, AuthenticatedCaller, argument resolver
@@ -447,8 +449,8 @@ conflict and it matters, surface the divergence rather than silently picking one
 
 ## Roadmap
 
-Payment is feature-complete and its events are delivered. What is left in Phase 1, in SDD
-order: **Provider Simulator** → **Ledger** → **Refund**. The Ledger is
+Payment is feature-complete, its events are delivered, and the Provider Simulator drives
+the loop end to end. What is left in Phase 1, in SDD order: **Ledger** → **Refund**. The Ledger is
 deliberately last in Phase 1 and will be the last thing extracted into a service. It is
 the financial source of truth — double-entry, immutable entries, corrections as reversal
 transactions rather than edits — and a `SUCCEEDED` payment is only operational state
