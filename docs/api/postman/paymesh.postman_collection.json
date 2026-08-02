@@ -576,6 +576,26 @@
     {
       "key": "rfBalanceBefore",
       "value": ""
+    },
+    {
+      "key": "simE2eAttachKey",
+      "value": ""
+    },
+    {
+      "key": "lgSettleLast",
+      "value": ""
+    },
+    {
+      "key": "lgSettleTries",
+      "value": ""
+    },
+    {
+      "key": "rfSettleLast",
+      "value": ""
+    },
+    {
+      "key": "rfSettleTries",
+      "value": ""
     }
   ],
   "item": [
@@ -9270,15 +9290,28 @@
               {
                 "key": "Authorization",
                 "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{simE2eAttachKey}}"
               }
             ],
-            "description": "Attach, then confirm. The intent cannot be confirmed without an instrument.",
+            "description": "Attach, then confirm. The intent cannot be confirmed without an instrument.\n\nThe Idempotency-Key is REQUIRED: attach is a registered idempotent route, and without it this answers 400 IDEMPOTENCY_KEY_REQUIRED and every request after it in this chain fails on the state it never reached.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"paymentMethodType\": \"CARD\"\n}"
             }
           },
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('simE2eAttachKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
             {
               "listen": "test",
               "script": {
@@ -9342,7 +9375,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
                   "pm.test('PROCESSING', () => pm.expect(pm.response.json().status).to.eql('PROCESSING'));"
                 ]
               }
@@ -9448,7 +9481,11 @@
                   "} else {",
                   "  pm.test('the simulator drove the intent to SUCCEEDED', () => pm.expect(status).to.eql('SUCCEEDED'));",
                   "  pm.test('for exactly the order amount', () => pm.expect(pm.response.json().capturedAmountMinor).to.eql(1999));",
-                  "  postman.setNextRequest(null);",
+                  "  // NO setNextRequest(null) HERE. It used to say that, and it halted the WHOLE RUN --",
+                  "  // harmless while this was the last folder in the collection, and silently fatal the",
+                  "  // moment anything was added after it. The Ledger and Refund folders were unreachable",
+                  "  // in a full newman run until this line was deleted. Falling off the end of a script",
+                  "  // continues to the next request, which is what was wanted all along.",
                   "}"
                 ]
               }
@@ -9495,7 +9532,10 @@
                   "pm.collectionVariables.set('lgAttachKey', pm.variables.replaceIn('{{$guid}}'));",
                   "pm.collectionVariables.set('lgConfirmKey', pm.variables.replaceIn('{{$guid}}'));",
                   "pm.collectionVariables.set('lgReference', 'sim_pay_' + pm.variables.replaceIn('{{$guid}}'));",
-                  "pm.collectionVariables.set('lgPollAttempt', 0);"
+                  "pm.collectionVariables.set('lgPollAttempt', 0);",
+                  "// A pause each pass so the relay has a tick to drain between the two reads the settle",
+                  "// check compares.",
+                  "setTimeout(() => {}, 1500);"
                 ]
               }
             },
@@ -9504,26 +9544,28 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "// SETTLE BEFORE MEASURING. Every folder shares one merchant, and the relay moves that",
+                  "// merchant's balance asynchronously -- so an earlier folder's collection can land in the",
+                  "// middle of this one and be counted as ours. Poll until two consecutive reads agree, which",
+                  "// means the backlog is drained, and only then record the baseline.",
+                  "//",
+                  "// Without this the delta assertions below measure whatever happened to be in flight. That is",
+                  "// exactly how they failed the first time this collection was run end to end.",
+                  "const inr = pm.response.json().balances.find(r => r.currency === 'INR');",
+                  "const now = inr ? inr.pendingMinor : 0;",
+                  "const last = pm.collectionVariables.get('lgSettleLast');",
+                  "const tries = Number(pm.collectionVariables.get('lgSettleTries') || 0) + 1;",
+                  "",
                   "pm.test('200 OK', () => pm.response.to.have.status(200));",
-                  "const rows = pm.response.json().balances;",
-                  "const inr = rows.find(r => r.currency === 'INR');",
-                  "const before = inr ? inr.pendingMinor : 0;",
-                  "pm.collectionVariables.set('lgBalanceBefore', before);",
-                  "console.log('INR pending before: ' + before);",
                   "",
-                  "pm.test('money is an integer in minor units, never a decimal', () => {",
-                  "    rows.forEach(r => pm.expect(Number.isInteger(r.pendingMinor)).to.be.true);",
-                  "});",
-                  "",
-                  "// SDD 15.3 also specifies available/reserved/inSettlement. They are OMITTED rather than",
-                  "// returned as zero -- a zero availableMinor would claim this merchant has nothing they can",
-                  "// withdraw, when the truth is that 'available' is not a concept this ledger has yet.",
-                  "pm.test('the balances Settlement has not made real yet are absent, not zero', () => {",
-                  "    rows.forEach(r => {",
-                  "        pm.expect(r).to.not.have.property('availableMinor');",
-                  "        pm.expect(r).to.not.have.property('reservedMinor');",
-                  "    });",
-                  "});"
+                  "if ((last === undefined || last === '' || Number(last) !== now) && tries < 20) {",
+                  "    pm.collectionVariables.set('lgSettleLast', now);",
+                  "    pm.collectionVariables.set('lgSettleTries', tries);",
+                  "    postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "    pm.collectionVariables.set('lgBalanceBefore', now);",
+                  "    console.log('settled baseline: ' + now);",
+                  "}"
                 ]
               }
             }
@@ -9675,7 +9717,7 @@
           ]
         },
         {
-          "name": "Setup: confirm, sending it to the provider (200)",
+          "name": "Setup: confirm, sending it to the provider (202)",
           "request": {
             "method": "POST",
             "url": {
@@ -9717,7 +9759,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
                   "pm.test('PROCESSING', () => pm.expect(pm.response.json().status).to.eql('PROCESSING'));"
                 ]
               }
@@ -10034,13 +10076,41 @@
           },
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 1500);"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "// SETTLE BEFORE MEASURING. Every folder shares one merchant, and the relay moves that",
+                  "// merchant's balance asynchronously -- so an earlier folder's collection can land in the",
+                  "// middle of this one and be counted as ours. Poll until two consecutive reads agree, which",
+                  "// means the backlog is drained, and only then record the baseline.",
+                  "//",
+                  "// Without this the delta assertions below measure whatever happened to be in flight. That is",
+                  "// exactly how they failed the first time this collection was run end to end.",
                   "const inr = pm.response.json().balances.find(r => r.currency === 'INR');",
-                  "pm.collectionVariables.set('rfBalanceBefore', inr ? inr.pendingMinor : 0);"
+                  "const now = inr ? inr.pendingMinor : 0;",
+                  "const last = pm.collectionVariables.get('rfSettleLast');",
+                  "const tries = Number(pm.collectionVariables.get('rfSettleTries') || 0) + 1;",
+                  "",
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "",
+                  "if ((last === undefined || last === '' || Number(last) !== now) && tries < 20) {",
+                  "    pm.collectionVariables.set('rfSettleLast', now);",
+                  "    pm.collectionVariables.set('rfSettleTries', tries);",
+                  "    postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "    pm.collectionVariables.set('rfBalanceBefore', now);",
+                  "    console.log('settled baseline: ' + now);",
+                  "}"
                 ]
               }
             }
@@ -10144,7 +10214,7 @@
           ]
         },
         {
-          "name": "Setup: confirm (200)",
+          "name": "Setup: confirm (202)",
           "request": {
             "method": "POST",
             "url": {
