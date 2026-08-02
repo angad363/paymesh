@@ -353,7 +353,7 @@ class ProviderCallbackApiTest {
             "IN",
             "INR",
             CREATED_AT
-        )).merchantId();
+        ).activate(CREATED_AT)).merchantId();
 
         String orderId = orders.save(Order.create(
             OrderId.generate(), merchantId, null, null, ORDER_AMOUNT_MINOR, "INR", null,

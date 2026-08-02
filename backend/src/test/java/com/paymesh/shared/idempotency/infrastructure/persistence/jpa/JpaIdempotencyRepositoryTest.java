@@ -158,6 +158,6 @@ class JpaIdempotencyRepositoryTest {
             "IN",
             "INR",
             Instant.now()
-        )).merchantId();
+        ).activate(Instant.now())).merchantId();
     }
 }

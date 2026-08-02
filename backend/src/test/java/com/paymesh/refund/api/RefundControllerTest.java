@@ -1,6 +1,7 @@
 package com.paymesh.refund.api;
 
 import com.paymesh.TestcontainersConfiguration;
+import com.paymesh.merchant.application.ChangeMerchantStatusService;
 import com.paymesh.merchant.application.RegisterMerchantCommand;
 import com.paymesh.merchant.application.RegisterMerchantService;
 import com.paymesh.order.application.OrderRepository;
@@ -55,6 +56,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @ActiveProfiles("dev")
 class RefundControllerTest {
 
+    /** Platform staff, for fixtures that must activate a merchant. */
+    private static final String PLATFORM_OPERATOR = "usr_00000000-0000-4000-8000-000000000001";
+
     private static final Instant CREATED_AT = Instant.parse("2026-08-02T10:15:30Z");
     private static final Instant PROVIDER_EVENT = Instant.parse("2026-08-02T11:00:00Z");
     private static final long CAPTURED = 99900;
@@ -64,6 +68,9 @@ class RefundControllerTest {
 
     @Autowired
     private RegisterMerchantService merchants;
+
+    @Autowired
+    private ChangeMerchantStatusService changeMerchantStatus;
 
     @Autowired
     private OrderRepository orders;
@@ -406,8 +413,22 @@ class RefundControllerTest {
     }
 
     private MerchantId registerMerchant() {
-        return merchants.register(new RegisterMerchantCommand(
+        MerchantId merchantId = merchants.register(new RegisterMerchantCommand(
             "Refund Test Co", "refund-" + UUID.randomUUID() + "@example.test", "IN", "INR"
         )).merchantId();
+        activate(merchantId);
+
+        return merchantId;
+    }
+
+    /**
+     * REGISTRATION PRODUCES PENDING_VERIFICATION, AND A PENDING MERCHANT CANNOT WRITE (ADR-021).
+     * <p>
+     * Every fixture that goes on to create an order, an intent or a refund has to take the merchant
+     * through the real activation path first, exactly as a platform operator would. Skipping it
+     * would mean these tests exercised a merchant state no live merchant can be in.
+     */
+    private void activate(MerchantId merchantId) {
+        changeMerchantStatus.activate(merchantId, PLATFORM_OPERATOR, "Activated for test");
     }
 }

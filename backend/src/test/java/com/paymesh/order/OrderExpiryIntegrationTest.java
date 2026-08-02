@@ -448,7 +448,7 @@ class OrderExpiryIntegrationTest {
             "IN",
             "INR",
             CREATED_AT
-        )).merchantId();
+        ).activate(CREATED_AT)).merchantId();
     }
 
     /** Created through the service, so its {@code null -> PENDING} history row exists too. */

@@ -342,7 +342,7 @@ class OutboxTransactionIntegrationTest {
             "IN",
             "INR",
             NOW
-        )).merchantId();
+        ).activate(NOW)).merchantId();
     }
 
     private String existingCustomer(MerchantId merchantId) {

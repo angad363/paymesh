@@ -57,10 +57,26 @@ public final class MerchantStatusFilter extends OncePerRequestFilter {
     private static final String GUARDED_PREFIX = "/api/v1/";
 
     /**
-     * Exact paths that must work for a non-ACTIVE merchant. Prefix-matched, so
-     * {@code /api/v1/merchants/{id}/kyc-submissions} is covered by the entry below.
+     * Paths that must work for a non-ACTIVE merchant, matched on the path's tail.
+     *
+     * <h2>EVERY ONE OF THESE WOULD OTHERWISE BE A DEADLOCK</h2>
+     *
+     * <ul>
+     *   <li>{@code /kyc-submissions} -- the one write an unverified merchant must be able to make.
+     *       Refusing it makes ACTIVE unreachable.</li>
+     *   <li>{@code /activate}, {@code /suspend}, {@code /close} -- these necessarily act ON a
+     *       merchant that is not ACTIVE. Guarding them would make suspension IRREVERSIBLE, because
+     *       the request to lift it would be refused by the suspension itself.</li>
+     *   <li>{@code /approve}, {@code /reject} -- the KYC decision, for the same reason: approval is
+     *       what activates the merchant, so it cannot require the merchant to already be active.</li>
+     * </ul>
+     *
+     * The platform routes are additionally protected by {@code requirePlatformAdmin}, so exempting
+     * them here widens nothing: a merchant still cannot call them.
      */
-    private static final Set<String> EXEMPT_SUFFIXES = Set.of("/kyc-submissions");
+    private static final Set<String> EXEMPT_SUFFIXES = Set.of(
+        "/kyc-submissions", "/activate", "/suspend", "/close", "/approve", "/reject"
+    );
 
     private final MerchantStatusGate gate;
     private final ObjectMapper objectMapper;

@@ -24,10 +24,17 @@
 --    * User.isActive() was checked at login and could never be false.
 --
 --  The tables below are what make those states reachable AND auditable, plus
---  the two capabilities the audit found entirely absent: API credentials
---  (SDD 9.3 -- without which no merchant backend can integrate without storing
---  a human's password) and KYC submissions (SDD 9.3, the thing that would
---  drive the merchant status that did not exist).
+--  KYC submissions (SDD 9.3) -- which is not an optional extra here. A status
+--  gate whose only entry state is PENDING_VERIFICATION, with no way to leave
+--  it, is a lock with no key: it would freeze every newly registered merchant
+--  out of the platform permanently. KYC is what makes ACTIVE reachable, so it
+--  ships in the same change as the gate or the gate cannot ship at all.
+--
+--  API credentials (SDD 9.3) and the payment-method endpoints (SDD 10.3) are
+--  the other two things the audit found absent. They are deliberately NOT here:
+--  each is self-contained, neither is needed to make this change coherent, and
+--  a security surface as large as machine authentication deserves its own
+--  review rather than a paragraph inside somebody else's.
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -139,83 +146,6 @@ CREATE INDEX ix_customer_status_history_customer
     ON customer_status_history (customer_id, occurred_at DESC);
 
 -- ----------------------------------------------------------------------------
---  api_credentials -- SDD 9.3 and 9.4, and the reason server-to-server
---  integration was impossible
--- ----------------------------------------------------------------------------
---  SDD 10.3 and 11.3 say customers and orders are created with a "Merchant API
---  key". No such thing existed, so every integration had to authenticate as a
---  human with a password -- which is exactly the credential a merchant's
---  backend must never hold.
---
---  THE SECRET IS STORED AS A HASH AND RETURNED EXACTLY ONCE. This is the same
---  rule as refresh_tokens (V2) and for the same reason: a credential a database
---  reader can use is not a credential, it is a shared password with extra
---  steps. A merchant who loses the secret creates a new key and revokes the old
---  one; there is no recovery path, deliberately.
--- ----------------------------------------------------------------------------
-CREATE TABLE api_credentials (
-    api_credential_id VARCHAR(40)              NOT NULL,
-
-    merchant_id       VARCHAR(40)              NOT NULL,
-
-    -- The PUBLIC half, sent in the clear and used to find the row. Unique
-    -- across the platform, so a lookup never has to guess a tenant before it
-    -- has authenticated one -- which is what stops the lookup itself becoming a
-    -- cross-tenant oracle.
-    --
-    -- "ak_" + 24 url-safe chars. Not a UUID: this is typed and pasted by humans
-    -- into config files, and a shorter alphabet-dense token is materially less
-    -- error-prone than 36 characters of hex and hyphens.
-    public_prefix     VARCHAR(40)              NOT NULL,
-
-    -- SHA-256 of the secret half, hex. NOT bcrypt, and the difference is
-    -- deliberate: this is verified on EVERY API request, where a deliberately
-    -- slow hash would be a self-inflicted denial of service. The protection
-    -- bcrypt buys is against guessing a low-entropy human password; the secret
-    -- here is 32 random bytes, which is not guessable at any hash speed.
-    secret_hash       CHAR(64)                 NOT NULL,
-
-    -- What the key may do, as the role it authenticates as. A key is not more
-    -- powerful than a person: the same role vocabulary applies, so there is one
-    -- authorization model rather than two.
-    role              VARCHAR(32)              NOT NULL,
-
-    -- A human label, so an operator can tell "CI" from "billing service" when
-    -- deciding which to revoke.
-    label             VARCHAR(100)             NOT NULL,
-
-    -- Revocation is a timestamp, not a delete. A deleted credential cannot
-    -- answer "was this key live when that payment was taken", which is the
-    -- question an incident actually asks.
-    revoked_at        TIMESTAMP WITH TIME ZONE,
-
-    -- Last use, for finding keys nobody has rotated. Deliberately NOT updated
-    -- on every request -- see the adapter: a write on every authenticated call
-    -- would make this table the hottest row in the system.
-    last_used_at      TIMESTAMP WITH TIME ZONE,
-
-    created_at        TIMESTAMP WITH TIME ZONE NOT NULL,
-
-    CONSTRAINT pk_api_credentials PRIMARY KEY (api_credential_id),
-
-    CONSTRAINT uq_api_credentials_prefix UNIQUE (public_prefix),
-
-    CONSTRAINT fk_api_credentials_merchant FOREIGN KEY (merchant_id)
-        REFERENCES merchants (merchant_id),
-
-    -- Only merchant-scoped roles. A PLATFORM_ADMIN api key would be a way to
-    -- suspend merchants with a string in a config file, and there is no reason
-    -- for a machine to hold that power.
-    CONSTRAINT ck_api_credentials_role
-        CHECK (role IN ('MERCHANT_ADMIN', 'MERCHANT_USER'))
-);
-
--- Listing a merchant's keys, and finding the live ones. Partial on revoked_at,
--- because the common query is "which keys still work".
-CREATE INDEX ix_api_credentials_merchant
-    ON api_credentials (merchant_id, created_at DESC);
-
--- ----------------------------------------------------------------------------
 --  kyc_submissions -- SDD 9.3 and 9.4
 -- ----------------------------------------------------------------------------
 --  Simulated verification, and the input to the merchant status that did not
@@ -273,34 +203,6 @@ CREATE UNIQUE INDEX uq_kyc_submissions_open
 
 CREATE INDEX ix_kyc_submissions_merchant
     ON kyc_submissions (merchant_id, submitted_at DESC);
-
--- ----------------------------------------------------------------------------
---  payment_method_tokens gains a detach timestamp
--- ----------------------------------------------------------------------------
---  The table has existed since V3 and NOTHING HAS EVER WRITTEN A ROW TO IT --
---  SDD 10.3's attach/detach endpoints were never built, so "attach a payment
---  method" attached a payment method TYPE and no card was ever on file. The
---  endpoints arrive in this change and the table finally has a writer.
---
---  Detach is a timestamp rather than a DELETE for the same reason revocation is
---  above: a deleted token cannot answer "was this card on file when that
---  payment was taken".
--- ----------------------------------------------------------------------------
-ALTER TABLE payment_method_tokens
-    ADD COLUMN detached_at TIMESTAMP WITH TIME ZONE;
-
--- The live tokens of one customer, which is every read this table has.
-CREATE INDEX ix_payment_method_tokens_customer_live
-    ON payment_method_tokens (customer_id, created_at DESC)
-    WHERE detached_at IS NULL;
-
--- ONE LIVE TOKEN PER FINGERPRINT PER CUSTOMER. The same card attached twice is
--- two rows a merchant has to reason about and a customer sees as two cards.
--- Partial on detached_at, so re-attaching a card that was detached is allowed --
--- which is a real thing customers do.
-CREATE UNIQUE INDEX uq_payment_method_tokens_live_fingerprint
-    ON payment_method_tokens (customer_id, fingerprint)
-    WHERE detached_at IS NULL;
 
 -- ----------------------------------------------------------------------------
 --  Every merchant that already exists was registered before any of this and is

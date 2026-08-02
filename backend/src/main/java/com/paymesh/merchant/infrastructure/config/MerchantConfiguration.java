@@ -1,24 +1,20 @@
 package com.paymesh.merchant.infrastructure.config;
 
-import com.paymesh.merchant.application.ApiCredentialRepository;
 import com.paymesh.merchant.application.ChangeMerchantStatusService;
 import com.paymesh.merchant.application.GetMerchantService;
-import com.paymesh.merchant.application.IssueApiCredentialService;
 import com.paymesh.merchant.application.MerchantRepository;
+import com.paymesh.merchant.application.KycSubmissionRepository;
 import com.paymesh.merchant.application.MerchantStatusHistoryRepository;
+import com.paymesh.merchant.application.ReviewKycSubmissionService;
 import com.paymesh.merchant.application.RegisterMerchantService;
 import com.paymesh.merchant.application.UpdateMerchantService;
 import com.paymesh.merchant.infrastructure.MerchantStatusGateAdapter;
-import com.paymesh.merchant.infrastructure.persistence.jpa.JpaApiCredentialRepository;
+import com.paymesh.merchant.infrastructure.persistence.jpa.JpaKycSubmissionRepository;
 import com.paymesh.merchant.infrastructure.persistence.jpa.JpaMerchantStatusHistoryRepository;
-import com.paymesh.merchant.infrastructure.persistence.jpa.SpringDataApiCredentialRepository;
+import com.paymesh.merchant.infrastructure.persistence.jpa.SpringDataKycSubmissionRepository;
 import com.paymesh.merchant.infrastructure.persistence.jpa.SpringDataMerchantStatusHistoryRepository;
-import com.paymesh.merchant.infrastructure.security.ApiKeyAuthenticationFilter;
 import com.paymesh.shared.tenant.MerchantStatusGate;
-import org.springframework.boot.security.autoconfigure.web.servlet.SecurityFilterProperties;
-import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.transaction.support.TransactionTemplate;
-import tools.jackson.databind.ObjectMapper;
 import com.paymesh.merchant.infrastructure.persistence.jpa.JpaMerchantRepository;
 import com.paymesh.merchant.infrastructure.persistence.jpa.SpringDataMerchantRepository;
 import org.springframework.context.annotation.Bean;
@@ -53,13 +49,6 @@ public class MerchantConfiguration {
     }
 
     @Bean
-    ApiCredentialRepository apiCredentialRepository(
-        SpringDataApiCredentialRepository credentials
-    ) {
-        return new JpaApiCredentialRepository(credentials);
-    }
-
-    @Bean
     UpdateMerchantService updateMerchantService(
         MerchantRepository merchantRepository,
         GetMerchantService getMerchantService,
@@ -82,14 +71,6 @@ public class MerchantConfiguration {
         );
     }
 
-    @Bean
-    IssueApiCredentialService issueApiCredentialService(
-        ApiCredentialRepository apiCredentialRepository,
-        Clock clock
-    ) {
-        return new IssueApiCredentialService(apiCredentialRepository, clock);
-    }
-
     /**
      * THE MERCHANT MODULE ANSWERING THE PLATFORM'S QUESTION.
      * <p>
@@ -103,22 +84,20 @@ public class MerchantConfiguration {
         return new MerchantStatusGateAdapter(merchantRepository);
     }
 
-    /**
-     * SERVER-TO-SERVER AUTHENTICATION. Ordered immediately after the security chain so it runs on a
-     * request the chain has already let through, and constructed inline so Boot cannot also
-     * auto-register it and run it twice.
-     */
     @Bean
-    FilterRegistrationBean<ApiKeyAuthenticationFilter> apiKeyAuthenticationFilterRegistration(
-        ApiCredentialRepository apiCredentialRepository,
-        ObjectMapper objectMapper
-    ) {
-        FilterRegistrationBean<ApiKeyAuthenticationFilter> registration =
-            new FilterRegistrationBean<>(
-                new ApiKeyAuthenticationFilter(apiCredentialRepository, objectMapper)
-            );
+    KycSubmissionRepository kycSubmissionRepository(SpringDataKycSubmissionRepository submissions) {
+        return new JpaKycSubmissionRepository(submissions);
+    }
 
-        registration.setOrder(SecurityFilterProperties.DEFAULT_FILTER_ORDER + 1);
-        return registration;
+    @Bean
+    ReviewKycSubmissionService reviewKycSubmissionService(
+        KycSubmissionRepository kycSubmissionRepository,
+        ChangeMerchantStatusService changeMerchantStatusService,
+        TransactionTemplate transactionTemplate,
+        Clock clock
+    ) {
+        return new ReviewKycSubmissionService(
+            kycSubmissionRepository, changeMerchantStatusService, transactionTemplate, clock
+        );
     }
 }

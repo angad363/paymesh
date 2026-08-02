@@ -958,7 +958,7 @@ class PaymentIntentIntegrationTest {
             "IN",
             "INR",
             CREATED_AT
-        )).merchantId();
+        ).activate(CREATED_AT)).merchantId();
     }
 
     private String existingOrder(MerchantId merchantId, String customerId) {

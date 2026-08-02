@@ -126,7 +126,7 @@ class JpaCustomerRepositoryTest {
             "IN",
             "INR",
             Instant.now()
-        ));
+        ).activate(Instant.now()));
 
         return merchant.merchantId();
     }

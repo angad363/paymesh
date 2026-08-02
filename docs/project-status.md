@@ -21,7 +21,7 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1031 tests, 0 failures.** Sixteen Flyway migrations (V1–V16). Nineteen ADRs. The Postman
+**1061 tests, 0 failures.** Seventeen Flyway migrations (V1–V17). Twenty-one ADRs. The Postman
 collection runs fourteen folders, the newest showing money go back out.
 
 **The Ledger is the financial source of truth, and as of this session it exists** (ADR-018).
@@ -503,6 +503,8 @@ The collection is not decorative: dropping the tenant predicate in
 | 017 | Simulate providers through scheduled, signed callbacks — never an inline call |
 | 018 | Post the ledger from events, and keep its invariants in the database |
 | 019 | Refunds own their callback route, and over-refund is guarded by a lock and a trigger |
+| 020 | Defer federated login until there is an identity provider |
+| 021 | Make the lifecycle states reachable, and enforce them |
 
 Note that the SDD's Appendix D has its own ADR list with the same numbers and
 different decisions. When citing one, say which source you mean.
@@ -566,7 +568,10 @@ failing test._
    exactly one place.
 9. **`POST /api/v1/merchants` is unauthenticated by design** and has no rate limit.
    It is the obvious abuse vector: an open write endpoint that creates rows.
-10. **Authorization is binary per tenant.** Holding any role at a merchant grants
+10. ~~**Authorization is binary per tenant.**~~ **CLOSED by ADR-021.** `AuthenticatedCaller` now
+    carries the role instead of discarding it; `MERCHANT_USER` can no longer do what
+    `MERCHANT_ADMIN` can. The remaining hole is narrower: role checks are applied where they have
+    been written, and only the merchant module has them so far. Original text: holding any role at a merchant grants
    everything at that merchant. `MERCHANT_ADMIN` vs `MERCHANT_USER` matters as soon
    as two endpoints differ by permission.
 11. **Access tokens cannot be revoked before expiry** — nothing checks a denylist, so
