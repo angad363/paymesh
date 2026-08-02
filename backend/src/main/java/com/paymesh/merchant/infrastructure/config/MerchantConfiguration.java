@@ -1,14 +1,20 @@
 package com.paymesh.merchant.infrastructure.config;
 
+import com.paymesh.merchant.application.ApiCredentialRepository;
 import com.paymesh.merchant.application.ChangeMerchantStatusService;
 import com.paymesh.merchant.application.GetMerchantService;
 import com.paymesh.merchant.application.MerchantRepository;
+import com.paymesh.merchant.application.IssueApiCredentialService;
 import com.paymesh.merchant.application.KycSubmissionRepository;
 import com.paymesh.merchant.application.MerchantStatusHistoryRepository;
 import com.paymesh.merchant.application.ReviewKycSubmissionService;
 import com.paymesh.merchant.application.RegisterMerchantService;
 import com.paymesh.merchant.application.UpdateMerchantService;
 import com.paymesh.merchant.infrastructure.MerchantStatusGateAdapter;
+import com.paymesh.merchant.infrastructure.persistence.jpa.JpaApiCredentialRepository;
+import com.paymesh.merchant.infrastructure.persistence.jpa.SpringDataApiCredentialRepository;
+import com.paymesh.merchant.infrastructure.security.ApiCredentialAuthenticator;
+import com.paymesh.shared.security.ApiKeyAuthenticator;
 import com.paymesh.merchant.infrastructure.persistence.jpa.JpaKycSubmissionRepository;
 import com.paymesh.merchant.infrastructure.persistence.jpa.JpaMerchantStatusHistoryRepository;
 import com.paymesh.merchant.infrastructure.persistence.jpa.SpringDataKycSubmissionRepository;
@@ -99,5 +105,31 @@ public class MerchantConfiguration {
         return new ReviewKycSubmissionService(
             kycSubmissionRepository, changeMerchantStatusService, transactionTemplate, clock
         );
+    }
+
+    @Bean
+    ApiCredentialRepository apiCredentialRepository(SpringDataApiCredentialRepository credentials) {
+        return new JpaApiCredentialRepository(credentials);
+    }
+
+    @Bean
+    IssueApiCredentialService issueApiCredentialService(
+        ApiCredentialRepository apiCredentialRepository,
+        Clock clock
+    ) {
+        return new IssueApiCredentialService(apiCredentialRepository, clock);
+    }
+
+    /**
+     * The Merchant module answering the platform's authentication question, the same shape as
+     * {@code MerchantStatusGate}: {@code shared} declares the port, this implements it, and
+     * {@code shared} still names no capability.
+     */
+    @Bean
+    ApiKeyAuthenticator apiKeyAuthenticator(
+        ApiCredentialRepository apiCredentialRepository,
+        Clock clock
+    ) {
+        return new ApiCredentialAuthenticator(apiCredentialRepository, clock);
     }
 }

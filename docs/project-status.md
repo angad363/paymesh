@@ -21,7 +21,7 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1063 tests, 0 failures.** Seventeen Flyway migrations (V1–V17). Twenty-one ADRs. The Postman
+**1086 tests, 0 failures.** Eighteen Flyway migrations (V1–V18). Twenty-two ADRs. The Postman
 collection runs fourteen folders, the newest showing money go back out.
 
 **The Ledger is the financial source of truth, and as of this session it exists** (ADR-018).
@@ -81,7 +81,7 @@ The SDD describes ~15 services across 31 sections. This is what the code actuall
 | Payment | §12.1 (partially), §12.2–§12.3, §12.5–§12.6 | Core built. **§12.4 confirm is not implemented**; 2 of the 10 §12.1 states are reachable. |
 | Idempotency & concurrency | §23.1–§23.2 | Built in PostgreSQL. §23.3's Redis accelerator: not built, deliberately. |
 | Events / outbox | §22.1 envelope, §22.3 outbox, §22.4 inbox, §24 durability | Built: in-transaction write, a scheduled relay, an in-process dispatcher, `processed_events`, and one consumer (ADR-016). **§22.2 (Kafka topics and partition keys) does not exist, deliberately** — the consumer contract is a broker's, so the transport can be swapped without touching a consumer. §24's alerting does not exist either. |
-| API Gateway / Edge | §7 | Not built. Its concerns (rate limiting, API keys, HMAC) are absent. |
+| API Gateway / Edge | §7 | Partial. API keys exist (ADR-022) and HMAC guards both callback routes; rate limiting is absent. |
 | Provider Simulator | §13.1–§13.2, §13.5–§13.6 | Built. **§13.3's payouts and §13.4's `provider_payouts` are not** — Settlement is Phase 2 and has no consumer. Percentage-based injection is deliberately absent (ADR-017 §5). |
 | Risk & Fraud | §14 | Not started. |
 | Ledger | §15.1–§15.2, §15.6 | Core built (ADR-018): double-entry accounts, journals, immutable entries, and a merchant balance. **§15.3's internal posting API is deliberately absent** — the only writer is an event consumer, so every posting traces to a committed state change. **§15.5's `balance_holds` and `account_balances` are not built**: nothing reserves funds until Settlement, and a SUM over entries cannot drift the way a projection can. No fee split (§15.2) — there is no fee schedule. No reversal path yet; Refund brings it. |
@@ -505,6 +505,7 @@ The collection is not decorative: dropping the tenant predicate in
 | 019 | Refunds own their callback route, and over-refund is guarded by a lock and a trigger |
 | 020 | Defer federated login until there is an identity provider |
 | 021 | Make the lifecycle states reachable, and enforce them |
+| 022 | Authenticate machines with merchant API credentials |
 
 Note that the SDD's Appendix D has its own ADR list with the same numbers and
 different decisions. When citing one, say which source you mean.

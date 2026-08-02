@@ -53,7 +53,7 @@ balance, which was not true of this codebase before
 **Refund** closes the loop in the other direction: money goes back out, the Ledger posts a
 reversal, and the payment reaches `REFUNDED`
 ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)).
-**1063 tests, 0 failures. Seventeen Flyway migrations (V1–V17). Twenty-one ADRs.**
+**1086 tests, 0 failures. Eighteen Flyway migrations (V1–V18). Twenty-two ADRs.**
 
 **A merchant can now be stopped.** Three lifecycle enums had exactly one reachable value each —
 no merchant could be suspended, no user disabled, no customer blocked, and nothing anywhere read
@@ -63,7 +63,7 @@ the caller's role instead of discarding it
 
 | Capability | State | What is missing |
 |---|---|---|
-| **Merchant** | Built | Registration is unauthenticated and unrate-limited. No API credentials yet, so server-to-server integration still needs a human's token |
+| **Merchant** | Built | Registration is unauthenticated and unrate-limited. API credentials have no expiry, so rotation is a manual discipline ([ADR-022](docs/decisions/ADR-022-authenticate-machines-with-merchant-api-credentials.md)) |
 | **Identity & Access** | Built | Authorization is binary per tenant; access tokens are not revocable before expiry |
 | **Customer** | Built | No list/search, no PATCH, no payment-method endpoints. PII is **plaintext** — stored in the encrypted *shape*, not encrypted ([ADR-006](docs/decisions/ADR-006-defer-customer-pii-encryption.md)) |
 | **Order** | Built | Every status is now reachable: `CANCELLED` by request, `EXPIRED` by the sweeper, `PAID` / `PARTIALLY_PAID` by consuming `payment.succeeded` |
@@ -81,7 +81,8 @@ Platform pieces, honestly:
 | Outbox + relay + inbox | Working. Events are written in-transaction, polled by a scheduled relay, dispatched in-process, and deduplicated per consumer in `processed_events`. **Two** consumers now read one event — Order and the Ledger — each with its own inbox row |
 | Double-entry ledger | Working for captures **and refund reversals**. Debits equal credits, entries are immutable, and both rules are enforced by PostgreSQL triggers rather than by application code. A correction is a new journal, never an edit |
 | Kafka | None, deliberately — the **consumer contract** is the one a broker needs (envelope in, inbox dedup, idempotent handler), so the transport can be swapped without touching a consumer ([ADR-016](docs/decisions/ADR-016-in-process-event-dispatch-before-kafka.md)) |
-| Redis, rate limiting, API keys, HMAC webhooks | None |
+| API keys | Working. `Authorization: ApiKey ak_…`, hashed secrets returned once, revocable, and subject to the same role and merchant-status rules as a human caller |
+| Redis, rate limiting, HMAC webhooks | None |
 | Observability | `/actuator/health` and `/actuator/info` only |
 
 **A merchant now has a balance**, and until this release nothing in this codebase moved one:
