@@ -154,6 +154,115 @@ class ModuleBoundaryTest {
     }
 
     /**
+     * THE LEDGER IMPORTS NOTHING FROM PAYMENT EITHER, AND HERE THE STAKES ARE HIGHER THAN ANYWHERE
+     * ELSE IN THIS FILE.
+     * <p>
+     * SDD 30.1 schedules the Ledger for extraction LAST and most carefully, because it is the
+     * financial source of truth and the most dangerous thing to move. That makes it the module whose
+     * event-reading code is most certain to end up in another process against another database --
+     * so it is the module that can least afford a type shared with its producer.
+     * <p>
+     * The temptation is the same one Order faced and is worth naming: comparing
+     * {@code previousStatus} against {@code PaymentIntentStatus}, or reading the payload through a
+     * record owned by Payment. Either would be shorter and either would make the two one deployable
+     * by definition.
+     */
+    @Test
+    void ledgerNeverImportsPayment() throws IOException {
+        assertOnlyTheseImport("com/paymesh/ledger", "com.paymesh.payment.", List.of());
+    }
+
+    /**
+     * AND THE ARROW DOES NOT POINT BACK EITHER, which is the direction that would break silently.
+     * <p>
+     * Nothing in PayMesh may reach into the Ledger to read a balance or post an entry. A capability
+     * wanting money moved must emit an event the Ledger subscribes to, exactly as Payment does --
+     * that is what keeps every posting traceable to a state change, and it is the property that
+     * makes the missing {@code POST /internal/v1/ledger/transactions} an improvement rather than a
+     * gap (ADR-018 section 6).
+     * <p>
+     * {@code shared} is checked too: a "convenience" balance lookup promoted into shared would put
+     * the Ledger in everybody's import graph at once.
+     */
+    @Test
+    void noCapabilityImportsTheLedger() throws IOException {
+        for (String capability : CAPABILITIES) {
+            if (capability.equals("ledger")) {
+                continue;
+            }
+
+            assertOnlyTheseImport("com/paymesh/" + capability, "com.paymesh.ledger.", List.of());
+        }
+
+        assertOnlyTheseImport("com/paymesh/shared", "com.paymesh.ledger.", List.of());
+    }
+
+    /**
+     * The same one-level-down check {@link #orderConsumesPaymentEventsWithoutNamingPaymentTypes}
+     * makes for Order: an empty allowlist is also satisfied by deleting the consumer and having
+     * Payment post the journal itself, which would put the money path back inside the module that
+     * moves the money.
+     */
+    @Test
+    void ledgerConsumesPaymentEventsWithoutNamingPaymentTypes() throws IOException {
+        Path consumer = Path.of(
+            "src/main/java/com/paymesh/ledger/infrastructure/events/PaymentSucceededLedgerHandler.java"
+        );
+
+        assertThat(Files.exists(consumer))
+            .as("the Ledger's consumer of payment.succeeded must exist; it is the only thing that"
+                + " posts, so without it no balance moves at all")
+            .isTrue();
+
+        List<String> lines = Files.readAllLines(consumer);
+
+        assertThat(String.join("\n", lines))
+            .as("the consumer must still subscribe to the event")
+            .contains("payment.succeeded");
+
+        List<String> offendingLines = lines.stream()
+            .map(String::strip)
+            .filter(line -> !line.startsWith("*") && !line.startsWith("//") && !line.startsWith("/*"))
+            .filter(line -> line.contains("com.paymesh.payment"))
+            .toList();
+
+        assertThat(offendingLines)
+            .as("the payload is read as a Map; a fully-qualified Payment type here is the same"
+                + " violation as an import")
+            .isEmpty();
+    }
+
+    /**
+     * TWO CONSUMERS OF ONE EVENT MUST NOT SHARE AN INBOX NAME.
+     * <p>
+     * {@code processed_events} is keyed on {@code (consumer_name, event_id)}, so if Order's handler
+     * and the Ledger's handler ever reported the same name, the first to run would mark the event
+     * handled and the second would silently never see it. {@code EventDispatcher} refuses the
+     * duplicate at construction, so the real failure would be a context that will not start -- but
+     * only if the two names are compared, and nothing else compares them.
+     * <p>
+     * The names are string literals in each handler precisely so a refactor cannot change them. This
+     * asserts they are still different literals.
+     */
+    @Test
+    void orderAndLedgerConsumeThePaymentEventUnderDifferentInboxNames() throws IOException {
+        String orderConsumer = Files.readString(Path.of(
+            "src/main/java/com/paymesh/order/infrastructure/events/PaymentSucceededHandler.java"
+        ));
+        String ledgerConsumer = Files.readString(Path.of(
+            "src/main/java/com/paymesh/ledger/infrastructure/events/PaymentSucceededLedgerHandler.java"
+        ));
+
+        assertThat(orderConsumer).contains("\"order.payment-succeeded\"");
+        assertThat(ledgerConsumer).contains("\"ledger.payment-succeeded\"");
+
+        assertThat(ledgerConsumer)
+            .as("sharing Order's inbox name would starve the Ledger of every event Order handled"
+                + " first, and the symptom would be 'the ledger never posts' with nothing in any log")
+            .doesNotContain("\"order.payment-succeeded\"");
+    }
+
+    /**
      * THE SIMULATOR'S ALLOWLIST IS EMPTY IN BOTH DIRECTIONS, WHICH IS A STRICTER CLAIM THAN ANY
      * ABOVE.
      * <p>
@@ -195,7 +304,7 @@ class ModuleBoundaryTest {
 
     /** Every capability package except the simulator itself. */
     private static final List<String> CAPABILITIES =
-        List.of("merchant", "identity", "customer", "order", "payment");
+        List.of("merchant", "identity", "customer", "order", "payment", "ledger");
 
     private static void assertOnlyTheseImport(
         String moduleDirectory,

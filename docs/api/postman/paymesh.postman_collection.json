@@ -472,6 +472,42 @@
     {
       "key": "simE2ePolls",
       "value": ""
+    },
+    {
+      "key": "lgOrderKey",
+      "value": ""
+    },
+    {
+      "key": "lgOrderId",
+      "value": ""
+    },
+    {
+      "key": "lgIntentKey",
+      "value": ""
+    },
+    {
+      "key": "lgIntentId",
+      "value": ""
+    },
+    {
+      "key": "lgAttachKey",
+      "value": ""
+    },
+    {
+      "key": "lgConfirmKey",
+      "value": ""
+    },
+    {
+      "key": "lgReference",
+      "value": ""
+    },
+    {
+      "key": "lgBalanceBefore",
+      "value": ""
+    },
+    {
+      "key": "lgPollAttempt",
+      "value": ""
     }
   ],
   "item": [
@@ -9346,6 +9382,486 @@
                   "  pm.test('for exactly the order amount', () => pm.expect(pm.response.json().capturedAmountMinor).to.eql(1999));",
                   "  postman.setNextRequest(null);",
                   "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Ledger (a payment becomes a balance, ADR-018)",
+      "description": "WHERE THE MONEY IS ACTUALLY WRITTEN DOWN. Before ADR-018 a payment reaching SUCCEEDED meant PayMesh held a row saying a payment succeeded -- it did not mean anybody's money had moved, because there was nowhere for money to be.\n\nThis folder collects 99900 and watches the merchant's pending balance rise by exactly that. Nothing here calls a ledger endpoint, because there is no way to write to the ledger over HTTP: the only writer is a consumer of payment.succeeded, which means every posting traces back to a committed payment. SDD 15.3's POST /internal/v1/ledger/transactions is deliberately absent (ADR-018 section 3).\n\nDouble-entry, so the capture is written twice and the two sides must match:\n    DEBIT   provider-clearing:INR        99900   <- the provider owes us\n    CREDIT  merchant:<you>:pending:INR   99900   <- we owe the merchant\nThat rule is enforced by a DEFERRED PostgreSQL trigger checked at COMMIT, not by Java, and so is the immutability of a posted entry. A correction is a new reversal journal, never an edit -- which is what Refund will have to write.\n\nSTART THE APP WITH BOTH TIMERS ON, or the balance never moves:\n    PAYMESH_SIMULATOR_DISPATCH_ENABLED=true \\\n    PAYMESH_EVENTS_OUTBOX_RELAY_ENABLED=true \\\n    ./mvnw spring-boot:run\n\nRuns after the folders above and reuses their access token; it mints its own order, intent and idempotency keys, so it disturbs nothing they left behind.",
+      "item": [
+        {
+          "name": "Baseline: the balance before anything is collected (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/balances",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "balances"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "The starting point, and it is deliberately read BEFORE the payment so the delta at the end means something.\n\nThis merchant has been paid by earlier folders, so the figure is usually not zero -- what matters is that it moves by exactly the amount collected below. A merchant who has never been paid gets an empty list here, not a 404: 'you have earned nothing yet' is not an error."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('lgOrderKey', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('lgIntentKey', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('lgAttachKey', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('lgConfirmKey', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('lgReference', 'sim_pay_' + pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('lgPollAttempt', 0);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const rows = pm.response.json().balances;",
+                  "const inr = rows.find(r => r.currency === 'INR');",
+                  "const before = inr ? inr.pendingMinor : 0;",
+                  "pm.collectionVariables.set('lgBalanceBefore', before);",
+                  "console.log('INR pending before: ' + before);",
+                  "",
+                  "pm.test('money is an integer in minor units, never a decimal', () => {",
+                  "    rows.forEach(r => pm.expect(Number.isInteger(r.pendingMinor)).to.be.true);",
+                  "});",
+                  "",
+                  "// SDD 15.3 also specifies available/reserved/inSettlement. They are OMITTED rather than",
+                  "// returned as zero -- a zero availableMinor would claim this merchant has nothing they can",
+                  "// withdraw, when the truth is that 'available' is not a concept this ledger has yet.",
+                  "pm.test('the balances Settlement has not made real yet are absent, not zero', () => {",
+                  "    rows.forEach(r => {",
+                  "        pm.expect(r).to.not.have.property('availableMinor');",
+                  "        pm.expect(r).to.not.have.property('reservedMinor');",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: an order for the ledger to record (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amountMinor\": 99900,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{lgOrderKey}}"
+              }
+            ],
+            "description": "Its own order -- an order holds at most one live payment intent (ADR-011), so the folders above have already spent theirs."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('lgOrderId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: a payment intent against it (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{lgOrderId}}\",\n  \"amountMinor\": 99900,\n  \"currency\": \"INR\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{lgIntentKey}}"
+              }
+            ],
+            "description": "AUTOMATIC capture, so the provider's SUCCEEDED callback collects without a second call."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('lgIntentId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: attach a card (200)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{lgIntentId}}/payment-method",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{lgIntentId}}",
+                "payment-method"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentMethodType\": \"CARD\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "An intent must carry a payment method before it can be confirmed."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup: confirm, sending it to the provider (200)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payment-intents/{{lgIntentId}}/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payment-intents",
+                "{{lgIntentId}}",
+                "confirm"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{lgConfirmKey}}"
+              }
+            ],
+            "description": "PROCESSING. From here only a provider callback can move it, which is what the next request is."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('PROCESSING', () => pm.expect(pm.response.json().status).to.eql('PROCESSING'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The simulator collects it (201)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sim/v1/payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sim",
+                "v1",
+                "payments"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idempotencyKey\": \"{{lgReference}}\",\n  \"callbackReference\": \"{{lgIntentId}}\",\n  \"method\": \"CARD\",\n  \"token\": \"tok_sim_success\",\n  \"amountMinor\": 99900,\n  \"currency\": \"INR\",\n  \"captureMethod\": \"AUTOMATIC\"\n}"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-PayMesh-Simulator-Key",
+                "value": "{{simulatorKey}}"
+              }
+            ],
+            "description": "The fake provider takes the charge and queues a signed callback (ADR-017). Nothing in PayMesh knows it is fake -- the callback arrives over HTTP at /internal/v1/provider-callbacks exactly as a real one would.\n\ntok_sim_success, so the callback reports SUCCEEDED for the full amount."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.test('CAPTURED at the provider', () =>",
+                  "    pm.expect(pm.response.json().status).to.eql('CAPTURED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "THE POINT: the balance moves by exactly what was collected (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/balances",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "balances"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "THE LINE THIS WHOLE FOLDER EXISTS FOR. Nobody called a ledger endpoint -- there isn't one to call. Payment wrote payment.succeeded, the relay read it, and the Ledger's own consumer posted a balanced journal (ADR-018):\n\n    DEBIT   provider-clearing:INR        99900\n    CREDIT  merchant:<you>:pending:INR   99900\n\nThe figure below is not a stored column. It is a SUM over the immutable entries, computed when you ask -- so it cannot drift from the journal the way a cached projection could.\n\nIT POLLS, because delivery is asynchronous by design. Two things must both have happened: the simulator's dispatcher must have sent the callback, and the outbox relay must have delivered the event.\n\nREQUIRES BOTH TIMERS ON:\n    PAYMESH_SIMULATOR_DISPATCH_ENABLED=true \\\n    PAYMESH_EVENTS_OUTBOX_RELAY_ENABLED=true \\\n    ./mvnw spring-boot:run\nThe dev profile switches both off, because it is the profile the test suite runs under and a timer moving money mid-assertion is a flake generator. Without them this request exhausts its attempts and fails, which is the honest outcome rather than a skip."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A pre-request setTimeout is how a Postman run waits; the sandbox holds the request until",
+                  "// pending timers settle. Two hops here rather than one, so the wait is longer than the",
+                  "// event-delivery folder's.",
+                  "setTimeout(() => {}, 2000);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const attempt = Number(pm.collectionVariables.get('lgPollAttempt') || 0) + 1;",
+                  "pm.collectionVariables.set('lgPollAttempt', attempt);",
+                  "",
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const rows = pm.response.json().balances;",
+                  "const inr = rows.find(r => r.currency === 'INR');",
+                  "const now = inr ? inr.pendingMinor : 0;",
+                  "const before = Number(pm.collectionVariables.get('lgBalanceBefore'));",
+                  "",
+                  "if (now === before && attempt < 15) {",
+                  "    console.log('waiting for the callback and the relay, attempt ' + attempt + ' of 15');",
+                  "    postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "    pm.test('pending balance rose by exactly the captured amount', () =>",
+                  "        pm.expect(now - before).to.eql(99900));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reading it again changes nothing (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/balances",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "balances"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "description": "A balance read is a read. Worth one request because the ledger's idempotency is easy to assume and hard to see: the same payment cannot post twice however many times its event is delivered.\n\nTwo independent guards make that true. processed_events (V14) stops one EVENT being applied twice by one consumer. uq_ledger_transactions_idempotency, keyed on 'payment-captured:<intent id>', stops one PAYMENT being posted twice however many events describe it -- a replayed backlog, a renamed consumer, a manual re-run.\n\nLeave the app running and re-run this folder's last two requests as often as you like; the figure does not move again."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const inr = pm.response.json().balances.find(r => r.currency === 'INR');",
+                  "const before = Number(pm.collectionVariables.get('lgBalanceBefore'));",
+                  "pm.test('still exactly one posting for that payment', () =>",
+                  "    pm.expect(inr.pendingMinor - before).to.eql(99900));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A different merchant sees their own money, never yours (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/balances",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "balances"
+              ]
+            },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{otherAccessToken}}"
+              }
+            ],
+            "description": "TENANT ISOLATION, AND THE REQUEST CANNOT EVEN EXPRESS THE VIOLATION. There is no merchant parameter on this endpoint -- no path variable, no query string, no body. The tenant comes from the verified token, so the only balance a caller can address is their own.\n\nThat is why this returns 200 with someone else's (empty or unrelated) figures rather than 403: there is nothing to forbid."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const inr = pm.response.json().balances.find(r => r.currency === 'INR');",
+                  "const mine = Number(pm.collectionVariables.get('lgBalanceBefore')) + 99900;",
+                  "pm.test('not this merchant\\'s balance', () =>",
+                  "    pm.expect(inr ? inr.pendingMinor : 0).to.not.eql(mine));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "No token, no balance (401)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/balances",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "balances"
+              ]
+            },
+            "header": [],
+            "description": "Nothing under /api/v1 is open by accident. The balance endpoint needed no security configuration of its own: everything not explicitly permitted is authenticated, and adding a rule for this route would be a no-op implying the default runs the other way."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));"
                 ]
               }
             }

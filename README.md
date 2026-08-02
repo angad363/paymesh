@@ -6,7 +6,7 @@ balances, settlements and webhooks. It exists to model the parts of a payment pl
 that are genuinely hard (retries, duplicate delivery, tenant isolation, state machines,
 auditability) rather than the parts that are CRUD.
 
-It is a single Spring Boot application, Java 21, PostgreSQL, Flyway. Six of Phase 1's
+It is a single Spring Boot application, Java 21, PostgreSQL, Flyway. Seven of Phase 1's
 eight capabilities are built.
 
 ## What this is not
@@ -41,13 +41,16 @@ tests bypass it and still pass, because the constraint is the guard.
 
 ## Current status
 
-Six of Phase 1's eight capabilities are built, and **Payment is feature-complete**:
+Seven of Phase 1's eight capabilities are built, and **Payment is feature-complete**:
 create, attach, confirm, provider callbacks, capture and cancel, with order expiry and
 stranded-payment sweeps behind them. **Domain events are now delivered**: the outbox has a
 relay, an in-process dispatcher and a `processed_events` inbox, and Order consumes
 `payment.succeeded` ([ADR-016](docs/decisions/ADR-016-in-process-event-dispatch-before-kafka.md)).
-The **Provider Simulator** drives the whole loop end to end without a hand-signed request.
-**872 tests, 0 failures. Fourteen Flyway migrations (V1–V14). Seventeen ADRs.**
+The **Provider Simulator** drives the whole loop end to end without a hand-signed request, and
+the **Ledger** now posts a balanced double-entry journal when it does — so a merchant has a
+balance, which was not true of this codebase before
+([ADR-018](docs/decisions/ADR-018-post-the-ledger-from-events-with-the-invariants-in-the-database.md)).
+**942 tests, 0 failures. Fifteen Flyway migrations (V1–V15). Eighteen ADRs.**
 
 | Capability | State | What is missing |
 |---|---|---|
@@ -57,7 +60,7 @@ The **Provider Simulator** drives the whole loop end to end without a hand-signe
 | **Order** | Built | Every status is now reachable: `CANCELLED` by request, `EXPIRED` by the sweeper, `PAID` / `PARTIALLY_PAID` by consuming `payment.succeeded` |
 | **Payment** | Built | No refunds, no reconciliation, one shared provider callback secret |
 | **Provider Simulator** | Built | No payouts (Settlement is Phase 2), no refund callbacks (no receiver yet), no percentage-based failure injection ([ADR-017](docs/decisions/ADR-017-simulate-providers-through-scheduled-signed-callbacks.md)) |
-| **Ledger** | Not started | — |
+| **Ledger** | Core built | Double-entry posting and `GET /api/v1/balances`. No holds, no `account_balances` projection, no reversal path (Refund brings it), no platform fee — there is no fee schedule to apply ([ADR-018](docs/decisions/ADR-018-post-the-ledger-from-events-with-the-invariants-in-the-database.md)) |
 | **Refund** | Not started | — |
 
 Platform pieces, honestly:
@@ -66,12 +69,20 @@ Platform pieces, honestly:
 |---|---|
 | PostgreSQL + Flyway | Working; Hibernate runs `ddl-auto=validate`, Flyway owns the schema |
 | Idempotency | Working, on four registered routes |
-| Outbox + relay + inbox | Working. Events are written in-transaction, polled by a scheduled relay, dispatched in-process, and deduplicated per consumer in `processed_events` |
+| Outbox + relay + inbox | Working. Events are written in-transaction, polled by a scheduled relay, dispatched in-process, and deduplicated per consumer in `processed_events`. **Two** consumers now read one event — Order and the Ledger — each with its own inbox row |
+| Double-entry ledger | Working for captures. Debits equal credits, entries are immutable, and both rules are enforced by PostgreSQL triggers rather than by application code |
 | Kafka | None, deliberately — the **consumer contract** is the one a broker needs (envelope in, inbox dedup, idempotent handler), so the transport can be swapped without touching a consumer ([ADR-016](docs/decisions/ADR-016-in-process-event-dispatch-before-kafka.md)) |
 | Redis, rate limiting, API keys, HMAC webhooks | None |
 | Observability | `/actuator/health` and `/actuator/info` only |
 
-**`orders.status` reaches `PAID`**, and until this release it could not — the event
+**A merchant now has a balance**, and until this release nothing in this codebase moved one:
+a `SUCCEEDED` payment was operational state and the money was recorded nowhere. A capture now
+posts a balanced journal — provider clearing debited, the merchant's pending liability credited
+— and `GET /api/v1/balances` sums it. The balance is **eventually consistent**, like the order
+status below, and there is **no way to reverse a posting yet**, which is exactly what Refund has
+to bring.
+
+**`orders.status` reaches `PAID`**, and until an earlier release it could not — the event
 announcing a successful payment was written correctly and read by nobody. It is delivered
 now, so an order whose payment succeeded reads `PAID` (or `PARTIALLY_PAID` after a partial
 capture) within a relay tick. Two consequences worth stating up front: the update is
@@ -104,6 +115,7 @@ com.paymesh
 ├── order                + infrastructure/customer   ← the CustomerLookup adapter
 │                        + infrastructure/events     ← the payment.succeeded consumer
 ├── payment              + infrastructure/order      ← the OrderLookup adapter
+├── ledger               + infrastructure/events     ← the payment.succeeded consumer
 ├── simulator            the fake provider; imports no other capability and none imports it
 └── shared
     ├── api              ApiErrorResponse
@@ -449,9 +461,12 @@ conflict and it matters, surface the divergence rather than silently picking one
 
 ## Roadmap
 
-Payment is feature-complete, its events are delivered, and the Provider Simulator drives
-the loop end to end. What is left in Phase 1, in SDD order: **Ledger** → **Refund**. The Ledger is
-deliberately last in Phase 1 and will be the last thing extracted into a service. It is
-the financial source of truth — double-entry, immutable entries, corrections as reversal
-transactions rather than edits — and a `SUCCEEDED` payment is only operational state
-until the ledger posts.
+Payment is feature-complete, its events are delivered, the Provider Simulator drives the
+loop end to end, and the Ledger records it. What is left in Phase 1: **Refund**, which
+needs the reversal path the Ledger deliberately does not have yet — a refund without
+double-entry is an untraceable subtraction.
+
+The Ledger will still be the last thing extracted into a service (SDD §30.1). It is the
+financial source of truth — double-entry, immutable entries, corrections as reversal
+transactions rather than edits — and its invariants live in PostgreSQL rather than in
+Java for exactly that reason.

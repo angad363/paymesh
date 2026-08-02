@@ -12,17 +12,23 @@ architecture, read the SDD.
 
 ## Where the project is
 
-Six of Phase 1's eight capabilities are built: **Merchant**, **Identity & Access**,
-**Customer**, **Order**, **Payment**, and the **Provider Simulator**. Underneath them sit four
+Seven of Phase 1's eight capabilities are built: **Merchant**, **Identity & Access**,
+**Customer**, **Order**, **Payment**, the **Provider Simulator**, and the **Ledger**. Underneath them sit four
 pieces of platform work that had to land first: the application refuses to boot on the committed
 JWT signing key, public writes are idempotent through PostgreSQL, a transactional outbox lets a
 state change and the event announcing it commit together, and **that outbox is finally read**.
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**872 tests, 0 failures.** Fourteen Flyway migrations (V1–V14). Seventeen ADRs. The Postman
-collection runs twelve folders, the newest two covering the Provider Simulator and proving an
-order reaching `PAID` without anyone calling an order endpoint.
+**942 tests, 0 failures.** Fifteen Flyway migrations (V1–V15). Eighteen ADRs. The Postman
+collection runs thirteen folders, the newest showing a payment become a balance.
+
+**The Ledger is the financial source of truth, and as of this session it exists** (ADR-018).
+A captured payment posts a balanced double-entry journal, and `GET /api/v1/balances` reports
+what PayMesh owes a merchant. What makes it trustworthy is not the Java: debits-equal-credits
+is a DEFERRED constraint trigger checked at COMMIT, immutability is a trigger, single-currency
+is a composite foreign key. The integration tests insert lopsided journals with raw SQL and the
+database refuses them with the application entirely out of the path.
 
 The Provider Simulator is the first module written to be **removed from a deployment**. Every other
 capability is built to be extracted eventually; this one holds no reference to PayMesh at all — no
@@ -77,7 +83,7 @@ The SDD describes ~15 services across 31 sections. This is what the code actuall
 | API Gateway / Edge | §7 | Not built. Its concerns (rate limiting, API keys, HMAC) are absent. |
 | Provider Simulator | §13.1–§13.2, §13.5–§13.6 | Built. **§13.3's payouts and §13.4's `provider_payouts` are not** — Settlement is Phase 2 and has no consumer. Percentage-based injection is deliberately absent (ADR-017 §5). |
 | Risk & Fraud | §14 | Not started. |
-| Ledger | §15 | Not started — deliberately last in Phase 1. |
+| Ledger | §15.1–§15.2, §15.6 | Core built (ADR-018): double-entry accounts, journals, immutable entries, and a merchant balance. **§15.3's internal posting API is deliberately absent** — the only writer is an event consumer, so every posting traces to a committed state change. **§15.5's `balance_holds` and `account_balances` are not built**: nothing reserves funds until Settlement, and a SUM over entries cannot drift the way a projection can. No fee split (§15.2) — there is no fee schedule. No reversal path yet; Refund brings it. |
 | Refund | §16 | Not started. |
 | Settlement, Webhook, Notification/Reporting/Audit, AI Ops | §17–§20 | Not started. |
 | End-to-end workflows | §21 | Only the create-order → create-intent prefix exists; §21.4 reconciliation is absent. |
@@ -413,6 +419,7 @@ The collection is not decorative: dropping the tenant predicate in
 | 015 | Time a stranded `PROCESSING` payment out to `FAILED`, with the risk stated |
 | 016 | Deliver events in-process on a broker-shaped consumer contract, before Kafka |
 | 017 | Simulate providers through scheduled, signed callbacks — never an inline call |
+| 018 | Post the ledger from events, and keep its invariants in the database |
 
 Note that the SDD's Appendix D has its own ADR list with the same numbers and
 different decisions. When citing one, say which source you mean.
@@ -538,7 +545,7 @@ expiry sweep, the `PROCESSING` timeout and the abandoned-checkout sweep. Every s
 intent enum is now reachable except `PARTIALLY_REFUNDED` and `REFUNDED`, which belong to the
 Refund capability and are verified unreachable by grep.
 
-**The Provider Simulator is built.** What is left in Phase 1: **Ledger** → **Refund**.
+**The Provider Simulator and the Ledger are built.** What is left in Phase 1: **Refund**.
 
 Three things were waiting on the simulator, and it is worth being precise about which of them it
 actually closed, because the temptation to overclaim is real:
@@ -556,17 +563,19 @@ actually closed, because the temptation to overclaim is real:
 - **Per-provider credentials: still open**, and argued in ADR-017 §3 to be closer rather than
   further, since the signing secret is now read at exactly one place.
 
-The Ledger stays last in Phase 1 and last to be extracted. It is the financial source of
-truth: double-entry, immutable entries, corrections as reversal transactions rather than
-edits. Until it exists, a `SUCCEEDED` payment is operational state and nothing more — no
-balance moves anywhere in this codebase.
+The Ledger stays last to be extracted, and now exists (ADR-018). A `SUCCEEDED` payment is
+no longer operational state and nothing more: it posts. What the Ledger does **not** have
+is the half Refund needs — there is no reversal path, because nothing yet has anything to
+reverse. The immutability triggers are what make a reversal the only available option when
+it arrives rather than the disciplined one.
 
-**Event delivery is no longer a gap, and the Ledger is what it unblocks.** The relay,
-dispatcher and inbox exist (ADR-016), `orders.status` reaches `PAID`, and the consumer contract
-is deliberately the one a Kafka consumer would need — an envelope in, `processed_events` dedup,
-an idempotent handler — so the Ledger can be written as a second `EventHandler` on
-`payment.succeeded` and will not have to be rewritten when the transport changes. That is the
-whole argument for building delivery before the Ledger rather than after it.
+**Event delivery paid for itself exactly as ADR-016 predicted.** The consumer contract was
+deliberately the one a Kafka consumer would need — an envelope in, `processed_events` dedup,
+an idempotent handler — so that the Ledger could be written as a second `EventHandler` on
+`payment.succeeded` without touching anything shared. It was: the Ledger's consumer is one
+class, one `@Bean` in its own configuration, and no change to Order, Payment or `shared`.
+Two consumers now read one event and dedupe independently, which is the first real exercise
+of `processed_events` being keyed on `(consumer_name, event_id)` rather than the event alone.
 
 What is still missing on the delivery side is the operational half rather than the mechanism:
 no dead-letter, no attempt counter, no "oldest unpublished event age" alert (open item 14).
