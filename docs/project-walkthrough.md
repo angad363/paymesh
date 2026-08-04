@@ -3,9 +3,9 @@
 _A walkthrough of everything built so far, why each piece exists, how to exercise it in
 Postman, and what the Software Design Document still calls for that has not been written._
 
-_Written 2 August 2026, from the code — not from the older summaries. Where `README.md`
-and `docs/project-status.md` disagree with this file, this file matched the source when it
-was written._
+_Written 2 August 2026, revised 4 August 2026 for ADR-025 and ADR-026, from the code — not
+from the older summaries. Where `README.md` and `docs/project-status.md` disagree with this
+file, this file matched the source when it was written._
 
 ---
 
@@ -584,8 +584,8 @@ cd backend
 ./mvnw spring-boot:run     # port 8080; activates the dev profile via pom.xml
 ```
 
-**For the last four folders you need both timers on**, because the `dev` profile switches them off
-— it is the profile the test suite runs under, and a timer moving money mid-assertion is a flake
+**Most of the later folders need timers on**, because the `dev` profile switches every one of them
+off — it is the profile the test suite runs under, and a timer moving money mid-assertion is a flake
 generator:
 
 ```bash
@@ -597,6 +597,22 @@ PAYMESH_EVENTS_OUTBOX_RELAY_ENABLED=true \
 Without them, "Event delivery", "Provider Simulator", "Ledger" and "Refund" exhaust their polls and
 fail — which is the honest outcome rather than a skip.
 
+**The Reconciliation folder needs a different combination, and one of them inverted.** It reproduces
+a *lost* callback, so the simulator's dispatcher must stay **off** — with it on, the callback lands
+normally and there is no divergence to repair. Reconciliation itself runs hourly in production, which
+is far too slow for a Postman run, so shorten it:
+
+```bash
+PAYMESH_RECONCILIATION_ENABLED=true \
+PAYMESH_RECONCILIATION_INITIAL_DELAY=3s \
+PAYMESH_RECONCILIATION_INTERVAL=5s \
+PAYMESH_EVENTS_OUTBOX_RELAY_ENABLED=true \
+./mvnw spring-boot:run
+```
+
+That is why the collection is not a single run end to end: "Provider Simulator" wants the dispatcher
+on and "Reconciliation" wants it off, and no one process satisfies both.
+
 If startup fails with `Property: paymesh.security.jwt.secret / Reason: must not be blank`,
 **the `dev` profile isn't active.** That's the guard working, not a misconfiguration.
 
@@ -605,9 +621,23 @@ Sanity check: `GET http://localhost:8080/actuator/health` → `{"status":"UP"}`.
 ### 5.1 The fast path — run the whole collection
 
 A Postman collection already exists at
-`docs/api/postman/paymesh.postman_collection.json`, with **14 folders and 197 requests**
+`docs/api/postman/paymesh.postman_collection.json`, with **16 folders and 218 requests**
 covering every route plus the failure cases. It's the fastest way to see everything work, and it
-passes clean: **486 assertions, 0 failures** on the run this sentence was written from.
+passes clean: **524 assertions, 0 failures** on the run this sentence was written from.
+
+**It did not pass clean before 4 August 2026, and the reason is worth knowing.** ADR-021 made
+`Merchant.register` land on `PENDING_VERIFICATION` rather than `ACTIVE`, and `MerchantStatusFilter`
+then refuses every merchant-scoped write with `MERCHANT_NOT_ACTIVE`. The collection had never caught
+up, so **321 of its assertions had been failing** — every folder past onboarding, on a 403 nobody had
+looked at. Two requests fix it: one activating each merchant the collection registers.
+
+Activation is `PLATFORM_ADMIN`-only (ADR-021: a merchant that could lift its own suspension would
+make suspension advisory), and **`PLATFORM_ADMIN` is not grantable through any endpoint** —
+`user_roles.merchant_id` is `NOT NULL`, which is open item 16. So those two requests *mint* an HS256
+token with the dev signing secret, exactly as `MerchantGovernanceIntegrationTest` forges the claim
+and exactly as this collection already signs provider callbacks with the published dev HMAC secret.
+It works only on the `dev` profile; outside it `DevelopmentSecretGuard` refuses to start on that
+secret at all.
 
 ```bash
 npx newman run docs/api/postman/paymesh.postman_collection.json \
@@ -929,16 +959,15 @@ the honest accounting.
 None are left. All three that used to head this list are built, and it is worth saying what each
 did *not* close, because it would be easy to assume otherwise:
 
-- **The simulator** produced the reconciliation **file** the 1-hour timeout's recovery leans on,
-  but **not the recovery job**, which still does not exist. It also cannot send *refund*
-  callbacks — its outbound-callback model is shaped around payments — so the one hand-signed
-  request left in this project is a refund result. ADR-017 and ADR-019.
+- **The simulator** produced the reconciliation **file** the 1-hour timeout's recovery leans on.
+  Since ADR-026 **the recovery job exists and reads it** — see §6.4. The simulator still cannot
+  send *refund* callbacks (its outbound-callback model is shaped around payments), so the one
+  hand-signed request left in this project is a refund result. ADR-017 and ADR-019.
 - **The Ledger** posts, reports a balance and now reverses, but has **no holds and no fee
   split** — each waits on the thing that would use it. ADR-018.
-- **Refund** has no ops retry route and, more importantly, **nothing reconciles a refund whose
-  callback never arrives**: it stays `PROCESSING` forever, holding its amount against the
-  captured total. Payment has a timeout sweeper for exactly this shape and Refund has no
-  equivalent. ADR-019.
+- **Refund** has no ops retry route. Its bigger gap is closed twice over: ADR-023 gave it a timeout
+  sweeper so a lost callback no longer holds its amount against the captured total forever, and
+  ADR-026 lets the provider's own record overrule that sweeper's guess. ADR-019.
 
 | Capability | SDD | What it would do | Why it's next / not next |
 |---|---|---|---|
@@ -961,12 +990,43 @@ operational work in §6.3._
 | Piece | SDD | State |
 |---|---|---|
 | **Event delivery** | §22.3–22.4 | **Built** (ADR-016): a scheduled relay, an in-process dispatcher, a `processed_events` inbox, and Order's consumer of `payment.succeeded`. |
-| **Kafka** | §22.2, §24 | Not built, deliberately. The transport is a method call; the *consumer contract* is a broker's, so swapping it changes no consumer. What is genuinely missing is the operational half — no dead-letter, no attempt counter, no "oldest unpublished event age" alert. |
+| **Kafka** | §22.2, §24 | Not built, deliberately. The transport is a method call; the *consumer contract* is a broker's, so swapping it changes no consumer. **§24's operational half now exists** (ADR-025): an attempt counter, a dead-letter stamp, and an "oldest unpublished event age" alert on `/actuator/health`. |
 | **Redis** | §23.3 | Not built, deliberately. PostgreSQL is the durable authority for idempotency; Redis was only ever the accelerator. |
 | **Encryption at rest / key management** | §25 | Not built. Customer PII is plaintext. |
-| **Observability** | §26 | `/actuator/health` and `/actuator/info`. No OpenTelemetry, no metrics, no tracing, no correlation IDs. |
+| **Observability** | §26 | `/actuator/health` and `/actuator/info`. The health endpoint now carries the outbox backlog alert (ADR-025), and the `dev` profile shows its details. No OpenTelemetry, no metrics, no tracing, no correlation IDs. |
 | **Deployment / IaC** | §27 | Nothing. Docker, Kubernetes, Helm, Terraform — all planned, none written. `infrastructure/` and `scripts/` are empty. |
-| **End-to-end workflows** | §21 | Only the create-order → collect prefix. §21.4 reconciliation is absent. |
+| **End-to-end workflows** | §21 | create-order → collect → refund, and **§21.4 reconciliation is built** (ADR-026). |
+
+### 6.4 The two operational gaps that closed on 4 August 2026
+
+Both had stood since the sessions that named them, and both were the kind of gap that is invisible
+until it costs money.
+
+**A failing event used to freeze its aggregate forever** (ADR-025). The relay retried it at the head
+of every pass and deferred that aggregate's later events behind it to preserve ordering — correct
+while the failure is transient, catastrophic when it is not. There was no dead letter, no attempt
+counter and no alert, so the relay could not tell a first failure from a nine-hundredth. V21 gives
+each row `attempt_count`, `last_error` and `dead_lettered_at`; the attempt that spends the budget
+drops the row out of the claim query, and **the aggregate behind it drains on the next pass**. The
+event is retained rather than deleted, requeued with `SET dead_lettered_at = NULL`, and its absence
+is reported on `/actuator/health` until someone acts.
+
+**Nothing read the provider's daily record** (ADR-026). `GET /sim/v1/reconciliation/{date}` had
+existed since ADR-017 — its own javadoc said *"This is the input. It is not the job."* Meanwhile
+ADR-015 was failing stranded payments on an admitted guess, and when the provider had in fact
+collected, PayMesh held a `FAILED` payment, the Ledger never posted, and the merchant was short
+permanently and silently. The job now fetches that record over HTTP and **replays** every terminal
+row through the same callback service a real callback goes through, so the amount check, the
+staleness guard and the outbox event that makes the Ledger post are all the existing ones. Run the
+"Reconciliation" Postman folder to watch a collected-but-unreported payment go from `PROCESSING` to
+`SUCCEEDED` to an order reading `PAID`, with no callback anywhere in the sequence.
+
+One consequence is worth stating on its own, because it changed shipped behaviour: **a payment
+`FAILED` by the timeout sweep no longer absorbs a late provider outcome.** That state records that
+nobody answered rather than that something happened, so the provider's word still settles it. It is
+gated on the sweeper's own failure code — a payment the provider *declined* stays terminal forever —
+and refused outright if the merchant has since opened another intent on that order, because ADR-011
+makes one live intent per order the thing that stops one obligation being collected twice.
 
 ---
 
@@ -1018,10 +1078,12 @@ ever stops being true.
 - **Delivery is at-least-once and can never be exactly-once.** The relay stamps
   `published_at` in a *different* transaction from the one a consumer commits in, so a crash
   between them redelivers the event. That is what the inbox is for.
-- **An event that fails forever freezes its own aggregate forever.** It is retried at the head
-  of every pass, and its aggregate's later events wait behind it so nothing is delivered out
-  of order. Everything else drains. There is no dead-letter table and no alert, only a warning
-  in the log per pass — the largest known hole in the design, and named as such in ADR-016.
+- **An event that fails is retried at the head of every pass, and its aggregate's later events
+  wait behind it** so nothing is delivered out of order. Everything else drains. Until ADR-025
+  that wait was *forever* — the largest known hole in the design, named as such in ADR-016 — and
+  it is now bounded: after `max-attempts` failures (25, about a minute) the relay gives up, the
+  row leaves the claim query, and the aggregate drains. The event is retained rather than
+  delivered, which is a real loss, and `/actuator/health` reports DOWN until someone requeues it.
 
 ---
 
@@ -1033,8 +1095,13 @@ cd backend
 ./mvnw spring-boot:run          # port 8080
 ```
 
-The documented count is **1031 tests, 0 failures**, across 16 Flyway migrations (V1–V16)
-and 19 ADRs.
+The documented count is **1176 tests, 0 failures**, across 22 Flyway migrations (V1–V22)
+and 26 ADRs.
+
+The Postman collection is a second, independent check and worth running after any change to the
+HTTP surface — it exercises the routes rather than the services, and it caught a 321-assertion
+regression that the Java suite could not see, because the suite builds its merchants through the
+repository rather than through onboarding. See §5.1.
 
 Integration tests run against a throwaway PostgreSQL container, so Flyway migrates an empty
 database on every run and the migrations are re-proved rather than assumed.

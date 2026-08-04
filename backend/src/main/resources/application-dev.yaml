@@ -115,3 +115,18 @@ paymesh:
       # test suite runs under, and a timer firing mid-test is a flake nobody can
       # reproduce. The service is a plain class, so tests drive it directly.
       enabled: false
+
+# --- Actuator (dev only) ------------------------------------------------------
+# THE PRODUCTION DEFAULT IS show-details: never, and it stays that way. This
+# overrides it for development ONLY, and the reason is ADR-025: the outbox
+# backlog indicator's whole value is two numbers -- how old the oldest
+# undelivered event is, and how many the relay has given up on -- and with
+# details hidden, /actuator/health reports a bare UP/DOWN and a developer cannot
+# see either. An alert nobody can read the detail of is half an alert.
+#
+# Safe here and nowhere else: this profile already carries published secrets and
+# refuses to coexist with any other profile (DevelopmentSecretGuard).
+management:
+  endpoint:
+    health:
+      show-details: always
