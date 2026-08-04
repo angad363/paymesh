@@ -21,8 +21,11 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1174 tests, 0 failures.** Twenty-two Flyway migrations (V1–V22). Twenty-six ADRs. The Postman
-collection runs fourteen folders, the newest showing money go back out.
+**1176 tests, 0 failures.** Twenty-two Flyway migrations (V1–V22). Twenty-six ADRs. The Postman
+collection runs **sixteen folders and 210 requests green** (a newman run executes 218 of them and
+524 assertions, because the polling requests re-run themselves) — the newest two showing
+a lost callback repaired from the provider's own record, and the outbox alert on
+`/actuator/health`.
 
 **Phase 1 is complete, including its operational half.** The last PR closed the three things that
 were still only described: the outbox relay now gives up on an event rather than freezing its
@@ -643,7 +646,20 @@ failing test._
    unresolved would make that number permanently large and meaningless — the same always-red-equals-
    off failure the outbox health indicator avoids. `REPAIRED` is exact either way. Closing it needs
    a distinct value on Refund's outcome enum, which is Refund's PR.
-16. **Smaller:** `DevelopmentSecretGuard` surfaces as a raw stack trace rather than the
+16. ~~**The Postman collection had been failing 321 assertions since ADR-021.**~~ **CLOSED, and
+   worth keeping visible.** `Merchant.register` lands on `PENDING_VERIFICATION`, and
+   `MerchantStatusFilter` then refuses every merchant-scoped write with `MERCHANT_NOT_ACTIVE` — so
+   from the moment merchant lifecycle enforcement shipped, every folder past onboarding 403'd. The
+   collection was never re-run, so nobody saw it. Two activation requests fix it and the collection
+   is green again (218 requests, 524 assertions).
+
+   **The lesson is about what the Java suite cannot see.** 1176 tests passed throughout, because
+   integration tests build their merchants through `MerchantRepository.save(...).activate(...)`
+   rather than through the onboarding endpoint. The suite never walked the path a real integrator
+   walks, so a change that made the product unusable from outside was invisible from inside. The
+   Postman collection is the only check that exercises routes rather than services, and it is worth
+   running after any change to the HTTP surface.
+17. **Smaller:** `DevelopmentSecretGuard` surfaces as a raw stack trace rather than the
     tidy `APPLICATION FAILED TO START` block a `FailureAnalyzer` would give it;
     `ModuleBoundaryTest` allowlists by *filename* rather than path, so a
     `OrderConfiguration.java` created under `order/application` would pass;
@@ -691,11 +707,14 @@ Nothing in Phase 1 blocks any of them.
 Two pieces of housekeeping worth doing before or alongside the first Phase-2 capability, neither
 large:
 
-- **The Postman collection and `project-walkthrough.md` have not caught up with ADR-025 and
-  ADR-026.** No folder exercises reconciliation, and the walkthrough's §6.3 still lists event
-  delivery's operational half as missing.
-- **Open item 15's list of smaller defects has not been worked through** and has been growing for
+- **Open item 16's list of smaller defects has not been worked through** and has been growing for
   several sessions. It is the cheapest quality win available.
+- **`PLATFORM_ADMIN` is not grantable, and that is now load-bearing rather than cosmetic.** It sits
+  in open item 17 as a one-line curiosity — `user_roles.merchant_id` is `NOT NULL`, so no endpoint
+  can produce one. But activation is `PLATFORM_ADMIN`-only, and a merchant that cannot be activated
+  can do nothing at all: the Postman collection has to MINT a token with the published dev secret to
+  get past onboarding. That works and is honest on the `dev` profile, and it is not a story that
+  survives contact with a real deployment.
 
 **The judgement call to revisit when a second provider arrives.** Reconciliation reads this
 provider's `TIMED_OUT` as "nothing was collected", which is true of the simulator's file because
