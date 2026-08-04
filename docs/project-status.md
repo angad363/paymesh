@@ -22,7 +22,8 @@ A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliv
 consumers, and Order is the first consumer (ADR-016).
 
 **1176 tests, 0 failures.** Twenty-two Flyway migrations (V1–V22). Twenty-six ADRs. The Postman
-collection runs **sixteen folders, 218 requests, 524 assertions, 0 failures** — the newest two showing
+collection runs **sixteen folders and 210 requests green** (a newman run executes 218 of them and
+524 assertions, because the polling requests re-run themselves) — the newest two showing
 a lost callback repaired from the provider's own record, and the outbox alert on
 `/actuator/health`.
 

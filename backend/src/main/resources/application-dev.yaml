@@ -124,8 +124,12 @@ paymesh:
 # details hidden, /actuator/health reports a bare UP/DOWN and a developer cannot
 # see either. An alert nobody can read the detail of is half an alert.
 #
-# Safe here and nowhere else: this profile already carries published secrets and
-# refuses to coexist with any other profile (DevelopmentSecretGuard).
+# Safe here because the override lives in the dev profile document and applies
+# nowhere else. Note what does NOT protect it: DevelopmentSecretGuard refuses
+# COMMITTED SECRET VALUES outside a dev-only profile set -- it does not stop
+# `dev` being activated alongside another profile with real secrets supplied,
+# and in that combination these details would be exposed. Activating dev in a
+# deployment is the mistake; this is one of the things it would cost.
 management:
   endpoint:
     health:

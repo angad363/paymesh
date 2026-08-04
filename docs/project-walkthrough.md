@@ -621,9 +621,12 @@ Sanity check: `GET http://localhost:8080/actuator/health` → `{"status":"UP"}`.
 ### 5.1 The fast path — run the whole collection
 
 A Postman collection already exists at
-`docs/api/postman/paymesh.postman_collection.json`, with **16 folders and 218 requests**
+`docs/api/postman/paymesh.postman_collection.json`, with **16 folders and 210 requests**
 covering every route plus the failure cases. It's the fastest way to see everything work, and it
-passes clean: **524 assertions, 0 failures** on the run this sentence was written from.
+passes clean: a full newman run executes **218 requests and 524 assertions, 0 failures**.
+
+(More executed than defined, because the polling requests re-run themselves with
+`postman.setNextRequest` until the timer they are waiting on fires.)
 
 **It did not pass clean before 4 August 2026, and the reason is worth knowing.** ADR-021 made
 `Merchant.register` land on `PENDING_VERIFICATION` rather than `ACTIVE`, and `MerchantStatusFilter`
