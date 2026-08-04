@@ -24,5 +24,16 @@ public enum SecurityEventType {
      * departed-employee case, and deliberately not the same event as a suspension -- one is the
      * merchant's own business, the other is the platform's (ADR-024).
      */
-    MERCHANT_ACCESS_REVOKED
+    MERCHANT_ACCESS_REVOKED,
+
+    /**
+     * PLATFORM SCOPE, and the widest grant this platform has: authority over every tenant,
+     * including the power to activate, suspend and close merchants (ADR-027).
+     * <p>
+     * Both of these revoke every live session -- promotion so the new claim is reissued at once,
+     * demotion so the old one stops working -- so without their own names both would show up in
+     * the log as somebody signing out.
+     */
+    PLATFORM_ADMIN_GRANTED,
+    PLATFORM_ADMIN_REVOKED
 }

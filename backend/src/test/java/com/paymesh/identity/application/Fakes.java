@@ -60,6 +60,13 @@ final class Fakes {
             return Optional.ofNullable(byId.get(userId.value()));
         }
 
+        @Override
+        public long countPlatformAdmins() {
+            return byId.values().stream()
+                .filter(user -> user.hasPlatformRole(com.paymesh.identity.domain.Role.PLATFORM_ADMIN))
+                .count();
+        }
+
         void remove(UserId userId) {
             byId.remove(userId.value());
         }

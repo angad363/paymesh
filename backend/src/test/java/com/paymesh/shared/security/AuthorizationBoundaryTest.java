@@ -70,7 +70,29 @@ class AuthorizationBoundaryTest {
 
     @Test
     void allowsPlatformActionsToPlatformStaff() {
-        assertThat(callerWith(CallerRole.PLATFORM_ADMIN).requirePlatformAdmin()).isEqualTo(USER);
+        AuthenticatedCaller caller = new AuthenticatedCaller(
+            USER, Map.of(), EnumSet.of(CallerRole.PLATFORM_ADMIN)
+        );
+
+        assertThat(caller.requirePlatformAdmin()).isEqualTo(USER);
+    }
+
+    /**
+     * PLATFORM_ADMIN HELD AT A MERCHANT IS NOT PLATFORM AUTHORITY, and this is the assertion that
+     * says so.
+     *
+     * <p>It is the shape {@code requirePlatformAdmin()} used to accept -- it scanned every merchant
+     * for the role -- and the shape a merchant admin would produce if they could grant it to
+     * themselves. Three things now refuse it independently: {@code ck_user_roles_scope} will not
+     * store it, {@code User.grantRoleAt} will not build it, and this, which will not read it.
+     */
+    @Test
+    void refusesPlatformAuthorityToAMerchantScopedGrant() {
+        AuthenticatedCaller caller = callerWith(CallerRole.PLATFORM_ADMIN);
+
+        assertThatThrownBy(caller::requirePlatformAdmin)
+            .isInstanceOf(InsufficientRoleException.class)
+            .hasMessageContaining("PLATFORM_ADMIN");
     }
 
     /**

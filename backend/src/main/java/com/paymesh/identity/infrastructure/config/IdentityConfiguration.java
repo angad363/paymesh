@@ -17,6 +17,7 @@ import com.paymesh.identity.infrastructure.persistence.jpa.SpringDataUserReposit
 import com.paymesh.identity.infrastructure.security.BCryptPasswordHasher;
 import com.paymesh.identity.infrastructure.security.JwtAccessTokenService;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -29,7 +30,7 @@ import java.time.Clock;
  * Spring annotations; they are plain objects assembled here, which is what keeps
  * them testable without a container.
  *
- * <p>The Clock bean is not declared here: MerchantConfiguration already provides
+ * <p>The Clock bean is not declared here: SharedConfiguration already provides
  * one and a second would be an ambiguous-bean failure at startup.
  */
 @Configuration
@@ -130,5 +131,33 @@ public class IdentityConfiguration {
             userRepository, refreshTokenRepository, securityEventRepository, transactionTemplate,
             clock
         );
+    }
+
+    /**
+     * Promotes the configured email to PLATFORM_ADMIN at startup, if the platform has none.
+     *
+     * <h2>THE ONLY WAY THE FIRST PLATFORM ADMIN CAN EXIST</h2>
+     *
+     * {@code POST /api/v1/users/{id}/platform-admin} requires a caller who already holds the role,
+     * so on a fresh database it can never mint the first one -- and without one, no merchant can
+     * be activated and nothing merchant-scoped works at all. ADR-027.
+     *
+     * <h2>A RUNNER, NOT AN {@code @EventListener} ON ApplicationReadyEvent</h2>
+     *
+     * An {@code ApplicationRunner} that throws stops the boot. That is the behaviour worth having:
+     * if the bootstrap is misconfigured badly enough to fail, a platform that started anyway would
+     * be one nobody can administer, and it would look healthy. A ready-event listener swallows the
+     * failure into a log line.
+     *
+     * <p>Blank property -> the runner does nothing at all, which is the normal case for every boot
+     * after the first and for every test. {@code ManageUserAccessService} makes it idempotent
+     * regardless, so leaving it set does not re-promote a deliberately demoted admin.
+     */
+    @Bean
+    ApplicationRunner platformAdminBootstrap(
+        ManageUserAccessService manageUserAccessService,
+        @Value("${paymesh.security.bootstrap-platform-admin-email:}") String bootstrapEmail
+    ) {
+        return args -> manageUserAccessService.bootstrapPlatformAdmin(bootstrapEmail);
     }
 }

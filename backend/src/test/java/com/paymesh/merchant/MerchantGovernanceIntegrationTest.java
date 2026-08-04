@@ -317,9 +317,15 @@ class MerchantGovernanceIntegrationTest {
         return caller("MERCHANT_USER:" + merchantId.value());
     }
 
-    /** Platform staff hold the role at a merchant, but the authority is platform-wide. */
+    /**
+     * Platform staff hold the role with NO merchant at all, which is the whole point of ADR-027.
+     * <p>
+     * This used to read {@code "PLATFORM_ADMIN:" + MerchantId.generate()} and pass, because
+     * {@code requirePlatformAdmin()} accepted the role at any merchant. That shape is now
+     * discarded rather than honoured -- see {@code refusesPlatformAuthorityToAMerchantScopedGrant}.
+     */
     private static RequestPostProcessor platformAdmin() {
-        return caller("PLATFORM_ADMIN:" + MerchantId.generate().value());
+        return caller("PLATFORM_ADMIN");
     }
 
     private static RequestPostProcessor caller(String scopedRole) {

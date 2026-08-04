@@ -17,4 +17,14 @@ public interface UserRepository {
 
     /** Everyone holding any role at this merchant. What an admin needs before revoking anybody. */
     java.util.List<User> findByMerchant(com.paymesh.shared.tenant.MerchantId merchantId);
+
+    /**
+     * How many users hold PLATFORM_ADMIN platform-wide.
+     *
+     * <p>A count rather than a list because the only question asked of it is "would demoting this
+     * person leave zero" -- and loading every platform admin to answer it would be a list built to
+     * be thrown away. Returning zero is possible and is the state the startup bootstrap exists to
+     * leave behind (ADR-027).
+     */
+    long countPlatformAdmins();
 }

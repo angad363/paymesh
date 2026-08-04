@@ -117,6 +117,16 @@ public final class JwtAccessTokenService implements AccessTokenService {
      * Roles travel as {@code "<ROLE>:<merchantId>"} rather than a single merchant
      * claim, because one user can hold roles at several merchants and the scope has
      * to stay attached to the role it qualifies.
+     *
+     * <h2>A PLATFORM ROLE TRAVELS WITH NO COLON AT ALL</h2>
+     *
+     * {@code "PLATFORM_ADMIN"} on its own, not {@code "PLATFORM_ADMIN:<some merchant>"}. The
+     * absence of the separator IS the claim that this role is not held at a tenant, which is what
+     * lets {@code AuthenticatedCallers} tell the two apart without a second claim or a sentinel
+     * merchant id. ADR-027.
+     * <p>
+     * It is also backwards-safe in the direction that matters: the parser already skipped
+     * colon-less entries, so no token issued before V23 gains authority from this change.
      */
     private static List<String> scopedRoles(User user) {
         return user.roles().stream()
@@ -125,7 +135,9 @@ public final class JwtAccessTokenService implements AccessTokenService {
     }
 
     private static String scopedRole(RoleAssignment assignment) {
-        return assignment.role().name() + ":" + assignment.merchantId();
+        return assignment.isPlatformScoped()
+            ? assignment.role().name()
+            : assignment.role().name() + ":" + assignment.merchantId();
     }
 
     private static SecretKey secretKey(String secret) {

@@ -385,8 +385,9 @@ class UserLifecycleIntegrationTest {
         return callerFor(PLATFORM, "MERCHANT_ADMIN:" + merchantId.value());
     }
 
+    /** Platform staff hold the role with no merchant at all since ADR-027. */
     private static RequestPostProcessor platform() {
-        return callerFor(PLATFORM, "PLATFORM_ADMIN:" + MerchantId.generate().value());
+        return callerFor(PLATFORM, "PLATFORM_ADMIN");
     }
 
     private static RequestPostProcessor callerFor(String subject, String scopedRole) {

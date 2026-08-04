@@ -130,4 +130,42 @@ public final class UserAdminController {
             UserId.from(userId), caller.requirePlatformAdmin()
         ));
     }
+
+    /**
+     * Promotes a user to platform staff. THE WIDEST GRANT THIS API MAKES.
+     *
+     * <h2>PLATFORM_ADMIN ONLY, AND DELIBERATELY NOT ON THE MERCHANT-ACCESS ROUTE</h2>
+     *
+     * The merchant-access route above resolves the caller's own merchant and grants a role there.
+     * Routing platform promotion through it -- {@code role: "PLATFORM_ADMIN"} in that body --
+     * would mean any merchant admin could promote themselves out of their tenant, which is the
+     * escalation ADR-027 exists to close. It has its own path, its own authorization, and
+     * {@code User.grantRoleAt} plus {@code ck_user_roles_scope} refuse the other route
+     * independently.
+     *
+     * <h2>Where the FIRST one comes from</h2>
+     *
+     * Not from here -- an endpoint only a platform admin may call cannot mint the first platform
+     * admin. {@code PlatformAdminBootstrap} does, from a property, at startup.
+     */
+    @PostMapping("/{userId}/platform-admin")
+    UserAdminResponse grantPlatformAdmin(@PathVariable String userId, AuthenticatedCaller caller) {
+        return UserAdminResponse.from(manageUserAccess.grantPlatformAdmin(
+            UserId.from(userId), caller.requirePlatformAdmin()
+        ));
+    }
+
+    /**
+     * Demotes a user out of platform staff.
+     * <p>
+     * Refused when it would leave the platform with none -- checked as a count rather than as
+     * "is this me", because demoting the only OTHER admin reaches the same dead end from the
+     * other side.
+     */
+    @DeleteMapping("/{userId}/platform-admin")
+    UserAdminResponse revokePlatformAdmin(@PathVariable String userId, AuthenticatedCaller caller) {
+        return UserAdminResponse.from(manageUserAccess.revokePlatformAdmin(
+            UserId.from(userId), caller.requirePlatformAdmin()
+        ));
+    }
 }

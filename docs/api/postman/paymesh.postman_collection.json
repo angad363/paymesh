@@ -728,7 +728,7 @@
        "mode": "raw",
        "raw": "{\n  \"reason\": \"KYC cleared in the sandbox\"\n}"
       },
-      "description": "WITHOUT THIS REQUEST THE REST OF THIS COLLECTION 403s, AND SINCE ADR-021 IT ALWAYS HAS.\n\nMerchant.register lands on PENDING_VERIFICATION, not ACTIVE. MerchantStatusFilter then refuses every merchant-scoped write with MERCHANT_NOT_ACTIVE, so a freshly onboarded merchant can create no customer, no order and no payment. That is the intended product behaviour -- onboarding is not approval -- and the collection simply never caught up with it.\n\nACTIVATION IS PLATFORM STAFF'S ACT, NOT THE MERCHANT'S. A merchant able to lift its own suspension would make suspension advisory (ADR-021), so this route requires PLATFORM_ADMIN and is exempt from the status filter -- it necessarily acts on a merchant that is not yet ACTIVE.\n\nWHERE THE TOKEN COMES FROM, SAID PLAINLY. PLATFORM_ADMIN is not grantable through any endpoint: user_roles.merchant_id is NOT NULL, so no signup or role grant can produce one (open item 16). The pre-request script therefore MINTS an HS256 token with the dev signing secret, which is published in this repository -- the same thing MerchantGovernanceIntegrationTest does with a forged claim, and the same thing this collection already does when it signs provider callbacks with the dev HMAC secret.\n\nIT ONLY WORKS ON THE dev PROFILE. Outside it DevelopmentSecretGuard refuses to start on that secret at all, which is precisely the protection that makes doing this here acceptable."
+      "description": "WITHOUT THIS REQUEST THE REST OF THIS COLLECTION 403s, AND SINCE ADR-021 IT ALWAYS HAS.\n\nMerchant.register lands on PENDING_VERIFICATION, not ACTIVE. MerchantStatusFilter then refuses every merchant-scoped write with MERCHANT_NOT_ACTIVE, so a freshly onboarded merchant can create no customer, no order and no payment. That is the intended product behaviour -- onboarding is not approval -- and the collection simply never caught up with it.\n\nACTIVATION IS PLATFORM STAFF'S ACT, NOT THE MERCHANT'S. A merchant able to lift its own suspension would make suspension advisory (ADR-021), so this route requires PLATFORM_ADMIN and is exempt from the status filter -- it necessarily acts on a merchant that is not yet ACTIVE.\n\nWHERE THE TOKEN COMES FROM, SAID PLAINLY. PLATFORM_ADMIN IS grantable since ADR-027 -- V23 made user_roles.merchant_id nullable, POST /api/v1/users/{userId}/platform-admin promotes somebody, and the FIRST one comes from the startup property paymesh.security.bootstrap-platform-admin-email. A collection cannot restart the application, so it cannot walk that path; the pre-request script still MINTS an HS256 token with the dev signing secret, which is published in this repository. Same thing this collection already does when it signs provider callbacks with the dev HMAC secret.\n\nWHAT DID CHANGE IS THE CLAIM. A platform role now travels with NO ':merchantId' suffix, and the suffixed form is DISCARDED rather than read as platform authority -- it was the shape a merchant admin would produce promoting themselves out of their own tenant. This mint emits the bare 'PLATFORM_ADMIN', which is exactly what JwtAccessTokenService now issues for a real grant.\n\nIT ONLY WORKS ON THE dev PROFILE. Outside it DevelopmentSecretGuard refuses to start on that secret at all, which is precisely the protection that makes doing this here acceptable."
      },
      "event": [
       {
@@ -741,8 +741,9 @@
          "// 'roles' claim of ROLE:merchantId strings -- the scope is carried per role because one user",
          "// can hold roles at several merchants.",
          "//",
-         "// The merchant id on a PLATFORM_ADMIN role is not meaningful: the authority is platform-wide.",
-         "// MerchantGovernanceIntegrationTest generates a throwaway one for the same reason.",
+         "// NO MERCHANT SUFFIX. Since ADR-027 the ABSENCE of the ':merchantId' is what claims this role",
+         "// is platform-wide. The suffixed form is now DISCARDED rather than honoured: it was the",
+         "// escalation shape, a merchant admin promoting themselves out of their own tenant.",
          "const secret = 'dev-only-insecure-jwt-signing-secret-change-me';",
          "const now = Math.floor(Date.now() / 1000);",
          "",
@@ -757,7 +758,7 @@
          "    iat: now,",
          "    exp: now + 900,",
          "    email: 'platform-admin@paymesh.test',",
-         "    roles: ['PLATFORM_ADMIN:' + pm.collectionVariables.get('merchantId')]",
+         "    roles: ['PLATFORM_ADMIN']",
          "});",
          "",
          "const signature = b64url(CryptoJS.HmacSHA256(header + '.' + payload, secret));",
@@ -1715,8 +1716,8 @@
         "type": "text/javascript",
         "exec": [
          "// Same mint as the first activation, scoped to the second merchant. PLATFORM_ADMIN authority is",
-         "// platform-wide, so the merchant id on the role is not meaningful -- but keeping them distinct",
-         "// makes the two tokens tell their own story in a log.",
+         "// platform-wide and carries no merchant at all since ADR-027 -- but the two mints stay separate",
+         "// so each token tells its own story in a log.",
          "const secret = 'dev-only-insecure-jwt-signing-secret-change-me';",
          "const now = Math.floor(Date.now() / 1000);",
          "",
@@ -1731,7 +1732,7 @@
          "    iat: now,",
          "    exp: now + 900,",
          "    email: 'platform-admin@paymesh.test',",
-         "    roles: ['PLATFORM_ADMIN:' + pm.collectionVariables.get('otherMerchantId')]",
+         "    roles: ['PLATFORM_ADMIN']",
          "});",
          "",
          "const signature = b64url(CryptoJS.HmacSHA256(header + '.' + payload, secret));",

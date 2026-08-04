@@ -30,4 +30,20 @@ public interface SpringDataUserRepository extends JpaRepository<UserJpaEntity, S
         order by u.createdAt
         """)
     java.util.List<UserJpaEntity> findByMerchant(@Param("merchantId") String merchantId);
+
+    /**
+     * How many users hold PLATFORM_ADMIN platform-wide.
+     * <p>
+     * {@code r.merchantId is null} is the whole scope test since V23 -- and it is redundant with
+     * {@code ck_user_roles_scope}, which already refuses to store PLATFORM_ADMIN any other way.
+     * Stated anyway: this count guards the last-admin rule, and a query that would silently start
+     * counting merchant-scoped rows if that constraint were ever relaxed is not one to leave
+     * implicit.
+     */
+    @Query("""
+        select count(distinct u.userId) from UserJpaEntity u
+        join u.roles r
+        where r.role = 'PLATFORM_ADMIN' and r.merchantId is null
+        """)
+    long countPlatformAdmins();
 }

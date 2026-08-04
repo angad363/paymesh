@@ -1,7 +1,9 @@
 package com.paymesh.identity.api;
 
 import com.paymesh.identity.application.CannotRevokeOwnAccessException;
+import com.paymesh.identity.application.LastPlatformAdminException;
 import com.paymesh.identity.application.UserNotFoundException;
+import com.paymesh.identity.domain.UserHoldsNoPlatformRoleException;
 import com.paymesh.identity.domain.UserHoldsNoRoleAtMerchantException;
 import com.paymesh.identity.domain.UserAlreadyHoldsRoleException;
 import com.paymesh.identity.domain.UserStatusNotChangeableException;
@@ -26,6 +28,26 @@ public final class UserAdminExceptionHandler {
     @ResponseStatus(HttpStatus.NOT_FOUND)
     ApiErrorResponse handleUserNotFound(RuntimeException exception) {
         return ApiErrorResponse.of("USER_NOT_FOUND", "No such user.");
+    }
+
+    /**
+     * 404: there is no such platform grant to remove.
+     * <p>
+     * Its own code rather than reuse of USER_NOT_FOUND, and its own message, because the
+     * enumeration argument above does not apply here -- the caller is already platform staff, so
+     * there is nothing they could learn that they cannot already read from the user list.
+     */
+    @ExceptionHandler(UserHoldsNoPlatformRoleException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    ApiErrorResponse handleNoPlatformRole(UserHoldsNoPlatformRoleException exception) {
+        return ApiErrorResponse.of("USER_HOLDS_NO_PLATFORM_ROLE", exception.getMessage());
+    }
+
+    /** 409: demoting this one would leave the platform unable to activate any merchant. */
+    @ExceptionHandler(LastPlatformAdminException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    ApiErrorResponse handleLastPlatformAdmin(LastPlatformAdminException exception) {
+        return ApiErrorResponse.of("LAST_PLATFORM_ADMIN", exception.getMessage());
     }
 
     @ExceptionHandler(UserStatusNotChangeableException.class)

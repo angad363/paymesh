@@ -21,11 +21,15 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1176 tests, 0 failures.** Twenty-two Flyway migrations (V1–V22). Twenty-six ADRs. The Postman
-collection runs **sixteen folders and 210 requests green** (a newman run executes 218 of them and
-524 assertions, because the polling requests re-run themselves) — the newest two showing
+**1196 tests, 0 failures.** Twenty-three Flyway migrations (V1–V23). Twenty-seven ADRs. The Postman
+collection runs **sixteen folders green** (a newman run executes 213 requests and 519 assertions;
+the count varies because the polling requests re-run themselves) — the newest two showing
 a lost callback repaired from the provider's own record, and the outbox alert on
 `/actuator/health`.
+
+**Phase 2 has started.** See `docs/phase-2-plan.md` for the eight-PR plan and "What comes next"
+below for where it stands. PR 0 (ADR-027) is merged: `PLATFORM_ADMIN` is grantable, so the platform
+can be administered without minting a token from the published dev signing key.
 
 **Phase 1 is complete, including its operational half.** The last PR closed the three things that
 were still only described: the outbox relay now gives up on an event rather than freezing its
@@ -668,13 +672,20 @@ failing test._
     the dependency direction inverts; the idempotency filter's several-merchants branch
     is untested and its replay hard-codes `Content-Type: application/json`;
     `JwtSecretGuards` imports the guard directly, so the suite would not notice if it
-    stopped being component-scanned; `IdentityConfiguration`'s javadoc credits
-    `MerchantConfiguration` for the `Clock` bean (it is `SharedConfiguration`); the
+    stopped being component-scanned; the
     customer API's `@Email` rejects a padded address where merchant's tolerates one;
-    `PLATFORM_ADMIN` and `SERVICE_ACCOUNT` exist in the enum but are not grantable
-    (`user_roles.merchant_id` is `NOT NULL`); writes use `saveAndFlush`, which costs
+    `SERVICE_ACCOUNT` exists in the enum but is not grantable
+    (deliberate since ADR-027 — machines authenticate with merchant API credentials, so a
+    platform-wide service account needs a different issuer); writes use `saveAndFlush`, which costs
     one `SELECT` before each `INSERT`; `rest-api-conventions.md` prescribes 422 for
     validation failures where the code returns 400.
+    <br>~~`IdentityConfiguration`'s javadoc credits `MerchantConfiguration` for the `Clock`
+    bean~~ and ~~`PLATFORM_ADMIN` is not grantable~~ are **closed by ADR-027**.
+
+18. **`SERVICE_ACCOUNT` is the last unreachable enum constant on the platform**, and unlike the
+    ones ADR-021/024/027 closed it is unreachable *by decision* rather than by oversight.
+    `ck_user_roles_scope` keeps it merchant-scoped; nothing mints one. Recorded so the next audit
+    does not rediscover it as a bug.
 
 ---
 
@@ -701,20 +712,38 @@ the whole safety argument and is pinned down directly in `PaymentIntentTest`.
 
 ### What is genuinely next
 
-**Phase 2, in SDD order: Risk (§14), Settlement (§17), Webhook (§18), Notification/Reporting (§19–20).**
-Nothing in Phase 1 blocks any of them.
+**Phase 2 has started.** `docs/phase-2-plan.md` is the plan of record: eight PRs, with migration and
+ADR numbers pre-assigned so parallel worktrees cannot collide on them. The ordering is
+value-and-dependency first rather than SDD order, because Webhook, Notification and Reporting are
+pure event consumers that depend on nothing, and only Settlement has a real prerequisite (the
+Ledger's `MERCHANT_AVAILABLE` account, which `AccountType`'s own javadoc names as missing).
 
-Two pieces of housekeeping worth doing before or alongside the first Phase-2 capability, neither
-large:
+| PR | Delivers | Depends on | Migrations | ADR |
+|---|---|---|---|---|
+| 0 ✅ | `PLATFORM_ADMIN` grantable | — | V23 | ADR-027 |
+| 1 | Webhook | — | V24–V25 | ADR-028 |
+| 2 | Risk | — | V26–V27 | ADR-029 |
+| 3 | Ledger available balance | — | V28–V29 | ADR-030 |
+| 4 | Settlement | PR3 | V30–V32 | ADR-031 |
+| 5 | Notification | — | V33 | ADR-032 |
+| 6 | Reporting | PR4 (content) | V34–V35 | ADR-033 |
+| 7 | Audit | PR2, PR4 (subjects) | V36 | ADR-034 |
 
-- **Open item 16's list of smaller defects has not been worked through** and has been growing for
-  several sessions. It is the cheapest quality win available.
-- **`PLATFORM_ADMIN` is not grantable, and that is now load-bearing rather than cosmetic.** It sits
-  in open item 17 as a one-line curiosity — `user_roles.merchant_id` is `NOT NULL`, so no endpoint
-  can produce one. But activation is `PLATFORM_ADMIN`-only, and a merchant that cannot be activated
-  can do nothing at all: the Postman collection has to MINT a token with the published dev secret to
-  get past onboarding. That works and is honest on the `dev` profile, and it is not a story that
-  survives contact with a real deployment.
+**PR 0 is merged.** ~~`PLATFORM_ADMIN` is not grantable~~ — closed by **ADR-027**. V23 makes
+`user_roles.merchant_id` nullable behind a biconditional CHECK, a platform role travels in the claim
+with no `:merchantId` suffix at all, and the first admin comes from a startup property that promotes
+an existing account rather than seeding a password hash into a migration. The escalation the
+nullability would have opened — a merchant admin granting themselves `PLATFORM_ADMIN` at their own
+tenant, which `requirePlatformAdmin()` used to read as platform authority — is refused
+independently by the constraint, the aggregate and the claim parser.
+
+Still outstanding from that list:
+
+- **Open item 17's remaining defects have not been worked through**, including the one real bug in
+  it: both sweeps map their candidate rows *outside* the per-item try/catch, so one unmappable row
+  disables a sweep permanently and silently (open item 2). Latent rather than live — reaching it
+  needs database state the current CHECKs forbid — but it is on the money path and it is the
+  cheapest quality win available. Worth its own PR rather than riding along with a capability.
 
 **The judgement call to revisit when a second provider arrives.** Reconciliation reads this
 provider's `TIMED_OUT` as "nothing was collected", which is true of the simulator's file because

@@ -107,6 +107,27 @@ paymesh:
       # inside each hash, so a change re-hashes on next login rather than
       # invalidating existing passwords.
       bcrypt-strength: 10
+    # THE EMAIL OF THE FIRST PLATFORM ADMIN. Empty by default, and empty means the
+    # bootstrap does nothing at all.
+    #
+    # WHY THIS PROPERTY HAS TO EXIST. Merchant activation is PLATFORM_ADMIN-only, and
+    # MerchantStatusFilter refuses every merchant-scoped write until a merchant is
+    # ACTIVE -- so a platform with no admin cannot activate a merchant, and a merchant
+    # that cannot be activated can do nothing at all. But
+    # POST /api/v1/users/{id}/platform-admin requires a caller who ALREADY holds the
+    # role, so on a fresh database no API call can produce the first one. ADR-027.
+    #
+    # IT PROMOTES AN EXISTING ACCOUNT AND NEVER CREATES ONE. Register the human through
+    # POST /api/v1/auth/register first, then name them here and restart:
+    #     PAYMESH_SECURITY_BOOTSTRAP_PLATFORM_ADMIN_EMAIL=ops@yourcompany.example
+    # An email with no account logs a warning and does nothing. Seeding a user in a
+    # migration instead would mean a password hash committed to git, in a repository
+    # whose DevelopmentSecretGuard exists to refuse exactly that; inventing a password
+    # here would mean a privileged account with a credential nobody chose.
+    #
+    # SAFE TO LEAVE SET. The bootstrap runs only while the platform has zero admins, so
+    # a later boot will not silently re-promote somebody who was deliberately demoted.
+    bootstrap-platform-admin-email:
 
   # --- Provider callbacks -----------------------------------------------------
   provider:
