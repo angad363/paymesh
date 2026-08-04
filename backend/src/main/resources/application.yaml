@@ -161,6 +161,103 @@ paymesh:
       # number of transactions one pass opens is predictable. Each event is its own
       # transaction (one per consumer, plus one for the published_at stamp).
       batch-size: 100
+      # HOW MANY FAILURES AN EVENT GETS BEFORE THE RELAY GIVES UP ON IT (ADR-025).
+      # Before this existed the answer was "infinite", and the cost was not wasted
+      # work -- it was that a permanently failing event blocked EVERY LATER EVENT OF
+      # THE SAME AGGREGATE forever, to preserve ordering. Open item 14.
+      #
+      # 25 is a deliberate compromise and worth reading as a duration rather than a
+      # count: at the 2s interval above, an event survives roughly a minute of
+      # continuous failure before being abandoned. That comfortably outlives a
+      # consumer restart, a lock timeout or a brief database blip -- the transient
+      # causes -- while a genuinely poisoned event stops blocking its aggregate in
+      # about a minute rather than never.
+      #
+      # There is NO value here meaning "retry forever". That was the old behaviour.
+      max-attempts: 25
+      # WHEN TO CALL DELIVERY UNHEALTHY: the age of the oldest still-undelivered
+      # event, SDD 24's own metric, reported by OutboxBacklogHealthIndicator through
+      # /actuator/health.
+      #
+      # Must stay well clear of interval x max-attempts (~50s above), or a burst the
+      # relay is successfully working through would trip it. Five minutes is roughly
+      # two orders of magnitude above the 2s steady state, so tripping it means
+      # delivery has genuinely stopped -- most often that the relay is not running at
+      # all, which is otherwise completely silent.
+      #
+      # NOTE: this makes /actuator/health return 503 when it trips. That is the
+      # point. It also means it must NOT be wired to a Kubernetes liveness probe when
+      # deployment lands -- restarting the app does not deliver a dead event.
+      backlog-alert-age: 5m
+
+  # --- Reconciliation (ADR-026) ------------------------------------------------
+  # GET /sim/v1/reconciliation/{date} has produced the provider's own daily truth
+  # since ADR-017 and NOTHING READ IT. Its own javadoc says so: "This is the input.
+  # It is not the job." This is the job.
+  #
+  # What it repairs, concretely: ADR-015's sweeper times a stranded PROCESSING
+  # payment out to FAILED with NO EVIDENCE the payment failed, and ADR-023 does the
+  # same for refunds. Both are guesses in the safe direction. When the provider
+  # actually collected the money, that guess is wrong, the Ledger never posts, and
+  # the merchant is simply short until a human notices. This reads the provider's
+  # record and replays the real outcome through the ordinary callback path.
+  reconciliation:
+    # true: register the scheduled bean. Off -> the timer does not exist at all (the
+    # bean is @ConditionalOnProperty), rather than running and doing nothing.
+    #
+    # ON BY DEFAULT, and OFF UNDER dev for the usual reason, which is sharper here
+    # than for most sweeps: this job moves payments to SUCCEEDED and makes the Ledger
+    # post. A tick landing mid-assertion would change the rows under test. The service
+    # is a plain bean either way, so tests call reconcile(date) directly. To watch it:
+    #     PAYMESH_RECONCILIATION_ENABLED=true
+    enabled: true
+    # WHERE THE PROVIDER LIVES. Points at this application's own port, because the
+    # provider is the bundled simulator -- so the fetch is a loopback HTTP call.
+    #
+    # THAT IS DELIBERATE AND NOT AN OVERSIGHT. ModuleBoundaryTest forbids any
+    # capability from importing the simulator, SDD 13.2 says the simulator owns no
+    # PayMesh state, and ADR-017 makes it removable from a deployment. Calling
+    # ExportReconciliationService directly would break all three silently and weld
+    # reconciliation to the one "provider" that can never be a real one. Point this at
+    # a real acquirer and only the adapter changes.
+    base-url: http://localhost:8080
+    # The provider's name, and HALF OF THE CALLBACK DEDUPLICATION KEY. It must match
+    # the name real callbacks arrive under (the {provider} path variable on
+    # /internal/v1/provider-callbacks/{provider}), or a reconciled event and a real
+    # one would live in different dedup namespaces and each could be applied once --
+    # which on the capture path means collecting twice.
+    provider: SIMULATOR
+    # How the simulator's own API key travels. SimulatorApiKeyFilter is the ONLY
+    # authentication on /sim/v1/**.
+    api-key-header: X-PayMesh-Simulator-Key
+    # The same value paymesh.simulator.api-key holds. Repeated rather than aliased:
+    # this is the CALLER's copy of a credential, and the day the provider is external
+    # the two stop being the same value. Supply it as
+    #     PAYMESH_RECONCILIATION_API_KEY=<the provider's key>
+    # or run the dev profile, which supplies the throwaway one.
+    api-key:
+    # HOW MANY UTC DAYS BACK EACH PASS COVERS, today included.
+    #
+    # More than one on purpose. A callback can be late by more than a day, a provider
+    # can amend a file, and this job can be down -- and with a window of one, any of
+    # those three skips a day FOREVER. Re-running an old day is safe by construction:
+    # the event id is derived from the row and its terminal state, so a repeat is a
+    # duplicate rather than a second application.
+    lookback-days: 3
+    # How long to wait on the provider before giving up on a pass. Bounded so a hung
+    # provider costs one pass rather than the scheduler thread.
+    timeout-ms: 10000
+    # How long after one pass FINISHES the next begins (fixedDelay, not fixedRate).
+    # Resolved by Spring straight from the environment into @Scheduled -- NOT bound
+    # into ReconciliationProperties, for the same reason as the relay's interval.
+    #
+    # HOURS, NOT SECONDS. This is not delivery latency anybody is watching; it is a
+    # backstop for the rare case where delivery failed entirely. Running it every few
+    # seconds would replay a whole day's rows against the database for nothing.
+    interval: 1h
+    # Not at startup. Booting is when the platform is busiest and least settled, and a
+    # reconciliation pass at second zero would fetch a day nothing has happened in yet.
+    initial-delay: 5m
 
   # --- Order expiry sweep (ADR-014) -------------------------------------------
   # orders.expires_at is a deadline the merchant sets and, until this sweep existed,

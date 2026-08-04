@@ -79,7 +79,14 @@ public final class TimeOutProcessingPaymentsService {
      * of this row is that PayMesh gave up waiting. Anyone reading it, human or reconciler, must be
      * able to tell those two apart at a glance.
      */
-    private static final String TIMEOUT_FAILURE_CODE = "provider_no_response";
+    /**
+     * Moved to {@link PaymentIntent#TIMEOUT_FAILURE_CODE} by ADR-026 and aliased here so this file
+     * still reads the same. The aggregate now branches on this value -- a payment failed with it is
+     * the one terminal state a late provider outcome may still revise, because it records that
+     * nobody answered rather than that something happened. One definition, because two would
+     * eventually disagree and the disagreement would silently disable that revision.
+     */
+    private static final String TIMEOUT_FAILURE_CODE = PaymentIntent.TIMEOUT_FAILURE_CODE;
 
     private static final String TIMEOUT_FAILURE_MESSAGE =
         "The provider did not report an outcome within the allowed time. "

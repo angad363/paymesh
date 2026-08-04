@@ -47,7 +47,7 @@ class PublishOutboxEventsServiceTest {
 
         RelayResult result = relayOf(List.of(handler), 100).publish();
 
-        assertThat(result).isEqualTo(new RelayResult(1, 1, 0, 0));
+        assertThat(result).isEqualTo(new RelayResult(1, 1, 0, 0, 0));
         assertThat(handler.handled()).hasSize(1);
         assertThat(outbox.published()).containsEntry(row.eventId(), NOW);
     }
@@ -65,14 +65,14 @@ class PublishOutboxEventsServiceTest {
         PublishOutboxEventsService relay = relayOf(List.of(handler), 100);
 
         assertThat(relay.publish().published()).isEqualTo(1);
-        assertThat(relay.publish()).isEqualTo(new RelayResult(0, 0, 0, 0));
+        assertThat(relay.publish()).isEqualTo(new RelayResult(0, 0, 0, 0, 0));
         assertThat(handler.handled()).hasSize(1);
     }
 
     /** An idle platform costs one query and opens no transaction at all. */
     @Test
     void doesNothingWhenTheBacklogIsEmpty() {
-        assertThat(relayOf(List.of(), 100).publish()).isEqualTo(new RelayResult(0, 0, 0, 0));
+        assertThat(relayOf(List.of(), 100).publish()).isEqualTo(new RelayResult(0, 0, 0, 0, 0));
         assertThat(transactions.executions()).isZero();
     }
 
@@ -82,7 +82,7 @@ class PublishOutboxEventsServiceTest {
         UnpublishedEvent row = row("order.created", "ord_1", NOW.minusSeconds(10));
         outbox.append(row);
 
-        assertThat(relayOf(List.of(), 100).publish()).isEqualTo(new RelayResult(1, 1, 0, 0));
+        assertThat(relayOf(List.of(), 100).publish()).isEqualTo(new RelayResult(1, 1, 0, 0, 0));
         assertThat(outbox.isPublished(row.eventId())).isTrue();
     }
 
@@ -147,7 +147,7 @@ class PublishOutboxEventsServiceTest {
         RecordingHandler handler = new RecordingHandler("order.payment", "payment.succeeded");
         outbox.append(new UnpublishedEvent(
             "", MERCHANT.value(), "PAYMENT_INTENT", "pi_corrupt", "payment.succeeded", 1,
-            Map.of(), NOW.minusSeconds(60)
+            Map.of(), NOW.minusSeconds(60), 0
         ));
         UnpublishedEvent healthy = row("payment.succeeded", "pi_healthy", NOW.minusSeconds(10));
         outbox.append(healthy);
@@ -216,7 +216,7 @@ class PublishOutboxEventsServiceTest {
 
         RelayResult result = relayOf(List.of(handler), 100).publish();
 
-        assertThat(result).isEqualTo(new RelayResult(3, 1, 1, 1));
+        assertThat(result).isEqualTo(new RelayResult(3, 1, 1, 1, 0));
         assertThat(handler.handled().stream().map(event -> event.payload().get("marker")))
             .as("the unrelated aggregate drains; the poisoned one waits for its own head")
             .containsExactly("unrelated");
@@ -251,16 +251,173 @@ class PublishOutboxEventsServiceTest {
             .isInstanceOf(IllegalArgumentException.class);
     }
 
+    // --- THE RETRY BUDGET (ADR-025) --------------------------------------------------------------
+
+    /**
+     * A failure is now WRITTEN DOWN. Before V21 every pass started from zero knowledge, so "this has
+     * failed once" and "this has failed nine hundred times" were the same row.
+     */
+    @Test
+    void countsAFailedAttemptAndKeepsTheError() {
+        UnpublishedEvent poison = row("payment.succeeded", "pi_poison", NOW.minusSeconds(60));
+        outbox.append(poison);
+
+        relayOf(List.of(alwaysFailingHandler()), 100, 10).publish();
+
+        assertThat(outbox.attemptsFor(poison.eventId())).isEqualTo(1);
+        assertThat(outbox.lastErrorFor(poison.eventId())).contains("the consumer is broken");
+        assertThat(outbox.isDeadLettered(poison.eventId()))
+            .as("one failure out of a budget of ten is not a reason to give up")
+            .isFalse();
+    }
+
+    /**
+     * THE BUDGET ACTUALLY RUNS OUT, and the pass that exhausts it says so.
+     * <p>
+     * <b>Sabotage that must turn this red:</b> change the relay's exhaustion test from
+     * {@code attemptCount + 1 >= maxAttempts} to {@code attemptCount >= maxAttempts}. The event then
+     * survives one attempt longer than the budget allows and the third pass reports nothing.
+     */
+    @Test
+    void givesUpOnAnEventOnceTheBudgetIsSpent() {
+        UnpublishedEvent poison = row("payment.succeeded", "pi_poison", NOW.minusSeconds(60));
+        outbox.append(poison);
+
+        PublishOutboxEventsService relay = relayOf(List.of(alwaysFailingHandler()), 100, 3);
+
+        assertThat(relay.publish().deadLettered()).isZero();
+        assertThat(relay.publish().deadLettered()).isZero();
+        assertThat(relay.publish().deadLettered())
+            .as("the third failure reaches the budget of three")
+            .isEqualTo(1);
+
+        assertThat(outbox.isDeadLettered(poison.eventId())).isTrue();
+        assertThat(outbox.isPublished(poison.eventId()))
+            .as("giving up must not look like delivering")
+            .isFalse();
+        assertThat(relay.publish())
+            .as("a dead-lettered row leaves the claim query entirely")
+            .isEqualTo(new RelayResult(0, 0, 0, 0, 0));
+    }
+
+    /**
+     * THE WHOLE POINT OF THE BUDGET, AND THE CLOSE OF OPEN ITEM 14. A permanently failing event used
+     * to freeze its aggregate's later events FOREVER -- retried at the head of every pass, its
+     * successors deferred behind it every pass. Here the successor is delivered once the relay has
+     * given up on its predecessor.
+     * <p>
+     * Note what the assertion protects on the way there: the successor stays undelivered while the
+     * budget is still being spent. Ordering is preserved right up to the moment the relay abandons
+     * the head, and only then does the aggregate drain.
+     * <p>
+     * <b>Sabotage that must turn this red:</b> drop {@code and dead_lettered_at is null} from the
+     * claim query. The poisoned head is re-claimed on every pass and re-poisons the aggregate, so
+     * "second" is never delivered.
+     */
+    @Test
+    void unblocksAnAggregateOnceItsPoisonedHeadIsAbandoned() {
+        RecordingHandler handler = new RecordingHandler(
+            "order.payment",
+            "payment.succeeded",
+            event -> {
+                if ("first".equals(event.payload().get("marker"))) {
+                    throw new IllegalStateException("this one always fails");
+                }
+            }
+        );
+
+        outbox.append(row("payment.succeeded", "pi_stuck", NOW.minusSeconds(60), "first"));
+        outbox.append(row("payment.succeeded", "pi_stuck", NOW.minusSeconds(50), "second"));
+
+        PublishOutboxEventsService relay = relayOf(List.of(handler), 100, 2);
+
+        assertThat(relay.publish()).isEqualTo(new RelayResult(2, 0, 1, 1, 0));
+        assertThat(handler.handled())
+            .as("while the head is still being retried, its successor must wait")
+            .isEmpty();
+
+        assertThat(relay.publish().deadLettered()).isEqualTo(1);
+
+        assertThat(relay.publish().published())
+            .as("the head is abandoned, so the aggregate finally drains")
+            .isEqualTo(1);
+        assertThat(handler.handled().stream().map(event -> event.payload().get("marker")))
+            .containsExactly("second");
+    }
+
+    /**
+     * A row that can never be mapped is exactly the row that can never succeed on retry, so it must
+     * be dead-letterable. This is why the port takes a raw {@code String} event id rather than a
+     * validated {@code EventId} -- demanding one would make the permanently-broken case the one case
+     * that blocks its aggregate forever.
+     */
+    @Test
+    void givesUpOnARowThatCanNeverBeMapped() {
+        UnpublishedEvent corrupt = new UnpublishedEvent(
+            EventId.generate().value(), "not-a-merchant-id", "PAYMENT_INTENT", "pi_corrupt",
+            "payment.succeeded", 1, Map.of(), NOW.minusSeconds(60), 0
+        );
+        outbox.append(corrupt);
+
+        assertThat(relayOf(List.of(), 100, 1).publish().deadLettered()).isEqualTo(1);
+        assertThat(outbox.isDeadLettered(corrupt.eventId())).isTrue();
+    }
+
+    /**
+     * THE BOOKKEEPING MUST NOT BE ABLE TO KILL THE SWEEP. The likeliest reason recording an attempt
+     * fails is that the database is down -- which is also the likeliest reason the delivery just
+     * failed. If that rethrew, one unreachable database would abort the pass over every other
+     * aggregate: the precise one-bad-row-kills-the-job shape open item 2 describes.
+     */
+    @Test
+    void keepsSweepingWhenRecordingTheAttemptItselfFails() {
+        outbox.failAttemptRecordingWith(new IllegalStateException("the database is gone"));
+        outbox.append(row("payment.succeeded", "pi_poison", NOW.minusSeconds(60)));
+
+        RelayResult result = relayOf(List.of(alwaysFailingHandler()), 100, 1).publish();
+
+        assertThat(result.failed()).isEqualTo(1);
+        assertThat(result.deadLettered())
+            .as("the attempt did not stick, so the budget did not move and nothing was abandoned")
+            .isZero();
+    }
+
+    /** A budget of zero would abandon every event on its first transient failure. */
+    @Test
+    void refusesAMaxAttemptsBelowOne() {
+        assertThatThrownBy(() -> relayOf(List.of(), 100, 0))
+            .isInstanceOf(IllegalArgumentException.class);
+    }
+
     // --- helpers ---------------------------------------------------------------------------------
 
+    /**
+     * A retry budget high enough that no test using this overload can trip it by accident. The
+     * dead-letter tests below ask for a small one explicitly, so a budget appearing in a test is
+     * always the thing that test is about.
+     */
     private PublishOutboxEventsService relayOf(List<EventHandler> handlers, int batchSize) {
+        return relayOf(handlers, batchSize, 1000);
+    }
+
+    private PublishOutboxEventsService relayOf(
+        List<EventHandler> handlers, int batchSize, int maxAttempts
+    ) {
         return new PublishOutboxEventsService(
             outbox,
             new EventDispatcher(handlers, inbox, transactions, CLOCK),
             transactions,
             CLOCK,
-            batchSize
+            batchSize,
+            maxAttempts
         );
+    }
+
+    /** Fails every delivery, so a test can drive the budget to exhaustion without contriving data. */
+    private static RecordingHandler alwaysFailingHandler() {
+        return new RecordingHandler("order.payment", "payment.succeeded", event -> {
+            throw new IllegalStateException("the consumer is broken");
+        });
     }
 
     private static UnpublishedEvent row(String eventType, String aggregateId, Instant occurredAt) {
@@ -281,7 +438,8 @@ class PublishOutboxEventsServiceTest {
             eventType,
             1,
             marker == null ? Map.of() : Map.of("marker", marker),
-            occurredAt
+            occurredAt,
+            0
         );
     }
 }

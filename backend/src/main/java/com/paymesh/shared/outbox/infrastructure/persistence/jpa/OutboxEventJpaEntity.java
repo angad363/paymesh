@@ -69,6 +69,18 @@ public class OutboxEventJpaEntity {
     @Column(name = "occurred_at", nullable = false)
     private Instant occurredAt;
 
+    // FAILED delivery attempts so far (V21). Mapped READ-ONLY -- insertable = false, updatable =
+    // false -- and that is not decoration. The relay maintains this column with a native UPDATE for
+    // the same reason it stamps published_at with one: this entity is @Immutable, so Hibernate would
+    // drop any flush of a changed value on the floor and the increment would look like it worked.
+    // Marking it non-writable here means the mapping cannot be mistaken for a writable field, while
+    // still letting the claim query hand the current count to the relay without a second round trip.
+    //
+    // last_attempt_at, last_error and dead_lettered_at stay UNMAPPED, exactly like published_at:
+    // nothing in Java reads them. They are written natively and read by an operator.
+    @Column(name = "attempt_count", nullable = false, insertable = false, updatable = false)
+    private int attemptCount;
+
     /** Required by JPA. Not for application use. */
     protected OutboxEventJpaEntity() {
     }
@@ -126,5 +138,10 @@ public class OutboxEventJpaEntity {
 
     public Instant occurredAt() {
         return occurredAt;
+    }
+
+    /** Failed delivery attempts so far. Zero on a row the relay has never reached. */
+    public int attemptCount() {
+        return attemptCount;
     }
 }

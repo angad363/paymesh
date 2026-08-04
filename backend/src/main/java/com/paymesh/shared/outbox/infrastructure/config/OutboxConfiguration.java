@@ -10,6 +10,7 @@ import com.paymesh.shared.outbox.infrastructure.persistence.jpa.JpaOutboxReader;
 import com.paymesh.shared.outbox.infrastructure.persistence.jpa.JpaOutboxWriter;
 import com.paymesh.shared.outbox.infrastructure.persistence.jpa.JpaProcessedEventRepository;
 import com.paymesh.shared.outbox.infrastructure.persistence.jpa.SpringDataOutboxRepository;
+import com.paymesh.shared.outbox.infrastructure.health.OutboxBacklogHealthIndicator;
 import com.paymesh.shared.outbox.infrastructure.persistence.jpa.SpringDataProcessedEventRepository;
 import com.paymesh.shared.outbox.infrastructure.schedule.OutboxRelay;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -85,8 +86,26 @@ public class OutboxConfiguration {
         OutboxRelayProperties properties
     ) {
         return new PublishOutboxEventsService(
-            outboxReader, eventDispatcher, transactionTemplate, clock, properties.batchSize()
+            outboxReader, eventDispatcher, transactionTemplate, clock,
+            properties.batchSize(), properties.maxAttempts()
         );
+    }
+
+    /**
+     * The alert (ADR-025). Declared UNCONDITIONALLY, and unlike the timer below it has no
+     * {@code enabled} switch -- deliberately. The state it reports is at its most dangerous exactly
+     * when the relay is switched off: a disabled relay is silent, logs nothing, and looks identical
+     * to a healthy one from every other angle while the backlog ages. An alert that is only present
+     * when the thing it watches is running would go quiet precisely when it matters.
+     * <p>
+     * Boot registers any {@code HealthIndicator} bean it finds, so this appears under
+     * {@code /actuator/health} with no further wiring. The class itself carries no annotation.
+     */
+    @Bean
+    OutboxBacklogHealthIndicator outboxBacklogHealthIndicator(
+        OutboxReader outboxReader, OutboxRelayProperties properties, Clock clock
+    ) {
+        return new OutboxBacklogHealthIndicator(outboxReader, properties.backlogAlertAge(), clock);
     }
 
     /**

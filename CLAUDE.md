@@ -4,9 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-PayMesh is an educational Payment-as-a-Service backend. It processes no real money and claims no PCI/banking compliance. The point is to model a realistic payment platform (merchants, customers, orders, payments, providers, refunds, a double-entry ledger, balances, settlements, webhooks, risk, reporting) while learning Spring Boot, clean architecture, and event-driven / distributed-system patterns. Only the **merchant** capability exists so far; everything else is planned.
+PayMesh is an educational Payment-as-a-Service backend. It processes no real money and claims no PCI/banking compliance. The point is to model a realistic payment platform (merchants, customers, orders, payments, providers, refunds, a double-entry ledger, balances, settlements, webhooks, risk, reporting) while learning Spring Boot, clean architecture, and event-driven / distributed-system patterns.
 
-The full product/architecture vision lives in `docs/PayMesh_Payment_as_a_Service_Software_Design_Document.docx` — the Software Design Document (SDD). Read it before designing a new capability. It is a **target reference**: the codebase is at the very start of Phase 1 and implements almost none of it yet. The summary below captures what shapes day-to-day code decisions.
+**Phase 1 is complete.** Built and green: **Merchant**, **Identity & Access**, **Customer**, **Order**, **Payment**, the **Provider Simulator**, the **Ledger**, **Refund**, and **Reconciliation** — plus the platform work underneath them (PostgreSQL-backed idempotency, a transactional outbox with a relay, an in-process dispatcher and a `processed_events` inbox, and a retry budget with a dead letter). Phase 2 — Risk, Settlement, Webhook, Notification/Reporting — is not started. `docs/project-status.md` is the authoritative pick-up-here document and is kept current; read it before assuming anything about what exists.
+
+The full product/architecture vision lives in `docs/PayMesh_Payment_as_a_Service_Software_Design_Document.docx` — the Software Design Document (SDD). Read it before designing a new capability. It is a **target reference and it runs well ahead of the code**: Phase 1 is built, Phase 2 (§14, §17–§20) is not, and several Phase-1 sections are deliberately only partly implemented. `docs/project-status.md` §"What of the SDD is implemented" maps section by section what actually exists. The summary below captures what shapes day-to-day code decisions.
 
 ## Target architecture (where this is heading)
 
@@ -70,11 +72,22 @@ The dependency direction is inward: `api → application → domain`, with `infr
 
 ### Identifiers
 
-Public IDs are opaque, prefixed strings: `<prefix>_<uuid>` (ADR-003). Merchant uses `mrc_`; planned prefixes include `cus_`, `ord_`, `pi_`, `pay_`, `ref_`, `stl_`, `whe_`, `evt_`. IDs are value-object records (`MerchantId`) that validate the prefix + UUID in their compact constructor: `MerchantId.generate()` mints one, `MerchantId.from(String)` parses/validates. Do not expose sequential DB IDs.
+Public IDs are opaque, prefixed strings: `<prefix>_<uuid>` (ADR-003). In use: `mrc_` (merchant), `cus_`, `ord_`, `pi_` (payment intent), `ref_`, `evt_` (outbox event). Planned: `pay_`, `stl_`, `whe_`. IDs are value-object records (`MerchantId`) that validate the prefix + UUID in their compact constructor: `MerchantId.generate()` mints one, `MerchantId.from(String)` parses/validates. Do not expose sequential DB IDs.
 
 ### Persistence
 
-There is no database yet. `InMemoryMerchantRepository` (an `ArrayList`) implements the `MerchantRepository` interface. When persistence lands it will be PostgreSQL + JPA behind the same `application`-layer interface, with a separate JPA entity (never the domain type) — integration tests are expected to use Testcontainers.
+**PostgreSQL + Flyway, twenty-two migrations (V1–V22).** Every capability's `application` layer declares repository interfaces; `infrastructure/persistence/jpa` implements them with a **separate JPA entity, never the domain type**, and a mapper between the two. `ddl-auto=validate`, so a mapped column that drifts from its migration fails startup rather than surprising someone later.
+
+Migrations are hand-authored and heavily commented — they are where several invariants actually live (deferred constraint triggers for debits-equal-credits, immutability triggers on ledger entries, composite tenant foreign keys, partial unique indexes). **Prefer a database constraint over an application check** where the choice exists; the application pre-check turns a violation into a readable 409/422, but the constraint is what makes it true.
+
+Integration tests use Testcontainers and **need Docker running** — without it ~450 tests error on context startup rather than failing meaningfully. Run the full suite with `./mvnw test`.
+
+### Scheduled jobs
+
+Several capabilities own a timer (order expiry, abandoned checkout, payment and refund processing timeouts, the outbox relay, simulator callback dispatch, reconciliation). Two rules hold for all of them:
+
+1. **The `@Scheduled` class contains no logic** — it calls one service method and logs the result. Every rule lives in a plain object taking an injected `Clock`, so tests drive it directly instead of booting a context and waiting for a tick.
+2. **They are all off under the `dev` profile**, which is what the test suite runs on. A timer mutating rows underneath an assertion is a flake generator. The services are ordinary beans regardless, so tests call them directly.
 
 ## The `docs/` folder is the source of truth for conventions
 
@@ -83,7 +96,7 @@ There is no database yet. `InMemoryMerchantRepository` (an `ArrayList`) implemen
 - `docs/PayMesh_..._Software_Design_Document.docx` — the SDD: full product vision, per-service designs, API/event/schema catalogs, workflows, and its own architecture decision records. The top-level reference for *what* to build and *why*.
 - `docs/api/rest-api-conventions.md` — exhaustive HTTP/JSON contract (versioning, status codes, error shape, pagination, idempotency, money as integer minor units, timestamps as UTC `Instant`/ISO-8601, enum casing, etc.).
 - `docs/development/java-coding-conventions.md` — layering, DI, immutability, exceptions, logging, testing, framework boundaries, no Lombok.
-- `docs/decisions/ADR-*.md` — the repo's own numbered ADRs: `001` modular monolith, `002` package-by-feature, `003` opaque prefixed IDs. **Note:** the SDD (Appendix D) has a *separate* ADR list with the same numbers but different decisions (e.g. its ADR-001 is "money in minor units"). When citing an ADR, say which source you mean.
+- `docs/decisions/ADR-*.md` — the repo's own numbered ADRs, **twenty-six of them and the best record of why anything looks the way it does.** `001` modular monolith, `002` package-by-feature, `003` opaque prefixed IDs; later ones carry the load-bearing money decisions (`012` callback dedup and ordering, `015` payment timeout, `016` in-process event dispatch, `018` the Ledger, `019` refunds, `025` the outbox dead letter, `026` reconciliation). Read the relevant ADR before changing anything on the money path. **Note:** the SDD (Appendix D) has a *separate* ADR list with the same numbers but different decisions (e.g. its ADR-001 is "money in minor units"). When citing an ADR, say which source you mean.
 - `docs/domain/` and `docs/api/*-contract.md` — per-capability domain discovery and API contracts.
 
 **These docs describe the target design and run ahead of the code.** The current merchant implementation intentionally diverges in places (e.g. the error body is a flat `{code, message, fieldErrors}` rather than the full RFC-7807 problem shape the doc specifies; validation failures currently return `400` where the doc prescribes `422`; the JSON id field is `id`, not `merchantId`). When extending existing code, match the **existing code**; when the two conflict and it matters, surface the divergence rather than silently picking one.

@@ -41,13 +41,20 @@ import java.util.Set;
  * failure would silently deliver an aggregate's later events before its earlier one, which is worse
  * than not delivering them at all.
  * <p>
- * The residue, stated rather than discovered later: an event that fails FOREVER freezes its
- * aggregate's later events forever. It is retried at the head of every pass, fails again, and its
- * successors are skipped again. The platform still drains -- every other aggregate is unaffected --
- * but that one is stuck, visible only as a WARN per pass and as a growing
- * {@code min(occurred_at) where published_at is null}. There is no dead-letter table, no attempt
- * counter and no alert; the alert is SDD 24's "oldest unpublished event age" and belongs with
- * observability, which does not exist yet.
+ * <h2>THE RETRY BUDGET IS WHAT STOPS THAT BEING FOREVER (ADR-025)</h2>
+ *
+ * Until V21 the paragraph above ended badly: an event that failed FOREVER froze its aggregate's
+ * later events forever, retried at the head of every pass, its successors skipped every pass,
+ * visible only as a WARN. Open item 14 called that the largest hole in event delivery.
+ * <p>
+ * Every failure now increments {@code attempt_count} and records its message, and the attempt that
+ * reaches {@code maxAttempts} stamps {@code dead_lettered_at}. A dead-lettered row leaves the claim
+ * query, <b>so the aggregate it was blocking drains on the very next pass.</b> Note what is NOT
+ * claimed: the event is not delivered and not deleted. It is retained in place, in order, and an
+ * operator requeues it with {@code SET dead_lettered_at = NULL}. Trading "never delivered, loudly
+ * recorded" for "never delivered, and it takes the rest of the aggregate with it" is the entire
+ * decision, and it only works because the loudness is real -- see
+ * {@code OutboxBacklogHealthIndicator}.
  *
  * <h2>Transactions</h2>
  *
@@ -65,16 +72,24 @@ public final class PublishOutboxEventsService {
     private final TransactionTemplate transactions;
     private final Clock clock;
     private final int batchSize;
+    private final int maxAttempts;
 
     public PublishOutboxEventsService(
         OutboxReader reader,
         EventDispatcher dispatcher,
         TransactionTemplate transactions,
         Clock clock,
-        int batchSize
+        int batchSize,
+        int maxAttempts
     ) {
         if (batchSize < 1) {
             throw new IllegalArgumentException("Outbox relay batch size must be at least 1");
+        }
+        // Rejected here rather than clamped. A zero or negative budget would dead-letter every event
+        // on its first failure INCLUDING transient ones, which turns the safety net into the fault;
+        // silently correcting it to 1 would hide a misconfiguration that costs delivery.
+        if (maxAttempts < 1) {
+            throw new IllegalArgumentException("Outbox relay max attempts must be at least 1");
         }
 
         this.reader = reader;
@@ -82,6 +97,7 @@ public final class PublishOutboxEventsService {
         this.transactions = transactions;
         this.clock = clock;
         this.batchSize = batchSize;
+        this.maxAttempts = maxAttempts;
     }
 
     /**
@@ -99,6 +115,7 @@ public final class PublishOutboxEventsService {
         int published = 0;
         int failed = 0;
         int deferred = 0;
+        int deadLettered = 0;
 
         for (UnpublishedEvent row : backlog) {
             if (poisonedAggregates.contains(row.aggregateId())) {
@@ -125,14 +142,81 @@ public final class PublishOutboxEventsService {
                 failed++;
                 poisonedAggregates.add(row.aggregateId());
 
-                log.warn(
-                    "Could not publish outbox event eventId={} eventType={} aggregateId={}",
-                    row.eventId(), row.eventType(), row.aggregateId(), failure
-                );
+                if (recordFailure(row, failure)) {
+                    deadLettered++;
+                }
             }
         }
 
-        return new RelayResult(backlog.size(), published, failed, deferred);
+        return new RelayResult(backlog.size(), published, failed, deferred, deadLettered);
+    }
+
+    /**
+     * Writes the attempt down and says whether this was the one that exhausted the budget.
+     *
+     * <h2>Its own transaction, and it must be</h2>
+     *
+     * Whatever the dispatcher opened has already rolled back by the time control reaches here --
+     * that is what the exception means. Writing the counter on that transaction would roll the
+     * counter back too, and the attempt would never be recorded: the relay would retry forever while
+     * believing it had a retry budget, which is a worse bug than having no budget at all.
+     *
+     * <h2>IT SWALLOWS ITS OWN FAILURE ON PURPOSE</h2>
+     *
+     * If recording the attempt throws -- the database is down, which is also the likeliest reason
+     * the delivery failed a moment ago -- the pass continues. Rethrowing here would let a failure in
+     * the bookkeeping abort the sweep over every OTHER aggregate, which is the precise
+     * one-bad-row-kills-the-job shape open item 2 records and this class was written to avoid.
+     *
+     * @return true when this attempt dead-lettered the row. Derived from the count the claim query
+     *     already returned, so no second read: {@code attemptCount} is failures BEFORE this one, and
+     *     the SQL stamps at {@code attempt_count + 1 >= maxAttempts}. The two expressions have to
+     *     agree, and a test holds them to it.
+     */
+    private boolean recordFailure(UnpublishedEvent row, RuntimeException failure) {
+        boolean exhausted = row.attemptCount() + 1 >= maxAttempts;
+
+        try {
+            Instant now = Instant.now(clock);
+            transactions.execute(status -> {
+                reader.recordFailedAttempt(row.eventId(), now, failure.toString(), maxAttempts);
+                return null;
+            });
+        } catch (RuntimeException bookkeeping) {
+            log.warn(
+                "Could not record a failed delivery attempt eventId={}", row.eventId(), bookkeeping
+            );
+
+            // The attempt did not stick, so the budget did not move and the row will be retried.
+            // Reporting it as dead-lettered would raise an alert for something that did not happen.
+            return false;
+        }
+
+        if (exhausted) {
+            // ERROR, not WARN, and the only ERROR this class logs. Every other failure here resolves
+            // itself on the next pass; this one never will, and until an operator acts a committed
+            // state change stays unannounced. If a log pipeline alerts on one line in this file,
+            // it is this one.
+            log.error(
+                "GAVE UP on an outbox event after {} attempts -- it will NEVER be delivered until "
+                    + "requeued. eventId={} eventType={} aggregateType={} aggregateId={} "
+                    + "merchantId={}. Requeue with: "
+                    + "UPDATE outbox_events SET dead_lettered_at = NULL, attempt_count = 0 "
+                    + "WHERE event_id = '{}';",
+                maxAttempts, row.eventId(), row.eventType(), row.aggregateType(), row.aggregateId(),
+                row.merchantId(), row.eventId(), failure
+            );
+
+            return true;
+        }
+
+        log.warn(
+            "Could not publish outbox event eventId={} eventType={} aggregateId={} attempt={}/{}",
+            row.eventId(), row.eventType(), row.aggregateId(), row.attemptCount() + 1, maxAttempts,
+            failure
+        );
+
+        return false;
     }
 
     /**
@@ -145,7 +229,14 @@ public final class PublishOutboxEventsService {
      * @param deferred  how many were skipped because an earlier event of the SAME aggregate failed
      *                  in this pass. Not an error -- it is the ordering guarantee doing its job --
      *                  but a number that stays non-zero across passes means an aggregate is stuck
+     * @param deadLettered how many of the failures were the LAST attempt, so the relay gave up. A
+     *                  subset of {@code failed}, never larger than it. <b>Any non-zero value here is
+     *                  an incident</b>: a committed state change whose event no consumer will ever
+     *                  see. The counter exists so the timer can raise it without re-reading the
+     *                  table
      */
-    public record RelayResult(int examined, int published, int failed, int deferred) {
+    public record RelayResult(
+        int examined, int published, int failed, int deferred, int deadLettered
+    ) {
     }
 }

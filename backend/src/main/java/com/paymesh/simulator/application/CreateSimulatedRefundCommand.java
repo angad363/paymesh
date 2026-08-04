@@ -6,6 +6,8 @@ import com.paymesh.simulator.domain.SimulatedPaymentId;
 public record CreateSimulatedRefundCommand(
     String idempotencyKey,
     SimulatedPaymentId providerPaymentId,
+    /** The caller's own reference, echoed back. Null is permitted; see {@code SimulatedRefund}. */
+    String callbackReference,
     long amountMinor
 ) {
 }

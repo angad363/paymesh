@@ -23,6 +23,15 @@ public record CreateSimulatedRefundRequest(
     @Size(max = 50, message = "Provider payment id must not exceed 50 characters")
     String providerPaymentId,
 
+    /**
+     * The caller's own reference for this refund, echoed back on the row and in the reconciliation
+     * export (ADR-026). PayMesh puts its refund id here. OPTIONAL, because a real provider does not
+     * refuse a refund for want of a merchant's bookkeeping string -- it just cannot be matched
+     * later, which the export then reports as unmatched.
+     */
+    @Size(max = 120, message = "Callback reference must not exceed 120 characters")
+    String callbackReference,
+
     @NotNull(message = "Amount is required")
     @Positive(message = "Amount must be a positive number of minor units")
     @Max(value = 999_999_999_999L, message = "Amount must not exceed 999999999999 minor units")

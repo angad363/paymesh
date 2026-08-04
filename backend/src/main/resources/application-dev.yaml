@@ -78,6 +78,19 @@ paymesh:
       # suite runs under, and a timer failing refunds mid-assertion would change the very rows
       # a test is asserting on.
       enabled: false
+  reconciliation:
+    # OFF, and this one is not optional. Every @SpringBootTest runs under this profile,
+    # and reconciliation MOVES PAYMENTS TO SUCCEEDED and makes the Ledger post -- a tick
+    # landing between a test's setup and its assertion would rewrite the rows under
+    # assertion and the balance derived from them. To watch it locally:
+    #     PAYMESH_RECONCILIATION_ENABLED=true
+    # ReconcileProviderDayService is a plain bean, so tests call reconcile(date) directly.
+    enabled: false
+    # The caller's copy of the simulator's throwaway dev key. Same value, different
+    # meaning: paymesh.simulator.api-key is what the provider EXPECTS, this is what the
+    # caller SENDS. DevelopmentSecretGuard refuses both outside the dev profile.
+    api-key: dev-only-insecure-simulator-api-key-change-me
+
   simulator:
     # Same deal again, and it matters as much as the callback secret rather than less: this key
     # is the only authentication on /sim/v1/**, and POST /sim/v1/payments queues the callback

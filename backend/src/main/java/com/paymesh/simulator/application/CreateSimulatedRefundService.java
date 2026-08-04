@@ -105,6 +105,7 @@ public final class CreateSimulatedRefundService {
         SimulatedRefund refund = SimulatedRefund.start(
             SimulatedRefundId.generate(),
             payment.providerPaymentId(),
+            command.callbackReference(),
             command.idempotencyKey(),
             requestHash,
             command.amountMinor(),

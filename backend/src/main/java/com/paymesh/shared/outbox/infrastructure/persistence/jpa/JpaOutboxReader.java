@@ -21,6 +21,8 @@ import java.util.Map;
  */
 public final class JpaOutboxReader implements OutboxReader {
 
+    private static final int MAX_ERROR_LENGTH = 2000;
+
     private final SpringDataOutboxRepository events;
 
     public JpaOutboxReader(SpringDataOutboxRepository events) {
@@ -37,6 +39,30 @@ public final class JpaOutboxReader implements OutboxReader {
     @Override
     public void markPublished(EventId eventId, Instant publishedAt) {
         events.markPublished(eventId.value(), publishedAt);
+    }
+
+    @Override
+    public void recordFailedAttempt(String eventId, Instant attemptedAt, String error, int maxAttempts) {
+        events.recordFailedAttempt(eventId, attemptedAt, truncate(error), maxAttempts);
+    }
+
+    @Override
+    public BacklogHealth backlogHealth() {
+        return new BacklogHealth(events.oldestUnpublishedOccurredAt(), events.countDeadLettered());
+    }
+
+    /**
+     * {@code last_error} is TEXT and takes anything, so this is not a schema requirement -- it is a
+     * refusal to let a pathological exception message (a serialized payload echoed back, a driver
+     * error carrying a whole statement) turn the outbox into the place large blobs accumulate. The
+     * head of a message is the part that names the cause; the tail is context the log already has.
+     */
+    private static String truncate(String error) {
+        if (error == null) {
+            return null;
+        }
+
+        return error.length() <= MAX_ERROR_LENGTH ? error : error.substring(0, MAX_ERROR_LENGTH);
     }
 
     /**
@@ -58,7 +84,8 @@ public final class JpaOutboxReader implements OutboxReader {
             entity.eventType(),
             entity.eventVersion(),
             payload == null ? Map.of() : payload,
-            entity.occurredAt()
+            entity.occurredAt(),
+            entity.attemptCount()
         );
     }
 }

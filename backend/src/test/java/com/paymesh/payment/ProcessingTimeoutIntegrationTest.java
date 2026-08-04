@@ -302,16 +302,28 @@ class ProcessingTimeoutIntegrationTest {
     }
 
     /**
-     * THE DIVERGENCE, RECORDED. The provider really did collect and its callback arrives after the
-     * timeout. It lands on a FAILED intent, is refused as IGNORED_TERMINAL, moves no money -- and is
-     * STORED, which is the whole point. That row is what a reconciliation job would find.
+     * THE DIVERGENCE, NOW RESOLVED RATHER THAN MERELY RECORDED (ADR-026).
+     *
+     * <h2>This test asserted the opposite until ADR-026, and the reversal is the point</h2>
+     *
+     * It used to end: "PayMesh believes the payment failed, the provider believes it succeeded, and
+     * nothing in this codebase resolves the disagreement. What it does do is make it findable rather
+     * than invisible." That was ADR-015's residue stated honestly -- a known gap, not a desired end
+     * state -- and the callback was absorbed as IGNORED_TERMINAL while the customer's money sat at
+     * the provider.
      * <p>
-     * This test is ADR-015's residue made concrete: PayMesh believes the payment failed, the provider
-     * believes it succeeded, and nothing in this codebase resolves the disagreement. What it does do
-     * is make it findable rather than invisible.
+     * A payment FAILED by the timeout sweep records that <b>nobody answered</b>, not that something
+     * happened; the sweeper's own failure message says the attempt "may still have succeeded at the
+     * provider and needs reconciliation". So when the provider finally answers, the answer is
+     * applied. See {@code PaymentIntent.isUnansweredTimeout}, and note how narrow it is: this works
+     * ONLY because the failure code is the sweeper's own. A payment the provider DECLINED stays
+     * terminal forever, which {@code PaymentIntentTest} pins down directly.
+     * <p>
+     * The old property survives underneath the new one: the callback is still stored, so the episode
+     * is still findable. What changed is that it is now stored as APPLIED.
      */
     @Test
-    void recordsALateSuccessCallbackAgainstATimedOutIntentAsADivergence() {
+    void appliesALateSuccessCallbackAgainstAPaymentItOnlyFailedForWantOfAnAnswer() {
         Fixture fixture = processing();
         Instant confirmedAt = now(fixture);
 
@@ -322,19 +334,18 @@ class ProcessingTimeoutIntegrationTest {
             deliver(fixture, ProviderOutcome.SUCCEEDED, confirmedAt.plus(AGE).plusSeconds(120));
 
         assertThat(outcome)
-            .as("a terminal intent absorbs the callback rather than being dragged back to SUCCEEDED")
-            .isEqualTo(ProviderCallbackOutcome.IGNORED_TERMINAL);
-        assertThat(statusOf(fixture)).isEqualTo(PaymentIntentStatus.FAILED);
+            .as("the guess is revisable by the only authority that can settle it")
+            .isEqualTo(ProviderCallbackOutcome.APPLIED);
+        assertThat(statusOf(fixture)).isEqualTo(PaymentIntentStatus.SUCCEEDED);
         assertThat(eventTypes(fixture))
-            .as("no payment.succeeded may exist for an intent PayMesh recorded as failed")
-            .doesNotContain("payment.succeeded");
+            .as("and the Ledger must hear about it, or the status moved and the money did not")
+            .contains("payment.succeeded");
 
         assertThat(jdbc.queryForList("""
             select outcome from provider_callbacks where merchant_id = ?
             """, String.class, fixture.merchantId().value()))
-            .as("the disagreement is on the record, findable by outcome, for a reconciler that "
-                + "does not exist yet")
-            .containsExactly("IGNORED_TERMINAL");
+            .as("still recorded, so the episode stays findable -- now as a resolution")
+            .containsExactly("APPLIED");
     }
 
     // --- the transaction boundary -----------------------------------------------------------------
