@@ -1,7 +1,10 @@
 # PayMesh — Project Status and Roadmap
 
-_Last updated: 4 August 2026. Update this file at the end of a working session, not
-during one._
+_Last updated: 4 August 2026, end of the session that opened Phase 2. Update this file at the end of
+a working session, not during one._
+
+**Reading this to resume? Go to "What comes next" → "PICK UP HERE".** Phase 2's first PR is open and
+unmerged with three known findings against it.
 
 This is the pick-up-here document. It records what exists, what has actually been
 verified, what is deliberately unfinished, and what comes next. For *why* a design
@@ -28,8 +31,9 @@ a lost callback repaired from the provider's own record, and the outbox alert on
 `/actuator/health`.
 
 **Phase 2 has started.** See `docs/phase-2-plan.md` for the eight-PR plan and "What comes next"
-below for where it stands. PR 0 (ADR-027) is merged: `PLATFORM_ADMIN` is grantable, so the platform
-can be administered without minting a token from the published dev signing key.
+below for where it stands. **PR 0 (ADR-027) is OPEN, not merged** — PR #54, branch
+`fix/platform-admin-and-known-defects`. It is green and verified live, and an independent review
+found three things that must be fixed before it merges. They are listed under "What comes next".
 
 **Phase 1 is complete, including its operational half.** The last PR closed the three things that
 were still only described: the outbox relay now gives up on an event rather than freezing its
@@ -720,7 +724,7 @@ Ledger's `MERCHANT_AVAILABLE` account, which `AccountType`'s own javadoc names a
 
 | PR | Delivers | Depends on | Migrations | ADR |
 |---|---|---|---|---|
-| 0 ✅ | `PLATFORM_ADMIN` grantable | — | V23 | ADR-027 |
+| 0 🔶 | `PLATFORM_ADMIN` grantable — **PR #54 open, review findings outstanding** | — | V23 | ADR-027 |
 | 1 | Webhook | — | V24–V25 | ADR-028 |
 | 2 | Risk | — | V26–V27 | ADR-029 |
 | 3 | Ledger available balance | — | V28–V29 | ADR-030 |
@@ -729,21 +733,64 @@ Ledger's `MERCHANT_AVAILABLE` account, which `AccountType`'s own javadoc names a
 | 6 | Reporting | PR4 (content) | V34–V35 | ADR-033 |
 | 7 | Audit | PR2, PR4 (subjects) | V36 | ADR-034 |
 
-**PR 0 is merged.** ~~`PLATFORM_ADMIN` is not grantable~~ — closed by **ADR-027**. V23 makes
-`user_roles.merchant_id` nullable behind a biconditional CHECK, a platform role travels in the claim
-with no `:merchantId` suffix at all, and the first admin comes from a startup property that promotes
-an existing account rather than seeding a password hash into a migration. The escalation the
-nullability would have opened — a merchant admin granting themselves `PLATFORM_ADMIN` at their own
-tenant, which `requirePlatformAdmin()` used to read as platform authority — is refused
-independently by the constraint, the aggregate and the claim parser.
+### PICK UP HERE — PR #54 is open and must not merge as it stands
 
-Still outstanding from that list:
+**Branch `fix/platform-admin-and-known-defects`, PR https://github.com/angad363/paymesh/pull/54.**
+
+What it does: `PLATFORM_ADMIN` becomes grantable (**ADR-027**). V23 makes `user_roles.merchant_id`
+nullable behind a biconditional CHECK, a platform role travels in the claim with **no `:merchantId`
+suffix at all**, and the first admin comes from a startup property
+(`paymesh.security.bootstrap-platform-admin-email`) that promotes an existing account rather than
+seeding a password hash into a migration. The escalation the nullability would have opened — a
+merchant admin granting themselves `PLATFORM_ADMIN` at their own tenant, which
+`requirePlatformAdmin()` used to read as platform authority — is refused independently by the
+constraint, the aggregate and the claim parser.
+
+**Verification already done, do not redo it:** 1196 tests green; Postman 213 requests / 519
+assertions / 0 failures; V23 applied to a live V22 database *with data in it*; the whole loop walked
+live with no minted token (register merchant → register human → bootstrap on restart → log in →
+activate → promote a second admin), plus the three negatives. Both guards were proved by breaking
+the implementation and confirming exactly the intended tests failed and no others.
+
+**Three findings from independent review, worst first. All must be fixed before merge:**
+
+1. **TOCTOU race in `ManageUserAccessService.revokePlatformAdmin` can demote the platform to zero
+   admins.** The last-admin guard is check-then-act: `countPlatformAdmins()` then a delete, with no
+   row lock and no elevated isolation (`TransactionTemplate` is plain, so READ COMMITTED). Two
+   concurrent demotions of the last two admins both read `count == 2`, both pass the check, both
+   commit. The result is the exact dead end `LastPlatformAdminException` exists to prevent, reachable
+   through the ordinary API with two overlapping requests. **This is the one that matters** — and
+   note the house rule applies: prefer a database constraint. The application check cannot express
+   "at least one row must remain" on its own.
+2. **`bootstrapPlatformAdmin` is not transactional**, unlike `grantPlatformAdmin` beside it. The
+   role grant and the `PLATFORM_ADMIN_GRANTED` security event are two independent commits, so a
+   failure between them leaves a platform admin with no audit record — and the next boot no-ops
+   because an admin now exists, so it never self-corrects. Wrap it the way every sibling method is.
+3. **Stale text, four places.** `UserAdminController` javadoc cites a class `PlatformAdminBootstrap`
+   that does not exist (the real thing is `IdentityConfiguration.platformAdminBootstrap` calling
+   `ManageUserAccessService.bootstrapPlatformAdmin`); `docs/project-walkthrough.md` ~line 637 still
+   says `PLATFORM_ADMIN` is ungrantable and `merchant_id` is `NOT NULL`; `ADR-024` §5 still describes
+   a platform admin's token as carrying a merchant scope; `User.java` ~line 157 and `UserTest.java`
+   ~line 49 still cite `(user_id, merchant_id, role)` as the primary key, which V23 drops.
+
+Two things the review checked and deliberately did **not** flag, recorded so they are not
+re-litigated: `CallerRole.parse` uppercases before `valueOf`, so a colon-less `"platform_admin"`
+would parse — but the claim is only ever written server-side from `Role.name()` and the token is
+HMAC-signed, so it is not attacker-reachable. And a platform admin who also holds a merchant role can
+now transact at a suspended merchant they administer — no escalation, since they can unilaterally
+reactivate it anyway, at most a lost audit step.
+
+### After PR #54
 
 - **Open item 17's remaining defects have not been worked through**, including the one real bug in
   it: both sweeps map their candidate rows *outside* the per-item try/catch, so one unmappable row
   disables a sweep permanently and silently (open item 2). Latent rather than live — reaching it
   needs database state the current CHECKs forbid — but it is on the money path and it is the
-  cheapest quality win available. Worth its own PR rather than riding along with a capability.
+  cheapest quality win available. **Its own PR**, not bundled into a capability: PR #54 was already
+  a security-sensitive change across identity and `shared/security`, and CLAUDE.md asks for one
+  focused change per PR. This is why the plan's "PR 0 = PLATFORM_ADMIN + all of item 17" was split.
+- **Then PR 1, Webhook** (`docs/phase-2-plan.md`), which depends on nothing and is the
+  highest-value Phase-2 capability. Migrations V24–V25, ADR-028 are reserved for it.
 
 **The judgement call to revisit when a second provider arrives.** Reconciliation reads this
 provider's `TIMED_OUT` as "nothing was collected", which is true of the simulator's file because
