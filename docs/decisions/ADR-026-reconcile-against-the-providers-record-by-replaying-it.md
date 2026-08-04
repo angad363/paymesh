@@ -99,6 +99,38 @@ The constant moved from `TimeOutProcessingPaymentsService` into `PaymentIntent`:
 branches on a value, that value is part of its vocabulary, and leaving it in the application layer
 would either invert the dependency direction or duplicate a string that must never disagree.
 
+### 4.1 The order-slot collision this reopened, found in review
+
+Making `FAILED` revivable reopened a hole in **ADR-011**, and the first draft of this ADR missed it.
+
+ADR-015 fails a stranded intent *precisely so* `uq_payment_intents_live_per_order` releases the
+order's slot and the merchant can try again — that is its stated operational point. So the ordinary
+sequence is: intent A times out, the merchant opens intent B on the same order, and only then does
+A's provider finally speak. Reviving A puts it back inside a partial unique index B now occupies:
+PostgreSQL raises a unique violation, the adapter turns it into
+`OrderHasActivePaymentIntentException`, and **nothing on the callback path caught it** — a 500, which
+per ADR-012 a provider retries forever, and a rolled-back transaction that takes the
+`provider_callbacks` row with it, so the refusal leaves no trace at all.
+
+`RecordProviderCallbackService.judge` now **pre-checks** `existsLiveForOrder` and refuses the
+revival as `IGNORED_TERMINAL`. Pre-checked, not caught: catching would be too late, because the
+exception kills the transaction holding the callback insert, and ADR-012 §6 makes "every refusal is
+recorded" load-bearing.
+
+**The newer intent wins.** ADR-011 makes one live intent per order structural so that collecting
+twice for one obligation is impossible rather than unlikely, and the merchant has already acted on
+the released slot. The `IGNORED_TERMINAL` row records that this provider claims it collected against
+an intent PayMesh has superseded — a genuine money divergence, and the one refusal in that file that
+means somebody has to look.
+
+### 4.2 A revived intent clears its failure reason
+
+Also found in review. `succeed()` and `withStatus()` carried `failureCode`/`failureMessage` through,
+which was harmless while no intent could leave `FAILED` — the fields were null on every path that
+reached them. A revived intent would have reached `SUCCEEDED` still reporting `provider_no_response`
+through `PaymentIntentResponse`, and any caller branching on `failureCode != null` would read a
+collected payment as failed. Forward transitions now clear both.
+
 **This fixes late callbacks too, not only reconciliation.** That is a feature: it is the same fact
 from the same authority, and it avoided building a second, reconciliation-only entrance to the state
 machine — the thing §2 argues against.

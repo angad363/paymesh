@@ -393,8 +393,15 @@ public final class PaymentIntent {
             PaymentIntentStatus.SUCCEEDED,
             capturedAmountMinor,
             refundedAmountMinor,
-            failureCode,
-            failureMessage,
+            // CLEARED, and only ADR-026 made this reachable. Until a timed-out FAILED intent became
+            // revivable, this could only ever run from PROCESSING, where both fields are already
+            // null -- so carrying them through was correct and untestable. It is neither now: a
+            // revived intent would reach SUCCEEDED still claiming `provider_no_response`, and
+            // PaymentIntentResponse returns both fields verbatim. A successful payment that also
+            // reports why it failed is worse than untidy: any caller branching on
+            // `failureCode != null` misreads it as failed.
+            null,
+            null,
             cancellationReason,
             cancelledAt,
             description,
@@ -676,8 +683,12 @@ public final class PaymentIntent {
             newStatus,
             capturedAmountMinor,
             refundedAmountMinor,
-            failureCode,
-            failureMessage,
+            // Same reasoning as succeed(): a forward transition leaves any earlier failure behind.
+            // Every caller of this method targets a non-FAILED status (PROCESSING, AUTHORIZED,
+            // REQUIRES_ACTION), and fail() is the only thing that sets these -- so clearing them is
+            // a no-op on every path that existed before ADR-026 and the fix on the one it added.
+            null,
+            null,
             cancellationReason,
             cancelledAt,
             description,

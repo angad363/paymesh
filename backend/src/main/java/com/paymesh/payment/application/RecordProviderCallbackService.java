@@ -172,6 +172,11 @@ public final class RecordProviderCallbackService {
             return Judgement.refused(ProviderCallbackOutcome.IGNORED_TERMINAL);
         }
 
+        // THE NEWER INTENT WINS. Pre-checked rather than caught, and that ordering is the point.
+        if (wouldCollideWithALiveIntent(intent)) {
+            return Judgement.refused(ProviderCallbackOutcome.IGNORED_TERMINAL);
+        }
+
         try {
             return Judgement.applied(transition(intent, event, now));
         } catch (ProviderOutcomeNotApplicableException notLegal) {
@@ -181,6 +186,55 @@ public final class RecordProviderCallbackService {
             // touched the database between the lock and here.
             return Judgement.refused(ProviderCallbackOutcome.IGNORED_TERMINAL);
         }
+    }
+
+    /**
+     * Would applying this event put a SECOND live intent on one order (ADR-011, ADR-026)?
+     *
+     * <h2>Why this exists at all</h2>
+     *
+     * Only ADR-026 made it reachable. Before it, a FAILED intent was permanently terminal, so a
+     * payment could never re-enter {@code uq_payment_intents_live_per_order} -- a partial unique
+     * index on {@code (merchant_id, order_id) WHERE status NOT IN ('FAILED','CANCELLED')} -- and
+     * this check would have been dead code.
+     * <p>
+     * ADR-026 made a timed-out FAILED intent revivable, and ADR-015 fails a stranded intent
+     * <b>precisely so the order's slot is released and the merchant can try again</b>. Those two
+     * compose into an ordinary sequence: intent A times out, the merchant opens intent B for the
+     * same order, and only then does A's provider finally speak.
+     *
+     * <h2>Why it is PRE-checked and not caught</h2>
+     *
+     * Letting it through raises a unique violation on the UPDATE, which the repository adapter turns
+     * into {@code OrderHasActivePaymentIntentException}. Catching that would be too late: the
+     * exception kills the transaction, and this method runs INSIDE the one holding the
+     * {@code provider_callbacks} insert, so the refusal would roll back with it. The event would
+     * leave no trace and be re-judged from scratch on every redelivery -- exactly what ADR-012
+     * section 6 makes "every refusal is recorded" load-bearing to prevent. The route would also
+     * answer 500, and a provider retries any non-2xx forever.
+     *
+     * <h2>Why the newer intent wins</h2>
+     *
+     * ADR-011 makes one live intent per order a structural guarantee, so that collecting twice for
+     * one obligation is impossible rather than merely unlikely. A revived A alongside a live B is two
+     * live collections against one order. The merchant has already acted on the released slot, so B
+     * is the intent the merchant and the customer believe in.
+     * <p>
+     * <b>Refused is not lost.</b> The IGNORED_TERMINAL row records that this provider says it
+     * collected against an intent PayMesh has superseded, which is a genuine money divergence and
+     * exactly what a human reconciling by hand needs. This is the one case in this file where a
+     * refusal means somebody has to look.
+     */
+    private boolean wouldCollideWithALiveIntent(PaymentIntent intent) {
+        // Only a revival can collide. A PROCESSING intent already occupies the slot it is about to
+        // keep occupying, so asking would always answer "yes" and refuse every ordinary callback.
+        if (intent.status() != PaymentIntentStatus.FAILED) {
+            return false;
+        }
+
+        // The intent being judged is FAILED, so it is not itself "live" -- no self-exclusion needed.
+        // A true here is always a DIFFERENT intent holding the order's slot.
+        return paymentIntents.existsLiveForOrder(intent.merchantId(), intent.orderId());
     }
 
     /**

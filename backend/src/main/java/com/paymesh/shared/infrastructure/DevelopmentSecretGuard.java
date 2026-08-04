@@ -13,13 +13,21 @@ import java.util.List;
  * that requirement while achieving nothing. The failure is silent, which is what makes it worth a
  * startup check.
  * <p>
- * <b>Three secrets now, and none of them is the lesser one.</b> The JWT key signs every access
+ * <b>Five secrets now, and none of them is the lesser one.</b> The JWT key signs every access
  * token; the provider callback key is the ONLY authentication on the endpoint that moves payments to
- * SUCCEEDED; the simulator key is the ONLY authentication on the routes that queue such a callback,
- * which is the same power reached one step earlier and without needing to sign anything. A published
- * value in any of the three means anyone can mark any payment on the platform collected -- so the
- * guard is a loop over a list rather than one check with siblings bolted on, and a fourth secret is
- * a line in {@link #GUARDED}.
+ * SUCCEEDED; the refund callback key is the same for money going back out, which posts a ledger
+ * reversal; the simulator key is the ONLY authentication on the routes that queue such a callback,
+ * which is the same power reached one step earlier and without needing to sign anything; and the
+ * reconciliation key is the caller's copy of that last one. A published value in any of them means
+ * anyone can move money on this platform -- so the guard is a loop over a list rather than one check
+ * with siblings bolted on, and the next secret is a line in {@link #GUARDED} plus a case in
+ * {@code ReconciliationApiKeyStartupTest} and its siblings.
+ * <p>
+ * <b>Two entries may share a VALUE without sharing a meaning.</b> The simulator key and the
+ * reconciliation key are the same string today because the provider is bundled -- one is what the
+ * provider expects, the other is what the caller sends -- and they stop being the same string the
+ * day the provider is external. Guarding them separately is what makes that split a config change
+ * rather than a security regression.
  * <p>
  * This lives in {@code shared} rather than in a capability module because it is a deployment rule,
  * not a payment or identity rule -- it says where a value may come from, not what the value means.
@@ -68,6 +76,14 @@ public class DevelopmentSecretGuard {
             "is the only authentication on /sim/v1/**, and POST /sim/v1/payments queues a callback "
                 + "that marks a payment SUCCEEDED -- so anyone could collect any payment on the "
                 + "platform without ever forging a signature"
+        ),
+        new GuardedSecret(
+            "paymesh.reconciliation.api-key",
+            "dev-only-insecure-simulator-api-key-change-me",
+            "PAYMESH_RECONCILIATION_API_KEY",
+            "is the CALLER's copy of the provider's API key, so a published value hands over "
+                + "whatever that key opens -- today the same /sim/v1/** access as the entry above, "
+                + "reached from the other side of the same door"
         )
     );
 

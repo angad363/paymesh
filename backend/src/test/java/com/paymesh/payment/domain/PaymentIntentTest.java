@@ -599,6 +599,36 @@ class PaymentIntentTest {
     }
 
     /**
+     * A REVIVED PAYMENT MUST NOT STILL SAY WHY IT FAILED.
+     * <p>
+     * Carrying `failureCode` through a forward transition was harmless until ADR-026, because no
+     * intent could leave FAILED and the field was null on every path that reached `succeed`. Now a
+     * revival can, and `PaymentIntentResponse` returns both fields verbatim -- so without this the
+     * API would report a SUCCEEDED payment that also claims `provider_no_response`, and any caller
+     * branching on `failureCode != null` would read it as failed.
+     * <p>
+     * <b>Sabotage that must turn this red:</b> pass `failureCode, failureMessage` instead of
+     * `null, null` in `succeed()` or `withStatus()`.
+     */
+    @Test
+    void clearsTheFailureReasonWhenARevivedPaymentMovesForward() {
+        PaymentIntent revived = failedWith(PaymentIntent.TIMEOUT_FAILURE_CODE).succeed(1999, NOW);
+
+        assertNull(revived.failureCode());
+        assertNull(revived.failureMessage());
+    }
+
+    /** The same on the other two revival targets, which go through `withStatus` rather than `succeed`. */
+    @Test
+    void clearsTheFailureReasonWhenARevivedPaymentIsAuthorizedOrChallenged() {
+        PaymentIntent authorized = failedWith(PaymentIntent.TIMEOUT_FAILURE_CODE).authorize(NOW);
+        PaymentIntent challenged = failedWith(PaymentIntent.TIMEOUT_FAILURE_CODE).requireAction(NOW);
+
+        assertNull(authorized.failureCode());
+        assertNull(challenged.failureCode());
+    }
+
+    /**
      * AND A PAYMENT THE PROVIDER ACTUALLY DECLINED STAYS TERMINAL FOREVER. This is the assertion
      * that makes the exception above narrow rather than a general un-failing of payments.
      * <p>
