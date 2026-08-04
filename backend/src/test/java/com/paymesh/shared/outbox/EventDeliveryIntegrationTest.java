@@ -24,6 +24,7 @@ import com.paymesh.payment.domain.ProviderEvent;
 import com.paymesh.payment.domain.ProviderOutcome;
 import com.paymesh.shared.outbox.application.EventDispatcher;
 import com.paymesh.shared.outbox.application.EventHandler;
+import com.paymesh.shared.outbox.application.OutboxReader;
 import com.paymesh.shared.outbox.application.OutboxWriter;
 import com.paymesh.shared.outbox.application.ProcessedEventRepository;
 import com.paymesh.shared.outbox.application.PublishOutboxEventsService;
@@ -82,6 +83,9 @@ class EventDeliveryIntegrationTest {
 
     @Autowired
     private OutboxWriter outboxWriter;
+
+    @Autowired
+    private OutboxReader reader;
 
     @Autowired
     private ProcessedEventRepository processedEvents;
@@ -360,6 +364,133 @@ class EventDeliveryIntegrationTest {
             .isEqualTo(OrderStatus.PAID);
     }
 
+    // --- THE RETRY BUDGET, AGAINST THE REAL SQL (ADR-025) ---------------------------------------
+
+    /**
+     * THE INCREMENT AND THE GIVE-UP ARE ONE STATEMENT, AND ONLY POSTGRESQL CAN PROVE IT. The unit
+     * tests drive a fake that reimplements {@code attempt_count + 1 >= maxAttempts} in Java; if the
+     * CASE expression in the native UPDATE disagreed with it, every one of them would still pass.
+     * This runs the actual statement.
+     * <p>
+     * <b>Sabotage that must turn this red:</b> change the CASE to {@code attempt_count >= :maxAttempts}
+     * in {@code SpringDataOutboxRepository}. The row then survives a fourth attempt it has no budget
+     * for, and the dead-letter assertion below fails.
+     */
+    @Test
+    void countsAttemptsAndDeadLettersOnTheOneThatSpendsTheBudget() {
+        MerchantId merchantId = existingMerchant();
+        OutboxEvent event = plainEvent(merchantId, "order.created");
+
+        recordFailure(event, "first boom", 3);
+        recordFailure(event, "second boom", 3);
+
+        assertThat(attemptCount(event)).isEqualTo(2);
+        assertThat(deadLetteredAt(event))
+            .as("two failures out of three is not a reason to give up")
+            .isNull();
+
+        recordFailure(event, "third boom", 3);
+
+        assertThat(attemptCount(event)).isEqualTo(3);
+        assertThat(deadLetteredAt(event)).isNotNull();
+        assertThat(lastError(event))
+            .as("only the most recent message is kept")
+            .isEqualTo("third boom");
+    }
+
+    /**
+     * A DEAD-LETTERED ROW LEAVES THE CLAIM QUERY. This is the property that closes open item 14: the
+     * abandoned event stops being re-claimed at the head of every pass, so the aggregate behind it
+     * drains. Asserted against the real partial index and the real predicate.
+     * <p>
+     * <b>Sabotage that must turn this red:</b> drop {@code and dead_lettered_at is null} from
+     * {@code findUnpublished}. The abandoned row is claimed again and the count below is 1.
+     */
+    @Test
+    void stopsClaimingAnEventItHasGivenUpOn() {
+        MerchantId merchantId = existingMerchant();
+        OutboxEvent event = plainEvent(merchantId, "order.created");
+
+        recordFailure(event, "boom", 1);
+
+        assertThat(claimableCount(merchantId))
+            .as("the relay has given up on this merchant's only event")
+            .isZero();
+        assertThat(unpublishedCount(merchantId))
+            .as("but it is retained, not deleted -- an operator can still requeue it")
+            .isEqualTo(1);
+    }
+
+    /**
+     * REQUEUEING IS THE DOCUMENTED ONE-LINE UPDATE, and it has to actually work: the ERROR the relay
+     * logs tells an operator to run exactly this, and V21 chose columns over a dead-letter table
+     * partly because the row never has to move back.
+     */
+    @Test
+    void deliversARequeuedEventAgain() {
+        MerchantId merchantId = existingMerchant();
+        OutboxEvent event = plainEvent(merchantId, "order.created");
+
+        recordFailure(event, "boom", 1);
+
+        jdbc.sql("""
+                update outbox_events
+                   set dead_lettered_at = null, attempt_count = 0
+                 where event_id = ?
+                """)
+            .param(event.eventId().value())
+            .update();
+
+        assertThat(claimableCount(merchantId)).isEqualTo(1);
+        assertThat(drain().published()).isGreaterThanOrEqualTo(1);
+        assertThat(unpublishedCount(merchantId)).isZero();
+    }
+
+    /**
+     * A PUBLISHED EVENT CANNOT BE DEAD-LETTERED AFTER THE FACT. {@code published_at is null} in the
+     * UPDATE's WHERE is a compare-and-swap on the same column {@code markPublished} swaps: a delivery
+     * that succeeded between the dispatch failing and the attempt being recorded must win over a
+     * failure that has since been superseded. Without it the relay could mark an event both delivered
+     * and abandoned, and the health indicator would raise an incident that never happened.
+     */
+    @Test
+    void refusesToGiveUpOnAnEventThatHasSinceBeenPublished() {
+        MerchantId merchantId = existingMerchant();
+        OutboxEvent event = plainEvent(merchantId, "order.created");
+
+        drain();
+
+        recordFailure(event, "a stale failure", 1);
+
+        assertThat(deadLetteredAt(event)).isNull();
+        assertThat(attemptCount(event))
+            .as("the whole statement is skipped, so the counter does not move either")
+            .isZero();
+    }
+
+    /**
+     * The health indicator's two numbers, read through the same port the indicator uses. The
+     * dead-lettered row must be absent from the AGE and present in the COUNT -- an abandoned event's
+     * age only grows, so including it would pin the alert past any threshold forever and make it
+     * worthless.
+     */
+    @Test
+    void excludesAbandonedEventsFromTheBacklogAgeButCountsThem() {
+        MerchantId merchantId = existingMerchant();
+        OutboxEvent abandoned = plainEvent(merchantId, "order.created");
+
+        long deadBefore = reader.backlogHealth().deadLettered();
+
+        recordFailure(abandoned, "boom", 1);
+
+        OutboxReader.BacklogHealth health = reader.backlogHealth();
+
+        assertThat(health.deadLettered()).isEqualTo(deadBefore + 1);
+        assertThat(claimableCount(merchantId))
+            .as("nothing of this merchant's remains deliverable, so it contributes no age")
+            .isZero();
+    }
+
     /**
      * A DELIVERED EVENT IS STAMPED AND NEVER SEEN AGAIN. {@code published_at IS NULL} is the entire
      * status model (V7): there is no status column to disagree with it and no cursor to keep.
@@ -430,6 +561,7 @@ class EventDeliveryIntegrationTest {
         int published = pass.published();
         int failed = pass.failed();
         int deferred = pass.deferred();
+        int deadLettered = pass.deadLettered();
 
         while (pass.published() > 0) {
             pass = relay.publish();
@@ -437,9 +569,10 @@ class EventDeliveryIntegrationTest {
             published += pass.published();
             failed += pass.failed();
             deferred += pass.deferred();
+            deadLettered += pass.deadLettered();
         }
 
-        return new RelayResult(examined, published, failed, deferred);
+        return new RelayResult(examined, published, failed, deferred, deadLettered);
     }
 
     private Fixture confirmedIntent(CaptureMethod captureMethod) {
@@ -554,6 +687,59 @@ class EventDeliveryIntegrationTest {
             .param(eventId.value())
             .query(Long.class)
             .single();
+    }
+
+    /**
+     * Records a failed attempt THE WAY THE RELAY DOES: inside a transaction. The underlying query is
+     * {@code @Modifying}, so calling the port bare would fail with "no active transaction" -- which
+     * is Spring telling the truth about a write that must not run outside one.
+     */
+    private void recordFailure(OutboxEvent event, String error, int maxAttempts) {
+        transactionTemplate.execute(status -> {
+            reader.recordFailedAttempt(event.eventId().value(), RELAY_RAN_AT, error, maxAttempts);
+            return null;
+        });
+    }
+
+    /** What the relay would actually claim: unpublished AND not given up on (V21). */
+    private long claimableCount(MerchantId merchantId) {
+        return jdbc
+            .sql("""
+                select count(*)
+                  from outbox_events
+                 where merchant_id = ?
+                   and published_at is null
+                   and dead_lettered_at is null
+                """)
+            .param(merchantId.value())
+            .query(Long.class)
+            .single();
+    }
+
+    private int attemptCount(OutboxEvent event) {
+        return column(event, "attempt_count", Integer.class);
+    }
+
+    private Instant deadLetteredAt(OutboxEvent event) {
+        return column(event, "dead_lettered_at", Instant.class);
+    }
+
+    private String lastError(OutboxEvent event) {
+        return column(event, "last_error", String.class);
+    }
+
+    /**
+     * Read straight from the table rather than through the entity. Three of these columns are
+     * deliberately UNMAPPED -- only the database has them -- which is the point: a test reading them
+     * through Java would be testing the mapping it does not have.
+     */
+    private <T> T column(OutboxEvent event, String column, Class<T> type) {
+        return jdbc
+            .sql("select " + column + " from outbox_events where event_id = ?")
+            .param(event.eventId().value())
+            .query(type)
+            .optional()
+            .orElse(null);
     }
 
     private long unpublishedCount(MerchantId merchantId) {

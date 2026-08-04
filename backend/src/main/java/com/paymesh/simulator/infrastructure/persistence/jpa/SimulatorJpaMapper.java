@@ -79,6 +79,7 @@ final class SimulatorJpaMapper {
         return new SimulatedRefundJpaEntity(
             refund.providerRefundId().value(),
             refund.providerPaymentId().value(),
+            refund.callbackReference(),
             refund.idempotencyKey(),
             refund.requestHash(),
             refund.amountMinor(),
@@ -94,6 +95,7 @@ final class SimulatorJpaMapper {
         return new SimulatedRefund(
             SimulatedRefundId.from(entity.providerRefundId()),
             SimulatedPaymentId.from(entity.providerPaymentId()),
+            entity.callbackReference(),
             entity.idempotencyKey(),
             entity.requestHash(),
             entity.amountMinor(),

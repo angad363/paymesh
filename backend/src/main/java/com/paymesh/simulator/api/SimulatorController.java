@@ -136,6 +136,7 @@ public final class SimulatorController {
             new CreateSimulatedRefundCommand(
                 request.idempotencyKey(),
                 SimulatedPaymentId.from(request.providerPaymentId()),
+                request.callbackReference(),
                 request.amountMinor()
             )
         ));

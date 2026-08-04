@@ -576,6 +576,89 @@ class PaymentIntentTest {
         }
     }
 
+    // --- THE ONE TERMINAL STATE THAT DOES NOT ABSORB (ADR-026) --------------------------------
+
+    /**
+     * A PAYMENT PayMesh GAVE UP ON IS STILL ANSWERABLE BY THE PROVIDER.
+     * <p>
+     * ADR-015's sweeper writes FAILED when the provider said NOTHING, and its own failure message
+     * admits the attempt "may still have succeeded at the provider and needs reconciliation". If the
+     * state machine absorbed the answer when it finally arrived -- late as a callback, or read out of
+     * the provider's daily file -- that sentence would be unactionable: PayMesh would hold a FAILED
+     * payment, the provider would hold the customer's money, and nothing could ever reconcile them.
+     * <p>
+     * <b>Sabotage that must turn this red:</b> delete the {@code isUnansweredTimeout()} branch from
+     * {@code requireProviderTransition}. Reconciliation then repairs nothing and the merchant stays
+     * short of every payment a lost callback cost them.
+     */
+    @Test
+    void acceptsAProviderOutcomeAgainstAPaymentItOnlyFailedBecauseNobodyAnswered() {
+        PaymentIntent gaveUp = failedWith(PaymentIntent.TIMEOUT_FAILURE_CODE);
+
+        assertEquals(PaymentIntentStatus.SUCCEEDED, gaveUp.succeed(1999, NOW).status());
+    }
+
+    /**
+     * A REVIVED PAYMENT MUST NOT STILL SAY WHY IT FAILED.
+     * <p>
+     * Carrying `failureCode` through a forward transition was harmless until ADR-026, because no
+     * intent could leave FAILED and the field was null on every path that reached `succeed`. Now a
+     * revival can, and `PaymentIntentResponse` returns both fields verbatim -- so without this the
+     * API would report a SUCCEEDED payment that also claims `provider_no_response`, and any caller
+     * branching on `failureCode != null` would read it as failed.
+     * <p>
+     * <b>Sabotage that must turn this red:</b> pass `failureCode, failureMessage` instead of
+     * `null, null` in `succeed()` or `withStatus()`.
+     */
+    @Test
+    void clearsTheFailureReasonWhenARevivedPaymentMovesForward() {
+        PaymentIntent revived = failedWith(PaymentIntent.TIMEOUT_FAILURE_CODE).succeed(1999, NOW);
+
+        assertNull(revived.failureCode());
+        assertNull(revived.failureMessage());
+    }
+
+    /** The same on the other two revival targets, which go through `withStatus` rather than `succeed`. */
+    @Test
+    void clearsTheFailureReasonWhenARevivedPaymentIsAuthorizedOrChallenged() {
+        PaymentIntent authorized = failedWith(PaymentIntent.TIMEOUT_FAILURE_CODE).authorize(NOW);
+        PaymentIntent challenged = failedWith(PaymentIntent.TIMEOUT_FAILURE_CODE).requireAction(NOW);
+
+        assertNull(authorized.failureCode());
+        assertNull(challenged.failureCode());
+    }
+
+    /**
+     * AND A PAYMENT THE PROVIDER ACTUALLY DECLINED STAYS TERMINAL FOREVER. This is the assertion
+     * that makes the exception above narrow rather than a general un-failing of payments.
+     * <p>
+     * The discriminator is the failure code, and it is load-bearing: {@code do_not_honour} records
+     * that the issuer ANSWERED, so a later SUCCEEDED is the provider contradicting itself and must be
+     * absorbed exactly as ADR-012 requires.
+     * <p>
+     * <b>Sabotage that must turn this red:</b> widen {@code isUnansweredTimeout()} to any FAILED
+     * intent, or drop the failure-code comparison. A declined payment then becomes collectible by a
+     * late or replayed event.
+     */
+    @Test
+    void stillAbsorbsAProviderOutcomeAgainstAPaymentTheProviderDeclined() {
+        PaymentIntent declined = failedWith("do_not_honour");
+
+        assertThrows(
+            ProviderOutcomeNotApplicableException.class, () -> declined.succeed(1999, NOW)
+        );
+        assertThrows(ProviderOutcomeNotApplicableException.class, () -> declined.authorize(NOW));
+    }
+
+    /** A FAILED intent with no code at all is not the sweeper's row either, so it stays terminal. */
+    @Test
+    void stillAbsorbsAProviderOutcomeAgainstAFailedPaymentWithNoFailureCode() {
+        assertThrows(
+            ProviderOutcomeNotApplicableException.class,
+            () -> reconstitutedWith(PaymentIntentStatus.FAILED).succeed(1999, NOW)
+        );
+    }
+
     /**
      * The 3DS loop. Confirming again from REQUIRES_ACTION is what makes the state machine cyclic,
      * and it is why the monotonic event clock exists: inside this cycle a stale REQUIRES_ACTION is a
@@ -598,6 +681,36 @@ class PaymentIntentTest {
         PaymentIntent parked = reconstitutedWith(PaymentIntentStatus.REQUIRES_ACTION);
 
         assertEquals(PaymentIntentStatus.CANCELLED, parked.cancel("abandoned", NOW).status());
+    }
+
+    /**
+     * A FAILED intent carrying a specific failure code. {@code reconstitutedWith} hard-codes a null
+     * code, and the code is exactly what ADR-026's narrow exception turns on -- so the two cases
+     * cannot be told apart without this.
+     */
+    private static PaymentIntent failedWith(String failureCode) {
+        return PaymentIntent.reconstitute(
+            PaymentIntentId.generate(),
+            MerchantId.generate(),
+            ORDER_ID,
+            null,
+            1999,
+            "INR",
+            CaptureMethod.AUTOMATIC,
+            PaymentMethodType.CARD,
+            PaymentIntentStatus.FAILED,
+            0,
+            0,
+            failureCode,
+            "the reason, whatever it was",
+            null,
+            null,
+            null,
+            null,
+            7,
+            NOW,
+            NOW
+        );
     }
 
     private static PaymentIntent reconstitutedWith(PaymentIntentStatus status) {

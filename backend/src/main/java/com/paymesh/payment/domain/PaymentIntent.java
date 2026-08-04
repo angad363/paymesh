@@ -92,6 +92,23 @@ public final class PaymentIntent {
         PaymentIntentStatus.REQUIRES_ACTION
     );
 
+    /**
+     * The failure code that means "the provider never answered", written by ADR-015's timeout sweep
+     * and by nothing else.
+     * <p>
+     * IT LIVES IN THE DOMAIN BECAUSE THE AGGREGATE BRANCHES ON IT (ADR-026, see
+     * {@code isUnansweredTimeout}). It began as a private constant in
+     * {@code TimeOutProcessingPaymentsService}, which was right while it was only a label on a row;
+     * once the state machine reads it, it is part of the aggregate's own vocabulary, and leaving it
+     * in the application layer would either invert the dependency direction or duplicate the string
+     * in two places that must never disagree.
+     * <p>
+     * Deliberately distinct from any code an issuer would send. {@code do_not_honour} or
+     * {@code insufficient_funds} would claim the issuer answered; it did not, and the entire point
+     * of the row is that PayMesh gave up waiting.
+     */
+    public static final String TIMEOUT_FAILURE_CODE = "provider_no_response";
+
     private static final int CUSTOMER_REFERENCE_MAX_LENGTH = 40;
     private static final int ORDER_REFERENCE_MAX_LENGTH = 40;
     private static final int DESCRIPTION_MAX_LENGTH = 500;
@@ -376,8 +393,15 @@ public final class PaymentIntent {
             PaymentIntentStatus.SUCCEEDED,
             capturedAmountMinor,
             refundedAmountMinor,
-            failureCode,
-            failureMessage,
+            // CLEARED, and only ADR-026 made this reachable. Until a timed-out FAILED intent became
+            // revivable, this could only ever run from PROCESSING, where both fields are already
+            // null -- so carrying them through was correct and untestable. It is neither now: a
+            // revived intent would reach SUCCEEDED still claiming `provider_no_response`, and
+            // PaymentIntentResponse returns both fields verbatim. A successful payment that also
+            // reports why it failed is worse than untidy: any caller branching on
+            // `failureCode != null` misreads it as failed.
+            null,
+            null,
             cancellationReason,
             cancelledAt,
             description,
@@ -586,18 +610,55 @@ public final class PaymentIntent {
      * provider retries on any non-2xx, so a conflict would be an infinite retry loop against a
      * payment that is already finished.
      * <p>
+     * <b>With exactly one exception, added by ADR-026: a payment this platform failed because nobody
+     * answered.</b> That state records the absence of an outcome rather than an outcome, so the
+     * provider's word still settles it -- see {@link #isUnansweredTimeout()}, which is deliberately
+     * narrow and is the only way past the check below.
+     * <p>
      * It is only ONE of the two. The state machine cannot refuse a stale event inside the
      * PROCESSING/REQUIRES_ACTION cycle, because there the stale event is a legal transition. The
      * monotonic event clock is what refuses that, and neither mechanism subsumes the other.
      */
     private void requireProviderTransition(PaymentIntentStatus target, Instant occurredAt) {
-        if (status != PaymentIntentStatus.PROCESSING) {
+        if (status != PaymentIntentStatus.PROCESSING && !isUnansweredTimeout()) {
             throw new ProviderOutcomeNotApplicableException(paymentIntentId, status, target);
         }
 
         if (occurredAt == null) {
             throw new IllegalArgumentException("Provider event timestamp cannot be null");
         }
+    }
+
+    /**
+     * FAILED BECAUSE PayMesh GAVE UP WAITING -- WHICH IS A GUESS, NOT A FACT (ADR-026).
+     *
+     * <h2>The one terminal state that does not absorb, and why it is not a hole in the rule above</h2>
+     *
+     * Every other terminal state records something that HAPPENED and that PayMesh was told about: the
+     * provider declined, the provider collected, the merchant cancelled. A late event contradicting
+     * any of those is the provider being wrong or slow, and absorbing it is correct.
+     * <p>
+     * This one records the opposite. {@code TimeOutProcessingPaymentsService} writes it when the
+     * provider said <b>nothing at all</b>, and its own javadoc calls it a guess in the safe
+     * direction whose real answer is reconciliation; ADR-015 names that job as the mitigation and
+     * the failure MESSAGE on the row says outright that the attempt "may still have succeeded at the
+     * provider and needs reconciliation". Absorbing the answer when it finally arrives would make
+     * that sentence unactionable: PayMesh would hold a FAILED payment, the provider would hold the
+     * customer's money, and the two could never be reconciled because the reconciling event is
+     * refused by the state machine.
+     * <p>
+     * So the guess is revisable, by the only thing that can settle it -- the provider's own word,
+     * arriving late as a callback or read out of its daily file. <b>{@link #TIMEOUT_FAILURE_CODE} is
+     * what makes this narrow rather than a general un-failing of payments</b>: it is written by
+     * exactly one caller, it means "nobody answered", and a payment the provider actually declined
+     * carries the provider's code instead and stays terminal forever.
+     * <p>
+     * The monotonic clock still applies on top of this. A revision must still be strictly newer than
+     * the last provider event seen, so this widens WHICH states a provider may speak into -- not
+     * whether a stale event may speak at all.
+     */
+    private boolean isUnansweredTimeout() {
+        return status == PaymentIntentStatus.FAILED && TIMEOUT_FAILURE_CODE.equals(failureCode);
     }
 
     /**
@@ -622,8 +683,12 @@ public final class PaymentIntent {
             newStatus,
             capturedAmountMinor,
             refundedAmountMinor,
-            failureCode,
-            failureMessage,
+            // Same reasoning as succeed(): a forward transition leaves any earlier failure behind.
+            // Every caller of this method targets a non-FAILED status (PROCESSING, AUTHORIZED,
+            // REQUIRES_ACTION), and fail() is the only thing that sets these -- so clearing them is
+            // a no-op on every path that existed before ADR-026 and the fix on the one it added.
+            null,
+            null,
             cancellationReason,
             cancelledAt,
             description,

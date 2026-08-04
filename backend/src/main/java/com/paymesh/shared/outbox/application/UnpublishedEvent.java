@@ -28,6 +28,13 @@ import java.util.Map;
  * {@link OutboxReader} port returns, and a port's own package must be able to name its return type.
  * It carries no JPA type and no framework annotation.
  */
+/**
+ * @param attemptCount how many delivery attempts have already FAILED for this row (V21). Carried so
+ *     the relay can say, without a second query, whether the failure it is about to record is the
+ *     one that exhausts the retry budget -- the difference between a WARN that will resolve itself
+ *     and an ERROR nobody else will ever raise. Like every other component here it is unvalidated:
+ *     a negative value survives construction and is simply a number the relay compares.
+ */
 public record UnpublishedEvent(
     String eventId,
     String merchantId,
@@ -36,7 +43,8 @@ public record UnpublishedEvent(
     String eventType,
     int eventVersion,
     Map<String, Object> payload,
-    Instant occurredAt
+    Instant occurredAt,
+    int attemptCount
 ) {
 
     /**

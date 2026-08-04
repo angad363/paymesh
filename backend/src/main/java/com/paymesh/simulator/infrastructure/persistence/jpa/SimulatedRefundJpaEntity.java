@@ -24,6 +24,10 @@ public class SimulatedRefundJpaEntity {
     @Column(name = "provider_payment_id", nullable = false, length = 50)
     private String providerPaymentId;
 
+    // Nullable: rows written before V22 have none, and a caller may legitimately send none.
+    @Column(name = "callback_reference", length = 120)
+    private String callbackReference;
+
     @Column(name = "idempotency_key", nullable = false, length = 120)
     private String idempotencyKey;
 
@@ -56,6 +60,7 @@ public class SimulatedRefundJpaEntity {
     SimulatedRefundJpaEntity(
         String providerRefundId,
         String providerPaymentId,
+        String callbackReference,
         String idempotencyKey,
         String requestHash,
         long amountMinor,
@@ -67,6 +72,7 @@ public class SimulatedRefundJpaEntity {
     ) {
         this.providerRefundId = providerRefundId;
         this.providerPaymentId = providerPaymentId;
+        this.callbackReference = callbackReference;
         this.idempotencyKey = idempotencyKey;
         this.requestHash = requestHash;
         this.amountMinor = amountMinor;
@@ -83,6 +89,10 @@ public class SimulatedRefundJpaEntity {
 
     String providerPaymentId() {
         return providerPaymentId;
+    }
+
+    String callbackReference() {
+        return callbackReference;
     }
 
     String idempotencyKey() {

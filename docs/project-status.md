@@ -1,6 +1,6 @@
 # PayMesh — Project Status and Roadmap
 
-_Last updated: 2 August 2026. Update this file at the end of a working session, not
+_Last updated: 4 August 2026. Update this file at the end of a working session, not
 during one._
 
 This is the pick-up-here document. It records what exists, what has actually been
@@ -21,8 +21,15 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1118 tests, 0 failures.** Twenty Flyway migrations (V1–V20). Twenty-four ADRs. The Postman
+**1174 tests, 0 failures.** Twenty-two Flyway migrations (V1–V22). Twenty-six ADRs. The Postman
 collection runs fourteen folders, the newest showing money go back out.
+
+**Phase 1 is complete, including its operational half.** The last PR closed the three things that
+were still only described: the outbox relay now gives up on an event rather than freezing its
+aggregate forever (ADR-025), `GET /sim/v1/reconciliation/{date}` is finally read by a job that
+repairs what it finds (ADR-026), and `/actuator/health` reports when delivery has stopped. A
+payment the provider collected and ADR-015's sweeper wrongly failed is now put right from the
+provider's own record, and the Ledger posts the balance it should always have had.
 
 **The Ledger is the financial source of truth, and as of this session it exists** (ADR-018).
 A captured payment posts a balanced double-entry journal, and `GET /api/v1/balances` reports
@@ -80,16 +87,17 @@ The SDD describes ~15 services across 31 sections. This is what the code actuall
 | Order | §11.1–§11.4, §11.6 | Built, including `order_state_history`. §11.5's events are written **and now published**. Every status in the enum is reachable. |
 | Payment | §12.1 (partially), §12.2–§12.3, §12.5–§12.6 | Core built. **§12.4 confirm is not implemented**; 2 of the 10 §12.1 states are reachable. |
 | Idempotency & concurrency | §23.1–§23.2 | Built in PostgreSQL. §23.3's Redis accelerator: not built, deliberately. |
-| Events / outbox | §22.1 envelope, §22.3 outbox, §22.4 inbox, §24 durability | Built: in-transaction write, a scheduled relay, an in-process dispatcher, `processed_events`, and one consumer (ADR-016). **§22.2 (Kafka topics and partition keys) does not exist, deliberately** — the consumer contract is a broker's, so the transport can be swapped without touching a consumer. §24's alerting does not exist either. |
+| Events / outbox | §22.1 envelope, §22.3 outbox, §22.4 inbox, §24 durability | Built: in-transaction write, a scheduled relay, an in-process dispatcher, `processed_events`, consumers, and a retry budget with a dead letter (ADR-025). **§22.2 (Kafka topics and partition keys) does not exist, deliberately** — the consumer contract is a broker's, so the transport can be swapped without touching a consumer. **§24's alerting now exists** as a health indicator on oldest-unpublished age and abandoned-event count; it is not metrics, and §26 still has none. |
 | API Gateway / Edge | §7 | Partial. API keys exist (ADR-022) and HMAC guards both callback routes; rate limiting is absent. |
-| Provider Simulator | §13.1–§13.2, §13.5–§13.6 | Built. **§13.3's payouts and §13.4's `provider_payouts` are not** — Settlement is Phase 2 and has no consumer. Percentage-based injection is deliberately absent (ADR-017 §5). |
+| Provider Simulator | §13.1–§13.2, §13.5–§13.6 | Built, and §13.1's reconciliation export is now **read** (ADR-026). **§13.3's payouts and §13.4's `provider_payouts` are not** — Settlement is Phase 2 and has no consumer. Percentage-based injection is deliberately absent (ADR-017 §5). |
+| Reconciliation | §21.4 | Built (ADR-026). Fetches the provider's daily record over HTTP and replays every terminal row through the ordinary callback path, so ADR-015's and ADR-023's timeout *guesses* are revisable by the provider's own word. No settlement reconciliation and no fee reconciliation — neither exists to reconcile. |
 | Risk & Fraud | §14 | Not started. |
 | Ledger | §15.1–§15.2, §15.6 | Core built (ADR-018): double-entry accounts, journals, immutable entries, and a merchant balance. **§15.3's internal posting API is deliberately absent** — the only writer is an event consumer, so every posting traces to a committed state change. **§15.5's `balance_holds` and `account_balances` are not built**: nothing reserves funds until Settlement, and a SUM over entries cannot drift the way a projection can. No fee split (§15.2) — there is no fee schedule. No reversal path yet; Refund brings it. |
 | Refund | §16.1–§16.3, §16.5–§16.6 | Built (ADR-019). Create, read, list, cancel, and a Refund-owned callback route. **§16.4's `refund_reservations` and `refund_attempts` are not built** — the first is a second copy of what `refunds.status` says, the second is for a conversation a refund does not have. §16.3's ops retry route is absent. §16.6's third line — reconciling a lost callback — is the known gap. |
 | Settlement, Webhook, Notification/Reporting/Audit, AI Ops | §17–§20 | Not started. |
-| End-to-end workflows | §21 | Only the create-order → create-intent prefix exists; §21.4 reconciliation is absent. |
+| End-to-end workflows | §21 | The create-order → collect → refund path exists, and **§21.4 reconciliation is now built** (ADR-026). |
 | Security & privacy | §25 | Partial: authn, tenant isolation, secret guards. No encryption at rest, no key management, no audit trail beyond `security_events`. |
-| Observability | §26 | `/actuator/health` and `/actuator/info`. No OpenTelemetry, metrics, or structured correlation ids. |
+| Observability | §26 | `/actuator/health` and `/actuator/info`, the former now carrying the outbox backlog alert (ADR-025). No OpenTelemetry, metrics, tracing or structured correlation ids. |
 | Deployment / IaC | §27 | Not started. `infrastructure/` and `scripts/` are empty. |
 
 ---
@@ -600,26 +608,42 @@ failing test._
    merchant's escape is a fresh key — backstopped by `merchant_order_ref`, which is
    precisely why those two dedup rules stay independent. But the cost is a wedged key,
    not merely table growth.
-14. **A permanently failing event freezes its own aggregate forever, silently.** _(This
-   replaces the old item 14, "the outbox has no relay" — closed by ADR-016.)_ The relay retries a
-   failed event at the head of every pass and defers that aggregate's later events behind it, so
-   ordering holds and the rest of the platform drains. But there is **no dead-letter table, no
-   attempt counter and no alert** — only a WARN per pass and a growing
-   `min(occurred_at) where published_at is null`, which is precisely SDD §24's metric and needs
-   observability that does not exist. This is the largest known hole in event delivery.
+14. ~~**A permanently failing event freezes its own aggregate forever, silently.**~~ **CLOSED by
+   ADR-025.** Every failure now increments `attempt_count` and records its message, and the attempt
+   that reaches `max-attempts` (25, ≈ one minute at the 2s interval) stamps `dead_lettered_at`,
+   which drops the row out of the claim query so the aggregate behind it drains on the next pass.
+   The event is **not delivered and not deleted** — it is retained in place, in order, requeued by
+   clearing the stamp, and it raises one ERROR carrying the exact statement to do so.
+   `OutboxBacklogHealthIndicator` reports `/actuator/health` DOWN while any event is abandoned or
+   while the oldest deliverable one exceeds `backlog-alert-age`, which is SDD §24's own metric.
 
-   Smaller residue from the same change: **delivery is asynchronous**, so a merchant polling
-   immediately after a capture may read `PENDING` for a second or two; `occurred_at` is not
+   Two things ADR-025 surfaced and did NOT close, recorded here rather than left for the next
+   reader. **The health indicator must never be wired to a Kubernetes liveness or readiness probe**
+   when SDD §27 lands: restarting does not deliver a dead event, and draining an instance removes
+   the process working through the backlog. It belongs in a health group alerting scrapes and
+   orchestration ignores. And there is still **no attempt-level history** — only the most recent
+   error is kept, so a row that failed for two different reasons tells you only the second.
+
+   Residue from ADR-016 that ADR-025 did not touch: **delivery is asynchronous**, so a merchant
+   polling immediately after a capture may read `PENDING` for a second or two; `occurred_at` is not
    unique, so two events for one aggregate at the same instant have no defined order (the same
    trade ADR-012 accepts, with the same fix — a sequence number); neither `outbox_events` nor
-   `processed_events` is ever pruned; and there is one relay instance with no leader election
-   (two would be safe, the inbox arbitrates, but wasteful). **Merchant and Customer still emit no
-   events at all**, and `order.paid`, `order.partially_paid`, `order.created`, `order.cancelled`,
-   `order.expired`, `payment.created`, `payment.cancelled`, `payment.failed`,
-   `payment.authorized` and `payment.requires_action` are all delivered to nobody — dispatched to
-   an empty handler list and stamped published, which is the correct handling of an event nobody
+   `processed_events` is ever pruned; and there is one relay instance with no leader election (two
+   would be safe, the inbox arbitrates, but wasteful). **Merchant and Customer still emit no events
+   at all**, and a number of `order.*` and `payment.*` events are delivered to nobody — dispatched
+   to an empty handler list and stamped published, which is the correct handling of an event nobody
    wants.
-15. **Smaller:** `DevelopmentSecretGuard` surfaces as a raw stack trace rather than the
+
+15. **Reconciliation cannot tell an unknown refund from a settled one.** `RecordRefundCallback
+   Service` returns `NOT_APPLICABLE` for both — its declared meaning is "a new event for a refund
+   already terminal", but it also returns it for a callback naming a refund that does not exist,
+   which it cannot record because `refund_callbacks` has a foreign key to `refunds`. From the
+   reconciliation adapter the two are indistinguishable, so both count as `ALREADY_CONSISTENT`
+   (ADR-026 §8). Chosen deliberately: a settled refund is the common case, so counting the pair as
+   unresolved would make that number permanently large and meaningless — the same always-red-equals-
+   off failure the outbox health indicator avoids. `REPAIRED` is exact either way. Closing it needs
+   a distinct value on Refund's outcome enum, which is Refund's PR.
+16. **Smaller:** `DevelopmentSecretGuard` surfaces as a raw stack trace rather than the
     tidy `APPLICATION FAILED TO START` block a `FailureAnalyzer` would give it;
     `ModuleBoundaryTest` allowlists by *filename* rather than path, so a
     `OrderConfiguration.java` created under `order/application` would pass;
@@ -640,67 +664,45 @@ failing test._
 
 ## What comes next
 
-### Phase 1 is done; what is left is operational
+### Phase 1 is done, operational half included
 
-**Payment is feature-complete.** Create, attach, confirm, provider callbacks (deduplicated
-and ordered), manual capture and cancel are all built, alongside Order's state history, the
-expiry sweep, the `PROCESSING` timeout and the abandoned-checkout sweep. **Every state in the
-intent enum is now reachable** — `PARTIALLY_REFUNDED` and `REFUNDED` were the last two, declared
-in V8 and produced by nothing until Refund landed.
+**Payment, Refund and the Ledger are feature-complete, and so is the machinery around them.** Every
+state in the intent enum is reachable, every capability the SDD lists for Phase 1 is built, and the
+three items that were still only *described* are now built:
 
-**Phase 1 is complete.** Every capability the SDD lists for it is built.
+| Was | Now |
+|---|---|
+| A refund whose callback never arrived sat `PROCESSING` forever, holding its amount against the captured total | Closed by **ADR-023**: a sweeper fails it on a deliberately long timer, re-reading under lock so a callback arriving in the gap wins |
+| `GET /sim/v1/reconciliation/{date}` produced the provider's truth and nothing read it | Closed by **ADR-026**: a job reads it over HTTP and replays every terminal row through the ordinary callback path |
+| A failing event was retried forever with no dead letter and no alert | Closed by **ADR-025**: a retry budget, a dead-letter stamp that unblocks the aggregate, and a health indicator on backlog age |
 
-**The next PR should be reconciliation, not a Phase 2 capability.** Three separate places now
-depend on a job that does not exist:
+**The most important consequence, stated plainly.** ADR-015 fails a stranded payment on a guess and
+says so; until this session that guess was final, and a payment the provider had actually collected
+stayed `FAILED` forever with the Ledger never posting and the merchant simply short. It is now
+revisable — by a late callback, or by the provider's daily record — and only while the failure code
+is the sweeper's own. A payment the provider *declined* stays terminal forever. That narrowness is
+the whole safety argument and is pinned down directly in `PaymentIntentTest`.
 
-- A refund whose callback never arrives stays `PROCESSING` **forever**, holding its amount against
-  the captured total so the merchant cannot refund the rest. Payment has a sweeper for exactly this
-  shape (ADR-015); Refund has none. This is the worst of the three, because it silently reduces
-  what a merchant can do.
-- `GET /sim/v1/reconciliation/{date}` produces the provider-truth file ADR-015's recovery leans on,
-  and nothing reads it.
-- An event that fails to deliver is retried forever with no dead-letter and no alert (open item 14).
+### What is genuinely next
 
-Three things were waiting on the simulator, and it is worth being precise about which of them it
-actually closed, because the temptation to overclaim is real:
+**Phase 2, in SDD order: Risk (§14), Settlement (§17), Webhook (§18), Notification/Reporting (§19–20).**
+Nothing in Phase 1 blocks any of them.
 
-- **Reachability: closed.** Every provider-driven state — `SUCCEEDED`, `FAILED`, `AUTHORIZED`,
-  `REQUIRES_ACTION`, and the stranded `PROCESSING` that ADR-015's sweeper exists for — is now
-  reachable from outside, deterministically, with no hand-signed request. So are all four callback
-  outcomes PayMesh can answer.
-- **Reconciliation: not closed, but unblocked.** `GET /sim/v1/reconciliation/{date}` produces the
-  input ADR-015 leans on. The *job* that compares the provider's truth to PayMesh's and repairs a
-  divergence does not exist. This removed the reason it could not be written; it did not write it.
-- **A provider sequence number: not closed.** The simulator could emit one, but nothing reads it —
-  the field would have to be added to `payment_attempts`, the request record, `ProviderEvent` and the
-  guard, all of which live in the module the simulator may not import. That is Payment's PR.
-- **Per-provider credentials: still open**, and argued in ADR-017 §3 to be closer rather than
-  further, since the signing secret is now read at exactly one place.
+Two pieces of housekeeping worth doing before or alongside the first Phase-2 capability, neither
+large:
 
-The Ledger stays last to be extracted, and now both posts and reverses. Its immutability
-triggers turned out to do exactly the job ADR-018 claimed for them: when Refund arrived there was
-no "undo a posting" operation to reach for, so the correction could only be a new journal in the
-opposite direction. The design forced the right answer rather than relying on discipline.
+- **The Postman collection and `project-walkthrough.md` have not caught up with ADR-025 and
+  ADR-026.** No folder exercises reconciliation, and the walkthrough's §6.3 still lists event
+  delivery's operational half as missing.
+- **Open item 15's list of smaller defects has not been worked through** and has been growing for
+  several sessions. It is the cheapest quality win available.
 
-**One caveat worth carrying forward from ADR-019 §4.1.** The deferred-constraint-trigger pattern
-V15 introduced has a sharp edge that was found the hard way: a constraint trigger's query runs on
-the snapshot of the statement that queued it, so it *cannot* see a concurrently committed row.
-V15's balance trigger is unaffected — a journal's entries are all written by one transaction — but
-V16's over-refund trigger was not, and needed a row lock beside it. Anywhere this pattern is reused
-to check a rule across rows written by *different* transactions, the trigger alone is not enough.
-
-**Event delivery paid for itself exactly as ADR-016 predicted.** The consumer contract was
-deliberately the one a Kafka consumer would need — an envelope in, `processed_events` dedup,
-an idempotent handler — so that the Ledger could be written as a second `EventHandler` on
-`payment.succeeded` without touching anything shared. It was: the Ledger's consumer is one
-class, one `@Bean` in its own configuration, and no change to Order, Payment or `shared`.
-Two consumers read `payment.succeeded` and two read `refund.succeeded`, each deduping
-independently — which is what `processed_events` being keyed on `(consumer_name, event_id)` rather
-than the event alone buys. Payment is now on both sides of the bus, producing one and consuming the
-other, and still imports nothing new.
-
-What is still missing on the delivery side is the operational half rather than the mechanism:
-no dead-letter, no attempt counter, no "oldest unpublished event age" alert (open item 14).
+**The judgement call to revisit when a second provider arrives.** Reconciliation reads this
+provider's `TIMED_OUT` as "nothing was collected", which is true of the simulator's file because
+those rows carry `capturedAmountMinor = 0`. A real acquirer may report an outcome it genuinely does
+not yet know, and a file meaning "unknown" must never be read as "nothing moved". That judgement
+belongs in the provider's adapter — which is why the job carries the provider's status as a raw
+string and skips every value it does not recognise rather than defaulting.
 
 ### Working method that has been effective
 

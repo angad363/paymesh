@@ -8,6 +8,8 @@ import java.time.Instant;
 public record SimulatedRefundResponse(
     String providerRefundId,
     String providerPaymentId,
+    /** The caller's own reference. The only field on this row the caller can resolve back. */
+    String callbackReference,
     long amountMinor,
     String status,
     String failureCode,
@@ -20,6 +22,7 @@ public record SimulatedRefundResponse(
         return new SimulatedRefundResponse(
             refund.providerRefundId().value(),
             refund.providerPaymentId().value(),
+            refund.callbackReference(),
             refund.amountMinor(),
             refund.status().name(),
             refund.failureCode(),

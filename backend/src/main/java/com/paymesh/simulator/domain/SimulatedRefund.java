@@ -14,6 +14,16 @@ import java.time.Instant;
 public record SimulatedRefund(
     SimulatedRefundId providerRefundId,
     SimulatedPaymentId providerPaymentId,
+    /**
+     * The CALLER's own opaque string, echoed back and never interpreted (ADR-026). The simulator has
+     * no idea PayMesh puts a refund id here; it knows only that this is the field the caller will
+     * want to read its own row back by. Exactly what {@code callbackReference} already is on
+     * {@link SimulatedPayment}.
+     * <p>
+     * Nullable, and it stays that way: a caller that supplies nothing gets a row it cannot resolve,
+     * which is its problem to notice in the export rather than an error the provider invents.
+     */
+    String callbackReference,
     String idempotencyKey,
     String requestHash,
     long amountMinor,
@@ -64,6 +74,7 @@ public record SimulatedRefund(
     public static SimulatedRefund start(
         SimulatedRefundId providerRefundId,
         SimulatedPaymentId providerPaymentId,
+        String callbackReference,
         String idempotencyKey,
         String requestHash,
         long amountMinor,
@@ -75,6 +86,7 @@ public record SimulatedRefund(
         return new SimulatedRefund(
             providerRefundId,
             providerPaymentId,
+            callbackReference,
             idempotencyKey,
             requestHash,
             amountMinor,

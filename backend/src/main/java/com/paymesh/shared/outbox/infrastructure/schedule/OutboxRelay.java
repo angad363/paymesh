@@ -45,8 +45,9 @@ public final class OutboxRelay {
 
         if (result.examined() > 0) {
             log.info(
-                "Outbox relay examined={} published={} failed={} deferred={}",
-                result.examined(), result.published(), result.failed(), result.deferred()
+                "Outbox relay examined={} published={} failed={} deferred={} deadLettered={}",
+                result.examined(), result.published(), result.failed(), result.deferred(),
+                result.deadLettered()
             );
         }
     }

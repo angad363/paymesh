@@ -276,6 +276,15 @@ class ModuleBoundaryTest {
                 continue;
             }
 
+            // Reconciliation is the ONE exception, and it is checked more strictly than this loop
+            // can express: reconciliationReachesPaymentAndRefundOnlyThroughItsAdapters pins it to
+            // two named files. It reaches Refund to REPLAY a provider outcome through Refund's own
+            // callback service, so the arrow still points one way -- Refund learns nothing about
+            // reconciliation, and noCapabilityImportsReconciliation holds it to that.
+            if (capability.equals("reconciliation")) {
+                continue;
+            }
+
             assertOnlyTheseImport("com/paymesh/" + capability, "com.paymesh.refund.", List.of());
         }
 
@@ -440,9 +449,62 @@ class ModuleBoundaryTest {
         assertOnlyTheseImport("com/paymesh/shared", "com.paymesh.simulator.", List.of());
     }
 
+    /**
+     * RECONCILIATION REACHES TWO CAPABILITIES, AND ONLY THROUGH ONE ADAPTER EACH.
+     * <p>
+     * It is the first module here that legitimately needs both Payment and Refund, because a
+     * provider's daily file describes money going out and money coming back in one document. That
+     * makes the allowlist the load-bearing part: the job itself must not be able to see either
+     * module, or the replay-do-not-diff rule that keeps the transition logic in one place would be
+     * one convenient import away from being undone.
+     *
+     * @see com.paymesh.reconciliation.application.ReconcileProviderDayService
+     */
+    @Test
+    void reconciliationReachesPaymentAndRefundOnlyThroughItsAdapters() throws IOException {
+        assertOnlyTheseImport(
+            "com/paymesh/reconciliation",
+            "com.paymesh.payment.",
+            List.of(
+                "reconciliation/infrastructure/payment/PaymentModuleRepair.java",
+                "reconciliation/infrastructure/config/ReconciliationConfiguration.java"
+            )
+        );
+
+        assertOnlyTheseImport(
+            "com/paymesh/reconciliation",
+            "com.paymesh.refund.",
+            List.of(
+                "reconciliation/infrastructure/refund/RefundModuleRepair.java",
+                "reconciliation/infrastructure/config/ReconciliationConfiguration.java"
+            )
+        );
+    }
+
+    /**
+     * NOTHING REACHES BACK INTO RECONCILIATION, and the empty allowlist is the claim. It is a
+     * consumer of other modules and a producer for none: no capability should ever learn that a
+     * repair job exists, or a divergence would start being handled in two places.
+     */
+    @Test
+    void noCapabilityImportsReconciliation() throws IOException {
+        for (String capability : CAPABILITIES) {
+            if (capability.equals("reconciliation")) {
+                continue;
+            }
+
+            assertOnlyTheseImport("com/paymesh/" + capability, "com.paymesh.reconciliation.", List.of());
+        }
+
+        assertOnlyTheseImport("com/paymesh/shared", "com.paymesh.reconciliation.", List.of());
+    }
+
     /** Every capability package except the simulator itself. */
     private static final List<String> CAPABILITIES =
-        List.of("merchant", "identity", "customer", "order", "payment", "ledger", "refund");
+        List.of(
+            "merchant", "identity", "customer", "order", "payment", "ledger", "refund",
+            "reconciliation"
+        );
 
     private static void assertOnlyTheseImport(
         String moduleDirectory,
