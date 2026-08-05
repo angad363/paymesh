@@ -158,6 +158,32 @@ class DeliverWebhooksServiceTest {
         assertThat(sender.sent()).isEmpty();
     }
 
+    /**
+     * ONE BAD ROW MUST NOT DISABLE THE PASS, which is the mistake open item 2 records in two
+     * existing sweeps -- there the candidate rows are mapped OUTSIDE the per-item boundary, so one
+     * row nobody can rehydrate stops the sweep permanently and silently.
+     *
+     * <p>Driven here through a delivery whose endpoint is gone, which the composite foreign key
+     * says cannot happen and which is therefore exactly the class of surprise worth surviving.
+     */
+    @Test
+    void aDeliveryThatThrowsCostsOneDeliveryAndNotTheBatch() {
+        WebhookEndpoint orphaned = WebhookEndpoint.register(
+            MERCHANT.value(), "https://gone.test/hooks", List.of("payment.succeeded"), NOW
+        );
+
+        queue(orphaned);
+        queue(endpoint());
+
+        DeliverWebhooksService.DispatchResult result = service.dispatch();
+
+        assertThat(result.examined()).isEqualTo(2);
+        assertThat(result.errored()).isEqualTo(1);
+        assertThat(result.delivered())
+            .as("the delivery behind the bad one still went out")
+            .isEqualTo(1);
+    }
+
     /** A retry scheduled into the future is not due yet. */
     @Test
     void doesNotSendADeliveryWhoseBackoffHasNotElapsed() {

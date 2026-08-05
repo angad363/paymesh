@@ -11864,7 +11864,7 @@
          "pm.test('the id is opaque and prefixed (ADR-003)', () =>",
          "    pm.expect(b.id).to.match(/^whe_[0-9a-f-]{36}$/));",
          "pm.test('the secret is shown, once, and is prefixed', () =>",
-         "    pm.expect(b.secret).to.match(/^whsec_[A-Za-z0-9_-]{43}$/));",
+         "    pm.expect(b.secret).to.match(/^pmsec_[A-Za-z0-9_-]{43}$/));",
          "pm.test('version 1, because rotation is an integer bump', () =>",
          "    pm.expect(b.secretVersion).to.eql(1));",
          "pm.test('ACTIVE', () => pm.expect(b.status).to.eql('ACTIVE'));",

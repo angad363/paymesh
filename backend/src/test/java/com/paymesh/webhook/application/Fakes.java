@@ -174,10 +174,11 @@ final class Fakes {
         }
 
         @Override
-        public List<WebhookDelivery> findDue(Instant now, int limit) {
+        public List<WebhookDeliveryId> findDue(Instant now, int limit) {
             return byId.values().stream()
                 .filter(d -> d.isPending() && !d.nextAttemptAt().isAfter(now))
                 .limit(limit)
+                .map(WebhookDelivery::deliveryId)
                 .toList();
         }
 

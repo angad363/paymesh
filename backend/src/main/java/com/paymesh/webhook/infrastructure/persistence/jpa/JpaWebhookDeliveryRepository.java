@@ -72,10 +72,11 @@ public final class JpaWebhookDeliveryRepository implements WebhookDeliveryReposi
             .toList();
     }
 
+    /** Ids only, so nothing is mapped outside the per-delivery transaction. See the port's javadoc. */
     @Override
-    public List<WebhookDelivery> findDue(Instant now, int limit) {
-        return deliveries.findDue(now, PageRequest.ofSize(limit)).stream()
-            .map(WebhookJpaMapper::toDomain)
+    public List<WebhookDeliveryId> findDue(Instant now, int limit) {
+        return deliveries.findDueIds(now, PageRequest.ofSize(limit)).stream()
+            .map(WebhookDeliveryId::from)
             .toList();
     }
 

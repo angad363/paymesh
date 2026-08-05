@@ -40,7 +40,7 @@ import java.util.Base64;
  * <h2>PINNED, BECAUSE A SILENT CHANGE BREAKS EVERY MERCHANT AT ONCE</h2>
  *
  * SHA-256, no salt, the {@code info} string exactly as built below, 32 bytes out, Base64 URL-safe
- * without padding, {@code whsec_} prefix. {@code WebhookSecretsTest} asserts a frozen known-answer
+ * without padding, {@code pmsec_} prefix. {@code WebhookSecretsTest} asserts a frozen known-answer
  * vector against all of it. <b>If that test fails, the behaviour is wrong -- do not regenerate the
  * vector to match.</b> Every other test in the suite would derive and verify with the same changed
  * formula and notice nothing, while every merchant's verifier in the world started rejecting every
@@ -53,8 +53,18 @@ public final class WebhookSecrets {
     /** Namespaced so this master key can never collide with another use of the same bytes. */
     private static final String INFO_PREFIX = "paymesh.webhook.v1|";
 
-    /** What a merchant sees. Recognisable in a log or a support ticket, like Stripe's. */
-    private static final String SECRET_PREFIX = "whsec_";
+    /**
+     * What a merchant sees -- recognisable in a log or a support ticket.
+     *
+     * <h2>PAYMESH'S OWN, AND DELIBERATELY NOT STRIPE'S {@code whsec_} (ADR-028 §2.1)</h2>
+     *
+     * <p>An earlier version of this class used {@code whsec_} because it is the prefix an
+     * integrator recognises. GitHub's secret scanner recognises it too, and classified this
+     * capability's committed known-answer test vectors as leaked <b>Stripe</b> webhook signing
+     * secrets. That would repeat for every scanner, on every merchant who ever commits one of
+     * these, forever -- and it labels a PayMesh secret with another company's name while doing it.
+     */
+    private static final String SECRET_PREFIX = "pmsec_";
 
     /**
      * RFC 5869 §3.3's precondition for skipping Extract. Thirty-two bytes is the output length of

@@ -187,7 +187,7 @@ class WebhookIntegrationTest {
         MerchantId merchantId = merchant();
         RegisteredWebhookEndpoint registered = endpoint(merchantId, "order.paid");
 
-        assertThat(registered.secret()).startsWith("whsec_");
+        assertThat(registered.secret()).startsWith("pmsec_");
         assertThat(registered.endpoint().secretVersion()).isEqualTo(1);
 
         RegisteredWebhookEndpoint rotated =

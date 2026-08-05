@@ -72,16 +72,34 @@ public final class DeliverWebhooksService {
      * than the whole batch being held for the duration of every HTTP call in it.
      */
     public DispatchResult dispatch() {
-        List<WebhookDeliveryId> due = deliveries.findDue(Instant.now(clock), batchSize).stream()
-            .map(WebhookDelivery::deliveryId)
-            .toList();
+        List<WebhookDeliveryId> due = deliveries.findDue(Instant.now(clock), batchSize);
 
         int delivered = 0;
         int retried = 0;
         int dead = 0;
+        int errored = 0;
 
         for (WebhookDeliveryId deliveryId : due) {
-            switch (deliverOne(deliveryId)) {
+            Attempt attempt;
+
+            try {
+                attempt = deliverOne(deliveryId);
+            } catch (RuntimeException failure) {
+                // ONE BAD ROW MUST NOT DISABLE THE PASS. An optimistic-lock collision with a
+                // concurrent PATCH of the endpoint, a row the mapper cannot rehydrate, a
+                // constraint nobody predicted: each costs one delivery, which is still PENDING
+                // and will be picked up next pass. Open item 2 in docs/project-status.md is the
+                // same mistake made in two existing sweeps -- there the mapping sits OUTSIDE the
+                // per-item boundary, so one unmappable row stops the sweep permanently and
+                // silently. That is why findDue returns ids.
+                log.error("Webhook delivery {} threw and will be retried", deliveryId.value(), failure);
+
+                errored++;
+
+                continue;
+            }
+
+            switch (attempt) {
                 case DELIVERED -> delivered++;
                 case RETRIED -> retried++;
                 case DEAD -> dead++;
@@ -92,7 +110,7 @@ public final class DeliverWebhooksService {
             }
         }
 
-        return new DispatchResult(due.size(), delivered, retried, dead);
+        return new DispatchResult(due.size(), delivered, retried, dead, errored);
     }
 
     private Attempt deliverOne(WebhookDeliveryId deliveryId) {
@@ -179,7 +197,11 @@ public final class DeliverWebhooksService {
         GONE
     }
 
-    /** What one pass did. Counted so the scheduled bean can log something worth reading. */
-    public record DispatchResult(int examined, int delivered, int retried, int dead) {
+    /**
+     * What one pass did. Counted so the scheduled bean can log something worth reading.
+     *
+     * @param errored threw and was logged; the row is still PENDING and the next pass retries it
+     */
+    public record DispatchResult(int examined, int delivered, int retried, int dead, int errored) {
     }
 }

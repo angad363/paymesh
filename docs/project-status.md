@@ -24,8 +24,8 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1302 tests, 0 failures.** Twenty-five Flyway migrations (V1–V25). Twenty-eight ADRs. The Postman
-collection runs **seventeen folders green** (a newman run executes 232 requests and 565 assertions;
+**1303 tests, 0 failures.** Twenty-five Flyway migrations (V1–V25). Twenty-eight ADRs. The Postman
+collection runs **seventeen folders green** (a newman run executes 234 requests and 567 assertions;
 the count varies because the polling requests re-run themselves) — the newest showing an order
 paid and a signed webhook delivery queued for it without anyone calling a webhook endpoint.
 
@@ -354,7 +354,7 @@ Properties worth not breaking:
 
 - **The signing secret is never stored anywhere.** The endpoint row holds `secret_version`, an
   integer. The secret is `HMAC-SHA256(masterKey, "paymesh.webhook.v1|<endpointId>|<version>" ||
-  0x01)`, derived on demand, `whsec_`-prefixed. A database dump contains nothing that lets an
+  0x01)`, derived on demand, `pmsec_`-prefixed. A database dump contains nothing that lets an
   attacker sign as PayMesh, there is no ciphertext column and no decrypt path, and rotation is an
   increment. **JDK 21 has no HKDF** (JEP 478/510 land it in 24/25), so this is a single-block
   HKDF-Expand under RFC 5869 §3.3's licence to skip Extract — one `Mac` call, no new dependency.
@@ -533,7 +533,7 @@ no financial effect.
 
 ```bash
 cd backend
-./mvnw test                     # 1302 tests; needs Docker, no local database
+./mvnw test                     # 1303 tests; needs Docker, no local database
 ./mvnw spring-boot:run          # port 8080, activates the dev profile via the pom
 
 # API contract, end to end, including cross-tenant isolation and idempotency
@@ -884,7 +884,7 @@ only ever ran in the PENDING branch, where the other side of the ternary is not 
 one more consumer to `payment.succeeded` was enough extra latency for a relay tick to land first
 and expose it. Fixed in the same change.
 
-**Verification:** 1302 tests green; Postman 232 requests / 565 assertions / 0 failures across
+**Verification:** 1303 tests green; Postman 234 requests / 567 assertions / 0 failures across
 seventeen folders; V24 and V25 applied to a live V23 database *with data in it*; the whole loop
 walked live — register an endpoint, read the secret once, pay an order through the simulator, watch
 a PENDING delivery appear for it, rotate twice from the same version and get the same secret back.

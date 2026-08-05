@@ -26,8 +26,18 @@ public interface WebhookDeliveryRepository {
 
     List<WebhookDelivery> findByEndpoint(MerchantId merchantId, EndpointId endpointId, int limit);
 
-    /** The dispatcher's candidates: PENDING rows whose {@code next_attempt_at} has passed, oldest first. */
-    List<WebhookDelivery> findDue(Instant now, int limit);
+    /**
+     * The dispatcher's candidates: PENDING rows whose {@code next_attempt_at} has passed, oldest
+     * first.
+     *
+     * <p>IDS, NOT AGGREGATES, AND NOT AS A MICRO-OPTIMISATION. Open item 2 in
+     * {@code docs/project-status.md} is a live example of the shape being avoided: both existing
+     * sweeps map their candidate rows outside the per-item try/catch, so one unmappable row
+     * disables the sweep permanently and silently. Returning ids means there is nothing to map
+     * here, and each row is rehydrated inside its own transaction where a failure costs one
+     * delivery instead of the batch.
+     */
+    List<WebhookDeliveryId> findDue(Instant now, int limit);
 
     /**
      * Locks one candidate for this dispatcher, re-checking that it is still PENDING.

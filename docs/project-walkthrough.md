@@ -535,7 +535,7 @@ So the secret is not stored at all. The endpoint row holds an integer, `secret_v
 secret is **computed from it** whenever it is needed:
 
 ```
-secret = "whsec_" + base64url( HMAC-SHA256(masterKey, "paymesh.webhook.v1|<endpointId>|<version>" || 0x01) )
+secret = "pmsec_" + base64url( HMAC-SHA256(masterKey, "paymesh.webhook.v1|<endpointId>|<version>" || 0x01) )
 ```
 
 A database dump now contains nothing an attacker can sign with. Rotation is `version + 1`. And two
@@ -711,7 +711,7 @@ Sanity check: `GET http://localhost:8080/actuator/health` → `{"status":"UP"}`.
 A Postman collection already exists at
 `docs/api/postman/paymesh.postman_collection.json`, with **17 folders and 229 requests**
 covering every route plus the failure cases. It's the fastest way to see everything work, and it
-passes clean: a full newman run executes **232 requests and 565 assertions, 0 failures**.
+passes clean: a full newman run executes **234 requests and 567 assertions, 0 failures**.
 
 (More executed than defined, because the polling requests re-run themselves with
 `postman.setNextRequest` until the timer they are waiting on fires.)
@@ -1191,7 +1191,7 @@ cd backend
 ./mvnw spring-boot:run          # port 8080
 ```
 
-The documented count is **1302 tests, 0 failures**, across 25 Flyway migrations (V1–V25)
+The documented count is **1303 tests, 0 failures**, across 25 Flyway migrations (V1–V25)
 and 28 ADRs.
 
 The Postman collection is a second, independent check and worth running after any change to the

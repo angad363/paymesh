@@ -41,7 +41,7 @@ The something else is derivation:
 ```
 secret_bytes = HMAC-SHA256(masterKey, info || 0x01)
 info         = "paymesh.webhook.v1|" + endpointId + "|" + secretVersion    (US-ASCII)
-secret       = "whsec_" + Base64Url-no-padding(secret_bytes)
+secret       = "pmsec_" + Base64Url-no-padding(secret_bytes)
 ```
 
 The endpoint row holds `secret_version int not null default 1` where the secret would have been.
@@ -78,7 +78,25 @@ only that the value is not the published development one.
 ### 2.2. Pinned, because a silent change breaks every merchant at once
 
 SHA-256. No salt. `info` exactly as above, `|`-separated, version in decimal, US-ASCII. Thirty-two
-bytes out. Base64 URL-safe without padding. `whsec_` prefix.
+bytes out. Base64 URL-safe without padding. `pmsec_` prefix.
+
+### 2.1 The prefix is `pmsec_`, and it used to be `whsec_`
+
+`whsec_` is Stripe's, and using it was the obvious call: it is the string an integrator already
+recognises in a log or a support ticket.
+
+**GitHub's secret scanner recognises it too.** Within minutes of the first push it opened two
+"Stripe Webhook Signing Secret" alerts against the known-answer vectors below — which are HMAC
+outputs of a test master key printed on the line above them, for a platform that moves no money.
+The alerts were false, and that is exactly the problem: they would recur on every scanner, on every
+future commit touching these lines, and on **any merchant who ever commits one of their own**, each
+time labelling a PayMesh secret with another company's name.
+
+A prefix exists to be recognised. One that gets a PayMesh secret recognised as somebody else's is
+failing at its only job, so it is now `pmsec_`. The derivation is untouched — the prefix is not an
+input to the HMAC, and the base64 bodies in the vectors below are byte-for-byte what they were.
+
+Nothing sensitive was ever exposed, and the two alerts can be dismissed as false positives.
 
 **A known-answer test vector is part of this decision, not a nicety.** The day someone "tidies" the
 `info` string, every merchant's verifier starts rejecting every delivery and nothing in the suite
@@ -90,11 +108,11 @@ fails, the behaviour is wrong.
 masterKey      = "paymesh-test-master-key-32-bytes"  (US-ASCII, exactly 32 bytes)
 endpointId     = whe_00000000-0000-4000-8000-000000000001
 
-secretVersion 1 => whsec_FSviFzV65R0qahrGjj1MseU2BmYQkc3rL9OriJPlsqI
-secretVersion 2 => whsec_Jfw3jylWLHXSqFjcJhBGKicygTdWQ14fmR6fg5KCDyU
+secretVersion 1 => pmsec_FSviFzV65R0qahrGjj1MseU2BmYQkc3rL9OriJPlsqI
+secretVersion 2 => pmsec_Jfw3jylWLHXSqFjcJhBGKicygTdWQ14fmR6fg5KCDyU
 
 endpointId     = whe_00000000-0000-4000-8000-000000000002
-secretVersion 1 => whsec_QhFfv_GCGBHpDnmVoH84FoFsMWyZEGlQoFkLY0zHNCA
+secretVersion 1 => pmsec_QhFfv_GCGBHpDnmVoH84FoFsMWyZEGlQoFkLY0zHNCA
 ```
 
 Three vectors rather than one, because they pin three separate properties: that the formula is

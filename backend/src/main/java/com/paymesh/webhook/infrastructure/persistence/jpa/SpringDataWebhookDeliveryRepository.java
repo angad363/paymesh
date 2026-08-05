@@ -33,11 +33,11 @@ public interface SpringDataWebhookDeliveryRepository
      * on {@code status = 'PENDING'} because terminal rows accumulate forever.
      */
     @Query("""
-        select d from WebhookDeliveryJpaEntity d
+        select d.deliveryId from WebhookDeliveryJpaEntity d
          where d.status = 'PENDING' and d.nextAttemptAt <= :now
          order by d.nextAttemptAt, d.createdAt, d.deliveryId
         """)
-    List<WebhookDeliveryJpaEntity> findDue(@Param("now") Instant now, Pageable page);
+    List<String> findDueIds(@Param("now") Instant now, Pageable page);
 
     /**
      * Claims one row: {@code SELECT ... FOR UPDATE SKIP LOCKED}, status re-checked.

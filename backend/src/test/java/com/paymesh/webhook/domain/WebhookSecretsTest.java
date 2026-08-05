@@ -33,14 +33,14 @@ class WebhookSecretsTest {
     @Test
     void derivesTheFrozenKnownAnswerVector() {
         assertThat(WebhookSecrets.derive(MASTER_KEY, ENDPOINT, 1))
-            .isEqualTo("whsec_FSviFzV65R0qahrGjj1MseU2BmYQkc3rL9OriJPlsqI");
+            .isEqualTo("pmsec_FSviFzV65R0qahrGjj1MseU2BmYQkc3rL9OriJPlsqI");
     }
 
     /** The second half of the vector: rotation must actually change the bytes. */
     @Test
     void derivesADifferentFrozenSecretForTheNextVersion() {
         assertThat(WebhookSecrets.derive(MASTER_KEY, ENDPOINT, 2))
-            .isEqualTo("whsec_Jfw3jylWLHXSqFjcJhBGKicygTdWQ14fmR6fg5KCDyU");
+            .isEqualTo("pmsec_Jfw3jylWLHXSqFjcJhBGKicygTdWQ14fmR6fg5KCDyU");
     }
 
     /**
@@ -52,7 +52,7 @@ class WebhookSecretsTest {
     void derivesADifferentFrozenSecretForADifferentEndpoint() {
         assertThat(WebhookSecrets.derive(
             MASTER_KEY, EndpointId.from("whe_00000000-0000-4000-8000-000000000002"), 1
-        )).isEqualTo("whsec_QhFfv_GCGBHpDnmVoH84FoFsMWyZEGlQoFkLY0zHNCA");
+        )).isEqualTo("pmsec_QhFfv_GCGBHpDnmVoH84FoFsMWyZEGlQoFkLY0zHNCA");
     }
 
     @Test
@@ -102,6 +102,6 @@ class WebhookSecretsTest {
     /** The prefix is part of the contract a merchant pattern-matches on, not decoration. */
     @Test
     void prefixesEverySecretSoItIsRecognisableInASupportTicket() {
-        assertThat(WebhookSecrets.derive(MASTER_KEY, ENDPOINT, 3)).startsWith("whsec_");
+        assertThat(WebhookSecrets.derive(MASTER_KEY, ENDPOINT, 3)).startsWith("pmsec_");
     }
 }
