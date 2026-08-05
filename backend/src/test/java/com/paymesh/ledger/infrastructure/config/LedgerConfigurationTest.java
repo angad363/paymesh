@@ -68,17 +68,23 @@ class LedgerConfigurationTest {
     }
 
     /**
-     * BOTH CONSUMERS ARE PRESENT AND DISTINCT. The dispatcher throws at construction if two handlers
+     * EVERY CONSUMER IS PRESENT AND DISTINCT. The dispatcher throws at construction if two handlers
      * of one event type share a consumer name, so a context that starts at all has already proved
-     * the names differ -- but only two handlers of the SAME event exercise that, and this is the
-     * first branch where there are two.
+     * the names differ -- but only two handlers of the SAME event exercise that, and this was the
+     * first branch where there were two.
+     * <p>
+     * Three now: Webhook subscribed in the PR that built it (ADR-028). Listed exhaustively rather
+     * than with {@code contains}, because the failure this catches is a consumer <b>disappearing</b>
+     * from a rename or a lost {@code @Bean}, and a containment assertion would not notice.
      */
     @Test
-    void registersBothConsumersOfPaymentSucceeded() {
+    void registersEveryConsumerOfPaymentSucceeded() {
         assertThat(context.getBeansOfType(EventHandler.class).values().stream()
             .filter(handler -> handler.eventType().equals("payment.succeeded"))
             .map(EventHandler::consumerName)
             .toList())
-            .containsExactlyInAnyOrder("order.payment-succeeded", "ledger.payment-succeeded");
+            .containsExactlyInAnyOrder(
+                "order.payment-succeeded", "ledger.payment-succeeded", "webhook.payment.succeeded"
+            );
     }
 }

@@ -23,6 +23,12 @@ import java.util.List;
  * with siblings bolted on, and the next secret is a line in {@link #GUARDED} plus a case in
  * {@code ReconciliationApiKeyStartupTest} and its siblings.
  * <p>
+ * <b>The sixth points outward rather than inward, which is new.</b> The webhook master key derives
+ * every merchant's signing secret (ADR-028 §2). Publishing it does not let an attacker move money
+ * on PayMesh -- it lets them sign as PayMesh to people who are not on PayMesh, who have no way to
+ * tell and every reason to act on it. The blast radius is every merchant at once, which is the cost
+ * of one master key and is why per-endpoint rotation exists separately.
+ * <p>
  * <b>Two entries may share a VALUE without sharing a meaning.</b> The simulator key and the
  * reconciliation key are the same string today because the provider is bundled -- one is what the
  * provider expects, the other is what the caller sends -- and they stop being the same string the
@@ -76,6 +82,15 @@ public class DevelopmentSecretGuard {
             "is the only authentication on /sim/v1/**, and POST /sim/v1/payments queues a callback "
                 + "that marks a payment SUCCEEDED -- so anyone could collect any payment on the "
                 + "platform without ever forging a signature"
+        ),
+        new GuardedSecret(
+            "paymesh.webhook.master-key",
+            "dev-only-insecure-webhook-master-key-change-me",
+            "PAYMESH_WEBHOOK_MASTER_KEY",
+            "derives EVERY merchant's webhook signing secret (ADR-028 section 2), so a published "
+                + "value lets anyone sign as PayMesh to every merchant at once -- and unlike the "
+                + "callback secrets, the merchants who would act on those forged events are "
+                + "outside this platform entirely"
         ),
         new GuardedSecret(
             "paymesh.reconciliation.api-key",
