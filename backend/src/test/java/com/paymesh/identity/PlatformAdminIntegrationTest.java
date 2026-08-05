@@ -2,6 +2,7 @@ package com.paymesh.identity;
 
 import com.paymesh.TestcontainersConfiguration;
 import com.paymesh.identity.application.AuthenticationService;
+import com.paymesh.identity.application.LastPlatformAdminException;
 import com.paymesh.identity.application.LoginCommand;
 import com.paymesh.identity.application.ManageUserAccessService;
 import com.paymesh.identity.application.RegisterUserCommand;
@@ -23,6 +24,11 @@ import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -194,6 +200,56 @@ class PlatformAdminIntegrationTest {
             .andExpect(jsonPath("$.code").value("LAST_PLATFORM_ADMIN"));
 
         assertThat(platformGrantCount(only)).isEqualTo(1);
+    }
+
+    /**
+     * THE LAST-ADMIN GUARD SURVIVES TWO PEOPLE CLICKING AT ONCE.
+     *
+     * <p>The guard reads a count and then deletes. Under READ COMMITTED those are two statements
+     * and neither transaction sees the other's uncommitted delete, so two concurrent demotions of
+     * the last two admins both read 2, both pass the check, and both commit -- landing on the exact
+     * dead end {@link com.paymesh.identity.application.LastPlatformAdminException} exists to
+     * prevent, reachable through the ordinary API with no special access.
+     *
+     * <p>No CHECK constraint can say "at least one row must remain" across rows, so the fix is a
+     * lock: {@code countPlatformAdminsForUpdate} takes {@code FOR UPDATE} on every platform-admin
+     * row, and the second transaction blocks until the first commits and then counts what is
+     * actually left. <b>Delete the {@code for update} clause and this test fails</b> with zero
+     * admins remaining -- which is the only reason to trust it.
+     */
+    @Test
+    void refusesTheSecondOfTwoConcurrentDemotionsOfTheLastTwoAdmins() throws Exception {
+        clearPlatformAdmins();
+        List<UserId> both = List.of(promoted(), promoted());
+
+        CyclicBarrier bothReady = new CyclicBarrier(2);
+        ExecutorService threads = Executors.newFixedThreadPool(2);
+
+        try {
+            List<Future<Boolean>> demotions = both.stream()
+                .map(target -> threads.submit(() -> {
+                    bothReady.await(10, TimeUnit.SECONDS);
+                    try {
+                        manageUserAccess.revokePlatformAdmin(target, "test-operator");
+                        return true;
+                    } catch (LastPlatformAdminException refused) {
+                        return false;
+                    }
+                }))
+                .toList();
+
+            long succeeded = 0;
+            for (Future<Boolean> demotion : demotions) {
+                if (demotion.get(30, TimeUnit.SECONDS)) {
+                    succeeded++;
+                }
+            }
+
+            assertThat(succeeded).isEqualTo(1);
+            assertThat(totalPlatformAdmins()).isEqualTo(1);
+        } finally {
+            threads.shutdownNow();
+        }
     }
 
     @Test

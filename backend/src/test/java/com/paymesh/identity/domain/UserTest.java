@@ -46,7 +46,7 @@ class UserTest {
         );
     }
 
-    /** A duplicate would violate the (user_id, merchant_id, role) primary key on save. */
+    /** A duplicate would violate uq_user_roles_merchant_scoped on save (V23). */
     @Test
     void collapsesDuplicateRoleAssignments() {
         String merchantId = "mrc_550e8400-e29b-41d4-a716-446655440000";

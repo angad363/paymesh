@@ -74,7 +74,7 @@ public final class JpaUserRepository implements UserRepository {
     }
 
     @Override
-    public long countPlatformAdmins() {
-        return users.countPlatformAdmins();
+    public long countPlatformAdminsForUpdate() {
+        return users.countPlatformAdminsForUpdate();
     }
 }

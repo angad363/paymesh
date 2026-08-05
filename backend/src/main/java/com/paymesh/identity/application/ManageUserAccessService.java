@@ -126,13 +126,20 @@ public final class ManageUserAccessService {
      * Checked as "would this leave zero", not "is the caller the target" -- an admin demoting a
      * COLLEAGUE while they are themselves the only other one is the same outcome reached from the
      * other side, and a self-check alone would miss it.
+     *
+     * <h2>THE COUNT LOCKS, BECAUSE CHECK-THEN-ACT IS NOT A GUARD</h2>
+     *
+     * Reading a count and then deleting is two statements, and READ COMMITTED lets two overlapping
+     * demotions of the last two admins each read 2, each pass, and each commit -- reaching the dead
+     * end through the ordinary API. {@code countPlatformAdminsForUpdate} locks every platform-admin
+     * row, so the second transaction waits for the first and then counts what is really left.
      */
     public User revokePlatformAdmin(UserId userId, String operatorId) {
         return transactions.execute(status -> {
             User target = require(userId);
 
             if (target.hasPlatformRole(Role.PLATFORM_ADMIN)
-                && users.countPlatformAdmins() <= 1) {
+                && users.countPlatformAdminsForUpdate() <= 1) {
                 throw new LastPlatformAdminException(userId);
             }
 
@@ -170,6 +177,14 @@ public final class ManageUserAccessService {
      * property set in a deployment does not silently re-promote somebody who was deliberately
      * demoted. Idempotent on every boot after the first.
      *
+     * <h2>ONE TRANSACTION, LIKE EVERY SIBLING HERE</h2>
+     *
+     * The grant and its {@code PLATFORM_ADMIN_GRANTED} event are one fact, and committing them
+     * separately would let a failure between them leave a platform admin with no audit record.
+     * That one does not self-correct: the next boot sees an admin already exists and no-ops
+     * forever. It also gives {@code countPlatformAdminsForUpdate} a transaction to hold its lock
+     * in, which is what makes the "are there none" read mean anything.
+     *
      * @return the promoted user, or empty when nothing was done
      */
     public Optional<User> bootstrapPlatformAdmin(String email) {
@@ -177,35 +192,37 @@ public final class ManageUserAccessService {
             return Optional.empty();
         }
 
-        if (users.countPlatformAdmins() > 0) {
-            log.info("Platform admin bootstrap skipped: the platform already has one");
+        return transactions.execute(status -> {
+            if (users.countPlatformAdminsForUpdate() > 0) {
+                log.info("Platform admin bootstrap skipped: the platform already has one");
 
-            return Optional.empty();
-        }
+                return Optional.empty();
+            }
 
-        Optional<User> candidate = users.findByEmail(User.normalizeEmail(email));
+            Optional<User> candidate = users.findByEmail(User.normalizeEmail(email));
 
-        if (candidate.isEmpty()) {
+            if (candidate.isEmpty()) {
+                log.warn(
+                    "Platform admin bootstrap found no user for the configured email. "
+                        + "Register that account, then restart. No admin was created."
+                );
+
+                return Optional.empty();
+            }
+
+            User promoted = users.save(candidate.get().grantPlatformRole(Role.PLATFORM_ADMIN, now()));
+
+            securityEvents.save(SecurityEvent.record(
+                SecurityEventType.PLATFORM_ADMIN_GRANTED, promoted.userId().value(), null, now()
+            ));
+
             log.warn(
-                "Platform admin bootstrap found no user for the configured email. "
-                    + "Register that account, then restart. No admin was created."
+                "Bootstrapped the first PLATFORM_ADMIN userId={} from configuration",
+                promoted.userId().value()
             );
 
-            return Optional.empty();
-        }
-
-        User promoted = users.save(candidate.get().grantPlatformRole(Role.PLATFORM_ADMIN, now()));
-
-        securityEvents.save(SecurityEvent.record(
-            SecurityEventType.PLATFORM_ADMIN_GRANTED, promoted.userId().value(), null, now()
-        ));
-
-        log.warn(
-            "Bootstrapped the first PLATFORM_ADMIN userId={} from configuration",
-            promoted.userId().value()
-        );
-
-        return Optional.of(promoted);
+            return Optional.of(promoted);
+        });
     }
 
     public User reactivate(UserId userId, String operatorId) {

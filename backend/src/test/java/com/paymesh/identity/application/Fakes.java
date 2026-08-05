@@ -61,7 +61,7 @@ final class Fakes {
         }
 
         @Override
-        public long countPlatformAdmins() {
+        public long countPlatformAdminsForUpdate() {
             return byId.values().stream()
                 .filter(user -> user.hasPlatformRole(com.paymesh.identity.domain.Role.PLATFORM_ADMIN))
                 .count();

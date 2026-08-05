@@ -154,9 +154,11 @@ public final class User {
             throw new IllegalArgumentException("Roles cannot be null");
         }
 
-        // Distinct because (user_id, merchant_id, role) is the primary key of
-        // user_roles: a duplicate in this list would become a constraint violation
-        // on save rather than a readable error here.
+        // Distinct because of the two partial unique indexes V23 put on user_roles in
+        // place of the old (user_id, merchant_id, role) primary key -- merchant-scoped
+        // rows keyed on all three, platform rows on (user_id, role). A duplicate in
+        // this list would become a constraint violation on save rather than a readable
+        // error here.
         return roles.stream().distinct().toList();
     }
 

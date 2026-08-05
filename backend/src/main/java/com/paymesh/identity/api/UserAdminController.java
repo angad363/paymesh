@@ -146,7 +146,9 @@ public final class UserAdminController {
      * <h2>Where the FIRST one comes from</h2>
      *
      * Not from here -- an endpoint only a platform admin may call cannot mint the first platform
-     * admin. {@code PlatformAdminBootstrap} does, from a property, at startup.
+     * admin. {@code IdentityConfiguration.platformAdminBootstrap} does, at startup, by calling
+     * {@code ManageUserAccessService.bootstrapPlatformAdmin} with the email in
+     * {@code paymesh.security.bootstrap-platform-admin-email}.
      */
     @PostMapping("/{userId}/platform-admin")
     UserAdminResponse grantPlatformAdmin(@PathVariable String userId, AuthenticatedCaller caller) {
