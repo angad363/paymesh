@@ -32,12 +32,27 @@ public final class JpaUserRepository implements UserRepository {
             UserJpaEntity saved = users.saveAndFlush(UserJpaMapper.toEntity(user));
             return UserJpaMapper.toDomain(saved);
         } catch (DataIntegrityViolationException exception) {
-            // uq_users_email is the only unique constraint on the table besides the
-            // primary key (which is a fresh UUID), so a violation here means the
-            // email was taken between the service's existsByEmail check and this
-            // insert. The loser of that race must still get a 409, not a 500.
+            // uq_users_email USED TO BE the only constraint reachable from here, so every
+            // violation could safely be read as a taken email. V23 added ck_user_roles_scope and
+            // two partial unique indexes on user_roles, and reporting one of those as "email
+            // already registered" would be a 409 naming the wrong field -- a lie in the one
+            // direction an integrator cannot debug. Anything else propagates as a 500, which is
+            // honest: the domain refuses those shapes before they reach here, so seeing one means
+            // a bug rather than a race.
+            if (!namesEmailConstraint(exception)) {
+                throw exception;
+            }
+
+            // The email was taken between the service's existsByEmail check and this insert. The
+            // loser of that race must still get a 409, not a 500.
             throw new UserEmailAlreadyExistsException(user.email());
         }
+    }
+
+    private static boolean namesEmailConstraint(DataIntegrityViolationException exception) {
+        String message = exception.getMostSpecificCause().getMessage();
+
+        return message != null && message.contains("uq_users_email");
     }
 
     @Override
@@ -56,5 +71,21 @@ public final class JpaUserRepository implements UserRepository {
     @Override
     public Optional<User> findByUserId(UserId userId) {
         return users.findById(userId.value()).map(UserJpaMapper::toDomain);
+    }
+
+    @Override
+    public Optional<User> findByUserIdForUpdate(UserId userId) {
+        // Two statements rather than one locking finder: the EAGER roles collection makes a
+        // @Lock query join user_roles, and PostgreSQL will not lock across an outer join. Lock
+        // the parent row on its own, then read the aggregate -- the read runs after the lock is
+        // granted, so under READ COMMITTED it sees whatever the previous holder committed.
+        users.lockUserRow(userId.value());
+
+        return findByUserId(userId);
+    }
+
+    @Override
+    public long countPlatformAdminsForUpdate() {
+        return users.countPlatformAdminsForUpdate();
     }
 }

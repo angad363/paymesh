@@ -1,7 +1,10 @@
 # PayMesh — Project Status and Roadmap
 
-_Last updated: 4 August 2026. Update this file at the end of a working session, not
-during one._
+_Last updated: 5 August 2026, end of the session that closed PR #54. Update this file at the end of
+a working session, not during one._
+
+**Reading this to resume? Go to "What comes next" → "PICK UP HERE".** Phase 2's first PR is merged;
+the next capability is Webhook.
 
 This is the pick-up-here document. It records what exists, what has actually been
 verified, what is deliberately unfinished, and what comes next. For *why* a design
@@ -21,11 +24,16 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1176 tests, 0 failures.** Twenty-two Flyway migrations (V1–V22). Twenty-six ADRs. The Postman
-collection runs **sixteen folders and 210 requests green** (a newman run executes 218 of them and
-524 assertions, because the polling requests re-run themselves) — the newest two showing
+**1196 tests, 0 failures.** Twenty-three Flyway migrations (V1–V23). Twenty-seven ADRs. The Postman
+collection runs **sixteen folders green** (a newman run executes 213 requests and 519 assertions;
+the count varies because the polling requests re-run themselves) — the newest two showing
 a lost callback repaired from the provider's own record, and the outbox alert on
 `/actuator/health`.
+
+**Phase 2 has started.** See `docs/phase-2-plan.md` for the eight-PR plan and "What comes next"
+below for where it stands. **PR 0 (ADR-027) is OPEN, not merged** — PR #54, branch
+`fix/platform-admin-and-known-defects`. It is green and verified live, and an independent review
+found three things that must be fixed before it merges. They are listed under "What comes next".
 
 **Phase 1 is complete, including its operational half.** The last PR closed the three things that
 were still only described: the outbox relay now gives up on an event rather than freezing its
@@ -668,13 +676,20 @@ failing test._
     the dependency direction inverts; the idempotency filter's several-merchants branch
     is untested and its replay hard-codes `Content-Type: application/json`;
     `JwtSecretGuards` imports the guard directly, so the suite would not notice if it
-    stopped being component-scanned; `IdentityConfiguration`'s javadoc credits
-    `MerchantConfiguration` for the `Clock` bean (it is `SharedConfiguration`); the
+    stopped being component-scanned; the
     customer API's `@Email` rejects a padded address where merchant's tolerates one;
-    `PLATFORM_ADMIN` and `SERVICE_ACCOUNT` exist in the enum but are not grantable
-    (`user_roles.merchant_id` is `NOT NULL`); writes use `saveAndFlush`, which costs
+    `SERVICE_ACCOUNT` exists in the enum but is not grantable
+    (deliberate since ADR-027 — machines authenticate with merchant API credentials, so a
+    platform-wide service account needs a different issuer); writes use `saveAndFlush`, which costs
     one `SELECT` before each `INSERT`; `rest-api-conventions.md` prescribes 422 for
     validation failures where the code returns 400.
+    <br>~~`IdentityConfiguration`'s javadoc credits `MerchantConfiguration` for the `Clock`
+    bean~~ and ~~`PLATFORM_ADMIN` is not grantable~~ are **closed by ADR-027**.
+
+18. **`SERVICE_ACCOUNT` is the last unreachable enum constant on the platform**, and unlike the
+    ones ADR-021/024/027 closed it is unreachable *by decision* rather than by oversight.
+    `ck_user_roles_scope` keeps it merchant-scoped; nothing mints one. Recorded so the next audit
+    does not rediscover it as a bug.
 
 ---
 
@@ -701,20 +716,84 @@ the whole safety argument and is pinned down directly in `PaymentIntentTest`.
 
 ### What is genuinely next
 
-**Phase 2, in SDD order: Risk (§14), Settlement (§17), Webhook (§18), Notification/Reporting (§19–20).**
-Nothing in Phase 1 blocks any of them.
+**Phase 2 has started.** `docs/phase-2-plan.md` is the plan of record: eight PRs, with migration and
+ADR numbers pre-assigned so parallel worktrees cannot collide on them. The ordering is
+value-and-dependency first rather than SDD order, because Webhook, Notification and Reporting are
+pure event consumers that depend on nothing, and only Settlement has a real prerequisite (the
+Ledger's `MERCHANT_AVAILABLE` account, which `AccountType`'s own javadoc names as missing).
 
-Two pieces of housekeeping worth doing before or alongside the first Phase-2 capability, neither
-large:
+| PR | Delivers | Depends on | Migrations | ADR |
+|---|---|---|---|---|
+| 0 ✅ | `PLATFORM_ADMIN` grantable — **merged, PR #54** | — | V23 | ADR-027 |
+| 1 | Webhook | — | V24–V25 | ADR-028 |
+| 2 | Risk | — | V26–V27 | ADR-029 |
+| 3 | Ledger available balance | — | V28–V29 | ADR-030 |
+| 4 | Settlement | PR3 | V30–V32 | ADR-031 |
+| 5 | Notification | — | V33 | ADR-032 |
+| 6 | Reporting | PR4 (content) | V34–V35 | ADR-033 |
+| 7 | Audit | PR2, PR4 (subjects) | V36 | ADR-034 |
 
-- **Open item 16's list of smaller defects has not been worked through** and has been growing for
-  several sessions. It is the cheapest quality win available.
-- **`PLATFORM_ADMIN` is not grantable, and that is now load-bearing rather than cosmetic.** It sits
-  in open item 17 as a one-line curiosity — `user_roles.merchant_id` is `NOT NULL`, so no endpoint
-  can produce one. But activation is `PLATFORM_ADMIN`-only, and a merchant that cannot be activated
-  can do nothing at all: the Postman collection has to MINT a token with the published dev secret to
-  get past onboarding. That works and is honest on the `dev` profile, and it is not a story that
-  survives contact with a real deployment.
+### PR #54 is merged. What it settled, and the one thing it deliberately left uncovered
+
+**`PLATFORM_ADMIN` is grantable (ADR-027).** V23 makes `user_roles.merchant_id` nullable behind a
+biconditional CHECK, a platform role travels in the claim with **no `:merchantId` suffix at all**,
+and the first admin comes from a startup property
+(`paymesh.security.bootstrap-platform-admin-email`) that promotes an existing account rather than
+seeding a password hash into a migration. The escalation the nullability would have opened — a
+merchant admin granting themselves `PLATFORM_ADMIN` at their own tenant, which
+`requirePlatformAdmin()` used to read as platform authority — is refused independently by the
+constraint, the aggregate and the claim parser.
+
+**Verification, do not redo it:** 1197 tests green; Postman 217 requests / 522 assertions / 0
+failures; V23 applied to a live V22 database *with data in it*; the whole loop walked live with no
+minted token (register merchant → register human → bootstrap on restart → log in → activate →
+promote a second admin), plus the three negatives.
+
+**The last-admin guard needed a lock, and getting there cost two rounds.** The first round of review
+found the guard was check-then-act — `countPlatformAdmins()` then a delete, no lock, READ COMMITTED
+— so two overlapping demotions of the last two admins both read 2 and both committed. The fix took
+`FOR UPDATE` on every platform-admin row. The **second** round found that fix had inverted the lock
+order: Hibernate rewrites the roles collection as delete-all-and-recreate, so every other writer of
+the `User` aggregate takes `users` before `user_roles`, and a guard that locked `user_roles` first
+deadlocked against all six of them (reproduced as 40P01, mapping to nothing, so a bare 500). The
+target is now read under a lock on its `users` row *before* the count. Recorded in ADR-027 §4.
+
+Two things about that guard worth not rediscovering. **A deferred constraint trigger cannot replace
+the lock** — V15 and V16 use one for their cross-row invariants and it looks like the house answer
+here, but it fires inside the committing transaction under its own snapshot, so both demotions still
+pass it. **And the lock does nothing for the startup bootstrap**, whose count runs against an empty
+set; `uq_user_roles_platform_scoped` is what stops two instances bootstrapping the same email, by
+failing the loser's startup.
+
+**`reactivate` is transactional at last.** It was the third appearance of the same finding —
+`reject()` in ADR-023's PR, this method in ADR-024's PR, both noted and not fixed. Every method in
+`ManageUserAccessService` that writes twice now writes once.
+
+**The deadlock has no automated test, on purpose.** One was written and deleted. The losing
+interleaving is a window of microseconds; with the lock order inverted the test passed 40 out of 40
+attempts, so it would have shipped as false coverage. The reviewer reproduced 40P01 by hand-driving
+two `psql` sessions, which a service-level test cannot do. The fix rests on the lock-order argument
+in `SpringDataUserRepository.lockUserRow` and ADR-027 §4, not on a green assertion. **If you touch
+the order of locks in `revokePlatformAdmin`, nothing will fail.**
+
+Two things review checked and deliberately did **not** flag, recorded so they are not re-litigated:
+`CallerRole.parse` uppercases before `valueOf`, so a colon-less `"platform_admin"` would parse — but
+the claim is only ever written server-side from `Role.name()` and the token is HMAC-signed, so it is
+not attacker-reachable. And a platform admin who also holds a merchant role can now transact at a
+suspended merchant they administer — no escalation, since they can unilaterally reactivate it
+anyway, at most a lost audit step.
+
+### PICK UP HERE — after PR #54
+
+- **Open item 17's remaining defects have not been worked through**, including the one real bug in
+  it: both sweeps map their candidate rows *outside* the per-item try/catch, so one unmappable row
+  disables a sweep permanently and silently (open item 2). Latent rather than live — reaching it
+  needs database state the current CHECKs forbid — but it is on the money path and it is the
+  cheapest quality win available. **Its own PR**, not bundled into a capability: PR #54 was already
+  a security-sensitive change across identity and `shared/security`, and CLAUDE.md asks for one
+  focused change per PR. This is why the plan's "PR 0 = PLATFORM_ADMIN + all of item 17" was split.
+- **Then PR 1, Webhook** (`docs/phase-2-plan.md`), which depends on nothing and is the
+  highest-value Phase-2 capability. Migrations V24–V25, ADR-028 are reserved for it.
 
 **The judgement call to revisit when a second provider arrives.** Reconciliation reads this
 provider's `TIMED_OUT` as "nothing was collected", which is true of the simulator's file because

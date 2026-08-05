@@ -154,9 +154,11 @@ public final class User {
             throw new IllegalArgumentException("Roles cannot be null");
         }
 
-        // Distinct because (user_id, merchant_id, role) is the primary key of
-        // user_roles: a duplicate in this list would become a constraint violation
-        // on save rather than a readable error here.
+        // Distinct because of the two partial unique indexes V23 put on user_roles in
+        // place of the old (user_id, merchant_id, role) primary key -- merchant-scoped
+        // rows keyed on all three, platform rows on (user_id, role). A duplicate in
+        // this list would become a constraint violation on save rather than a readable
+        // error here.
         return roles.stream().distinct().toList();
     }
 
@@ -240,8 +242,10 @@ public final class User {
             throw new IllegalArgumentException("Revoking access needs a merchant");
         }
 
+        // merchantId.equals(...) and not the other way round: a platform grant's merchantId is
+        // null since V23, and it must survive a merchant revocation untouched rather than throw.
         List<RoleAssignment> remaining = roles.stream()
-            .filter(assignment -> !assignment.merchantId().equals(merchantId))
+            .filter(assignment -> !merchantId.equals(assignment.merchantId()))
             .toList();
 
         if (remaining.size() == roles.size()) {
@@ -265,8 +269,63 @@ public final class User {
      * state, and returning success would confirm the wrong belief.
      */
     public User grantRoleAt(Role role, String merchantId, Instant at) {
-        RoleAssignment assignment = new RoleAssignment(role, merchantId);
+        if (role != null && role.isPlatformScoped()) {
+            // Not merely the wrong method: this is the escalation path. A merchant admin reaching
+            // this with role=PLATFORM_ADMIN would be granting platform authority from inside a
+            // tenant. RoleAssignment would refuse it and so would ck_user_roles_scope; refusing
+            // here as well means the caller gets a sentence naming the actual rule.
+            throw new IllegalArgumentException(
+                role + " is platform-wide and cannot be granted at a merchant"
+            );
+        }
 
+        return withRoleAdded(new RoleAssignment(role, merchantId), role, merchantId, at);
+    }
+
+    /**
+     * Grant a platform-wide role. PLATFORM_ADMIN, and nothing else today.
+     *
+     * <h2>THE ONLY WAY THIS ROLE CAN BE PRODUCED, AND IT IS DELIBERATELY NOT THE MERCHANT PATH</h2>
+     *
+     * Platform authority reaches across every tenant, so it cannot be granted by a tenant. Keeping
+     * it on its own method rather than a null merchant passed to {@link #grantRoleAt} means the
+     * separation is visible at every call site instead of hiding in an argument -- and the
+     * application layer above decides who may reach here (PLATFORM_ADMIN only, plus the startup
+     * bootstrap that mints the first one). ADR-027.
+     */
+    public User grantPlatformRole(Role role, Instant at) {
+        RoleAssignment assignment = RoleAssignment.platformWide(role);
+
+        return withRoleAdded(assignment, role, null, at);
+    }
+
+    /**
+     * Remove a platform-wide role, leaving every merchant-scoped one alone.
+     *
+     * <p>The undo for {@link #grantPlatformRole}. Without it, promoting somebody by mistake would
+     * need a database edit, and an operation whose only undo is a hand-written UPDATE is one nobody
+     * performs confidently.
+     */
+    public User revokePlatformRole(Role role, Instant at) {
+        RoleAssignment assignment = RoleAssignment.platformWide(role);
+
+        if (!roles.contains(assignment)) {
+            throw new UserHoldsNoPlatformRoleException(userId, role);
+        }
+
+        List<RoleAssignment> remaining = roles.stream()
+            .filter(held -> !held.equals(assignment))
+            .toList();
+
+        return new User(userId, email, passwordHash, status, remaining, createdAt, requireAt(at));
+    }
+
+    /** True when this user holds {@code role} platform-wide. */
+    public boolean hasPlatformRole(Role role) {
+        return roles.contains(RoleAssignment.platformWide(role));
+    }
+
+    private User withRoleAdded(RoleAssignment assignment, Role role, String merchantId, Instant at) {
         if (roles.contains(assignment)) {
             throw new UserAlreadyHoldsRoleException(userId, role, merchantId);
         }
@@ -279,7 +338,7 @@ public final class User {
 
     /** True when this user holds any role at {@code merchantId}. */
     public boolean hasRoleAt(String merchantId) {
-        return roles.stream().anyMatch(assignment -> assignment.merchantId().equals(merchantId));
+        return roles.stream().anyMatch(assignment -> merchantId.equals(assignment.merchantId()));
     }
 
     private static Instant requireAt(Instant at) {

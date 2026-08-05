@@ -13,6 +13,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Disabling people, at the two different scopes that mean different things.
@@ -83,16 +84,188 @@ public final class ManageUserAccessService {
         });
     }
 
+    /**
+     * Promotes a user to platform staff.
+     *
+     * <h2>THE ROLE THAT COULD NOT BE GRANTED, AND WHAT THAT COST</h2>
+     *
+     * {@code user_roles.merchant_id} was NOT NULL, so no endpoint could produce a platform-wide
+     * grant. But merchant activation is PLATFORM_ADMIN-only and nothing merchant-scoped works
+     * until a merchant is ACTIVE -- so onboarding was only walkable by minting a token with the
+     * published dev signing key. V23 gives the row somewhere to live; this is what writes it.
+     * ADR-027.
+     *
+     * <h2>Every live session ends, and that is not the usual courtesy</h2>
+     *
+     * Their existing access token does not carry the new role and will not until it is reissued,
+     * so without this the promotion appears not to have worked for up to fifteen minutes. Ending
+     * the sessions forces a refresh, and a refresh reissues the claim. The same mechanism as
+     * revocation, used for the opposite reason.
+     */
+    public User grantPlatformAdmin(UserId userId, String operatorId) {
+        return transactions.execute(status -> {
+            User promoted = users.save(require(userId).grantPlatformRole(Role.PLATFORM_ADMIN, now()));
+
+            endEverySession(userId, SecurityEventType.PLATFORM_ADMIN_GRANTED);
+
+            log.warn("Granted PLATFORM_ADMIN userId={} operator={}", userId.value(), operatorId);
+
+            return promoted;
+        });
+    }
+
+    /**
+     * Demotes a user out of platform staff.
+     *
+     * <h2>THE LAST PLATFORM ADMIN CANNOT REMOVE THEMSELVES</h2>
+     *
+     * Not paternalism, and the same argument as {@link #revokeAccessAt}: PLATFORM_ADMIN is the
+     * only role that can grant PLATFORM_ADMIN, so a platform with none has no way back except the
+     * startup bootstrap or a hand-written UPDATE. Refused rather than made recoverable.
+     * <p>
+     * Checked as "would this leave zero", not "is the caller the target" -- an admin demoting a
+     * COLLEAGUE while they are themselves the only other one is the same outcome reached from the
+     * other side, and a self-check alone would miss it.
+     *
+     * <h2>THE COUNT LOCKS, BECAUSE CHECK-THEN-ACT IS NOT A GUARD</h2>
+     *
+     * Reading a count and then deleting is two statements, and READ COMMITTED lets two overlapping
+     * demotions of the last two admins each read 2, each pass, and each commit -- reaching the dead
+     * end through the ordinary API. {@code countPlatformAdminsForUpdate} locks every platform-admin
+     * row, so the second transaction waits for the first and then counts what is really left.
+     *
+     * <h2>THE TARGET IS READ UNDER LOCK, AND THE ORDER OF THE TWO LOCKS MATTERS</h2>
+     *
+     * The user row goes first, and not for its own sake. Hibernate rewrites the roles collection as
+     * delete-all-and-recreate, so every other writer of this aggregate locks {@code users} and then
+     * {@code user_roles}; taking the count's row locks first would invert that against all six of
+     * them and deadlock. It also buys the correct error: two clients demoting the same person used
+     * to have the loser read a stale snapshot, still see the role, and answer 409 "this is the last
+     * admin" when the truth was 404 "they hold no platform role". Locked, the loser re-reads and
+     * says so.
+     */
+    public User revokePlatformAdmin(UserId userId, String operatorId) {
+        return transactions.execute(status -> {
+            User target = requireForUpdate(userId);
+
+            if (target.hasPlatformRole(Role.PLATFORM_ADMIN)
+                && users.countPlatformAdminsForUpdate() <= 1) {
+                throw new LastPlatformAdminException(userId);
+            }
+
+            User demoted = users.save(target.revokePlatformRole(Role.PLATFORM_ADMIN, now()));
+
+            endEverySession(userId, SecurityEventType.PLATFORM_ADMIN_REVOKED);
+
+            log.warn("Revoked PLATFORM_ADMIN userId={} operator={}", userId.value(), operatorId);
+
+            return demoted;
+        });
+    }
+
+    /**
+     * Mints the FIRST platform admin at startup, from an operator-supplied email.
+     *
+     * <h2>THE CHICKEN AND EGG THAT MAKES THIS NECESSARY</h2>
+     *
+     * {@link #grantPlatformAdmin} requires a caller who already holds PLATFORM_ADMIN, so on a
+     * fresh database no API call can ever produce the first one. The alternatives were a seeded
+     * user in a migration -- which means a password hash committed to git, in a repository whose
+     * {@code DevelopmentSecretGuard} exists specifically to refuse committed secrets -- or a
+     * hand-written UPDATE in every runbook. This is the third option and it handles no secret at
+     * all: the human registers through the ordinary endpoint, and the operator names them.
+     *
+     * <h2>It promotes, it never creates</h2>
+     *
+     * An unknown email logs a warning and does nothing. Creating an account here would mean
+     * inventing a password, and a platform admin account with a password nobody chose is a
+     * credential waiting to be guessed.
+     *
+     * <h2>It runs only while there are none</h2>
+     *
+     * Once any platform admin exists, this returns without touching anything -- so leaving the
+     * property set in a deployment does not silently re-promote somebody who was deliberately
+     * demoted. Idempotent on every boot after the first.
+     *
+     * <h2>ONE TRANSACTION, LIKE EVERY SIBLING HERE</h2>
+     *
+     * The grant and its {@code PLATFORM_ADMIN_GRANTED} event are one fact, and committing them
+     * separately would let a failure between them leave a platform admin with no audit record.
+     * That one does not self-correct: the next boot sees an admin already exists and no-ops
+     * forever.
+     * <p>
+     * <b>Atomicity is the whole reason, and the lock is not part of it.</b> The count here runs
+     * against an empty set in the only branch that acts, and {@code FOR UPDATE} over no rows locks
+     * nothing -- PostgreSQL has no gap lock under READ COMMITTED. Two instances bootstrapping the
+     * same email simultaneously therefore both read zero; what stops them is
+     * {@code uq_user_roles_platform_scoped}, which fails the loser's insert and its startup. It
+     * boots clean on retry, because by then an admin exists.
+     *
+     * @return the promoted user, or empty when nothing was done
+     */
+    public Optional<User> bootstrapPlatformAdmin(String email) {
+        if (email == null || email.isBlank()) {
+            return Optional.empty();
+        }
+
+        return transactions.execute(status -> {
+            if (users.countPlatformAdminsForUpdate() > 0) {
+                log.info("Platform admin bootstrap skipped: the platform already has one");
+
+                return Optional.empty();
+            }
+
+            Optional<User> candidate = users.findByEmail(User.normalizeEmail(email));
+
+            if (candidate.isEmpty()) {
+                log.warn(
+                    "Platform admin bootstrap found no user for the configured email. "
+                        + "Register that account, then restart. No admin was created."
+                );
+
+                return Optional.empty();
+            }
+
+            User promoted = users.save(candidate.get().grantPlatformRole(Role.PLATFORM_ADMIN, now()));
+
+            securityEvents.save(SecurityEvent.record(
+                SecurityEventType.PLATFORM_ADMIN_GRANTED, promoted.userId().value(), null, now()
+            ));
+
+            log.warn(
+                "Bootstrapped the first PLATFORM_ADMIN userId={} from configuration",
+                promoted.userId().value()
+            );
+
+            return Optional.of(promoted);
+        });
+    }
+
+    /**
+     * Lifts a suspension.
+     *
+     * <h2>WRAPPED ON THE THIRD TIME OF ASKING</h2>
+     *
+     * Two writes -- the user and the {@code USER_REACTIVATED} event -- and until now they were two
+     * commits, so a failure between them restored somebody's access with nothing in the security
+     * log saying who did it or when. That is the same shape reviewers flagged on {@code reject()}
+     * in ADR-023's PR and on this method in ADR-024's PR, both times noted and not fixed. Fixing
+     * the pattern rather than the instance is the point: {@code suspend}, {@code close},
+     * {@code revokeAccessAt}, both platform-role methods and the bootstrap are all transactional,
+     * and this was the last one that was not.
+     */
     public User reactivate(UserId userId, String operatorId) {
-        User reactivated = users.save(require(userId).reactivate(now()));
+        return transactions.execute(status -> {
+            User reactivated = users.save(require(userId).reactivate(now()));
 
-        securityEvents.save(SecurityEvent.record(
-            SecurityEventType.USER_REACTIVATED, userId.value(), null, now()
-        ));
+            securityEvents.save(SecurityEvent.record(
+                SecurityEventType.USER_REACTIVATED, userId.value(), null, now()
+            ));
 
-        log.warn("User reactivated userId={} operator={}", userId.value(), operatorId);
+            log.warn("User reactivated userId={} operator={}", userId.value(), operatorId);
 
-        return reactivated;
+            return reactivated;
+        });
     }
 
     /** Terminal, like a merchant closure and for the same reason. */
@@ -198,6 +371,12 @@ public final class ManageUserAccessService {
 
     private User require(UserId userId) {
         return users.findByUserId(userId).orElseThrow(() -> new UserNotFoundException(userId.value()));
+    }
+
+    /** {@link #require} for a caller about to decide something on what it reads. */
+    private User requireForUpdate(UserId userId) {
+        return users.findByUserIdForUpdate(userId)
+            .orElseThrow(() -> new UserNotFoundException(userId.value()));
     }
 
     private Instant now() {

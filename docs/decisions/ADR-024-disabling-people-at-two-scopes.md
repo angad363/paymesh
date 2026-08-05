@@ -74,11 +74,16 @@ quarter hour", not instant.
 
 `MerchantStatusFilter` refused every one of these routes with 403.
 
-A platform admin's token carries a merchant scope because the claim format requires one, but their
-authority is platform-wide and the merchant they nominally sit at may not exist — or may be the very
-one they are about to suspend. Gating them on merchant status means **every platform route anywhere
-in the API is 403**, which is what happened here and what the merchant lifecycle routes needed a
-path exemption for in ADR-021.
+A platform admin's token carried a merchant scope because the claim format required one, but their
+authority is platform-wide and the merchant they nominally sat at might not exist — or might be the
+very one they were about to suspend. Gating them on merchant status means **every platform route
+anywhere in the API is 403**, which is what happened here and what the merchant lifecycle routes
+needed a path exemption for in ADR-021.
+
+> **Superseded in part by ADR-027.** A platform admin's claim now carries **no merchant suffix at
+> all** — `PLATFORM_ADMIN` with a merchant is a shape `ck_user_roles_scope` refuses to store. The
+> reasoning below still holds; only the premise that the claim format forces a merchant onto it has
+> changed.
 
 The filter now passes any caller holding `PLATFORM_ADMIN` and the path-suffix exemptions shrink to
 `/kyc-submissions`, the one genuinely merchant-side case. That also retires a list of generic verbs

@@ -635,12 +635,18 @@ up, so **321 of its assertions had been failing** — every folder past onboardi
 looked at. Two requests fix it: one activating each merchant the collection registers.
 
 Activation is `PLATFORM_ADMIN`-only (ADR-021: a merchant that could lift its own suspension would
-make suspension advisory), and **`PLATFORM_ADMIN` is not grantable through any endpoint** —
-`user_roles.merchant_id` is `NOT NULL`, which is open item 16. So those two requests *mint* an HS256
-token with the dev signing secret, exactly as `MerchantGovernanceIntegrationTest` forges the claim
-and exactly as this collection already signs provider callbacks with the published dev HMAC secret.
-It works only on the `dev` profile; outside it `DevelopmentSecretGuard` refuses to start on that
-secret at all.
+make suspension advisory). When those requests were written **`PLATFORM_ADMIN` was not grantable
+through any endpoint** — `user_roles.merchant_id` was `NOT NULL`, then open item 16. So they *mint*
+an HS256 token with the dev signing secret, exactly as `MerchantGovernanceIntegrationTest` forges
+the claim and exactly as this collection already signs provider callbacks with the published dev
+HMAC secret. It works only on the `dev` profile; outside it `DevelopmentSecretGuard` refuses to
+start on that secret at all.
+
+**ADR-027 has since closed that hole.** V23 makes `merchant_id` nullable behind
+`ck_user_roles_scope`, `POST /api/v1/users/{id}/platform-admin` grants the role, and the first
+admin comes from `paymesh.security.bootstrap-platform-admin-email` at startup — so a real
+deployment walks onboarding with no minted token. The collection still mints one because it runs
+against a database it did not bootstrap.
 
 ```bash
 npx newman run docs/api/postman/paymesh.postman_collection.json \

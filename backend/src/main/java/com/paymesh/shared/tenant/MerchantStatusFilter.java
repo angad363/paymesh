@@ -130,17 +130,27 @@ public final class MerchantStatusFilter extends OncePerRequestFilter {
 
         // PLATFORM STAFF ARE NOT A MERCHANT TRANSACTING (ADR-024).
         //
-        // Their token carries a merchant scope because the claim format requires one, but their
-        // authority is platform-wide and the merchant they nominally sit at may not exist or may be
-        // the very one they are about to suspend. Gating them on it means every platform route
-        // anywhere in the API is 403 -- which is exactly what happened to the user-suspension
-        // routes, and what the merchant lifecycle routes needed a path exemption for.
+        // Their authority is platform-wide, and the merchant they are about to act on is very often
+        // NOT active -- that is the whole point of activate, and of reinstating a suspension.
+        // Gating them on merchant status means every platform route anywhere in the API answers
+        // 403, which is what happened to the user-suspension routes and why the merchant lifecycle
+        // routes once needed a path exemption.
+        //
+        // IT ALSO BITES THE FIRST ADMIN HARDEST. They register through the ordinary endpoint, which
+        // assigns MERCHANT_ADMIN at a merchant nothing has been able to activate -- so their token
+        // carries both a platform grant and a scope at an inactive tenant. Reading the merchant
+        // half here would leave them unable to activate the merchant that is blocking them.
+        //
+        // ASKED THROUGH isPlatformAdmin() RATHER THAN SCANNING rolesByMerchant. This filter used to
+        // have its own copy of that scan, which is how V23 broke it while fixing
+        // requirePlatformAdmin: platform roles moved out of that map and the copy went on reading
+        // the empty half. One reader now (ADR-027).
         //
         // This widens nothing a merchant can reach: registration only ever assigns MERCHANT_ADMIN,
-        // and ck_api_credentials_role refuses a PLATFORM_ADMIN key outright. The only way to hold
-        // this role is for platform staff to have issued it.
-        if (caller.get().rolesByMerchant().values().stream()
-            .anyMatch(roles -> roles.contains(CallerRole.PLATFORM_ADMIN))) {
+        // ck_api_credentials_role refuses a PLATFORM_ADMIN key outright, and ck_user_roles_scope
+        // refuses to store the role at a merchant at all. The only way to hold it is for platform
+        // staff to have issued it.
+        if (caller.get().isPlatformAdmin()) {
             chain.doFilter(request, response);
             return;
         }

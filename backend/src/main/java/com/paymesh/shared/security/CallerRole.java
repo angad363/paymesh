@@ -20,7 +20,12 @@ import java.util.Optional;
  */
 public enum CallerRole {
 
-    /** Platform staff. The only role that may change a merchant's status or decide KYC. */
+    /**
+     * Platform staff. The only role that may change a merchant's status or decide KYC.
+     *
+     * <p>Held platform-wide, never at a merchant: it arrives in the claim with no {@code :merchant}
+     * suffix, and the suffixed form is discarded rather than honoured (ADR-027).
+     */
     PLATFORM_ADMIN,
 
     /** Full authority over one merchant, including refunds and API credentials. */
@@ -35,6 +40,17 @@ public enum CallerRole {
 
     /** A machine identity. Reserved; nothing mints one yet. */
     SERVICE_ACCOUNT;
+
+    /**
+     * True when this role is held across the platform rather than at one merchant.
+     *
+     * <p>Mirrors {@code identity.domain.Role.isPlatformScoped()} for the same reason the enum
+     * itself is duplicated: {@code shared} may not import a capability, so the token contract is
+     * published rather than shared. {@code AuthorizationBoundaryTest} asserts the two agree.
+     */
+    public boolean isPlatformScoped() {
+        return this == PLATFORM_ADMIN;
+    }
 
     /** Empty for anything unrecognised -- an unknown role grants nothing rather than everything. */
     public static Optional<CallerRole> parse(String value) {

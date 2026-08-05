@@ -60,6 +60,19 @@ final class Fakes {
             return Optional.ofNullable(byId.get(userId.value()));
         }
 
+        /** Single-threaded, so there is nothing to lock against. */
+        @Override
+        public Optional<User> findByUserIdForUpdate(UserId userId) {
+            return findByUserId(userId);
+        }
+
+        @Override
+        public long countPlatformAdminsForUpdate() {
+            return byId.values().stream()
+                .filter(user -> user.hasPlatformRole(com.paymesh.identity.domain.Role.PLATFORM_ADMIN))
+                .count();
+        }
+
         void remove(UserId userId) {
             byId.remove(userId.value());
         }
