@@ -22,7 +22,7 @@ import java.util.Set;
  * What it cannot do is arbitrate a race, which is why the live-per-order rule is proved against
  * PostgreSQL rather than here.
  */
-final class InMemoryPaymentIntentRepository implements PaymentIntentRepository {
+class InMemoryPaymentIntentRepository implements PaymentIntentRepository {
 
     private static final Set<PaymentIntentStatus> RELEASED =
         Set.of(PaymentIntentStatus.FAILED, PaymentIntentStatus.CANCELLED);
@@ -113,12 +113,13 @@ final class InMemoryPaymentIntentRepository implements PaymentIntentRepository {
      * rather than only against PostgreSQL.
      */
     @Override
-    public List<PaymentIntent> findStrandedInProcessing(Instant confirmedBefore, int limit) {
+    public List<String> findStrandedInProcessing(Instant confirmedBefore, int limit) {
         return intents.stream()
             .filter(intent -> intent.status() == PaymentIntentStatus.PROCESSING)
             .filter(intent -> !intent.updatedAt().isAfter(confirmedBefore))
             .sorted(Comparator.comparing(PaymentIntent::updatedAt))
             .limit(limit)
+            .map(intent -> intent.paymentIntentId().value())
             .toList();
     }
 

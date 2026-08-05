@@ -28,6 +28,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -384,6 +385,76 @@ class OrderExpiryIntegrationTest {
             """, merchantId.value(), orderId.value(), java.sql.Timestamp.from(AFTER_EXPIRY)))
             .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class)
             .hasMessageContaining("ck_order_state_history_actor");
+    }
+
+    // --- one bad row ----------------------------------------------------------------------------
+
+    /**
+     * ONE UNMAPPABLE ROW COSTS ONE ORDER, NOT THE SWEEP. Open item 2, and it was not latent.
+     *
+     * <p>The item was filed as "needing database state the current CHECKs forbid". It needs one
+     * identifier nobody constrained: {@code merchants.merchant_id} and {@code orders.order_id} are
+     * {@code VARCHAR(40)} with no format CHECK, while {@code MerchantId.from} and
+     * {@code OrderId.from} refuse anything that is not {@code prefix_uuid}. PostgreSQL accepts the
+     * row below today.
+     *
+     * <p>Before the fix the candidate query built an {@code Order} per row, <b>outside</b> the
+     * per-item try/catch. This row has the oldest deadline, so it led every batch, threw out of
+     * {@code sweep()} before a single order was examined, and the scheduler re-ran it forever --
+     * order expiry silently dead platform-wide, with one WARN per pass and no failing test.
+     *
+     * <p><b>Sabotage that must turn this red:</b> make {@code findExpirable} return mapped
+     * aggregates again, or move the {@code MerchantId.from} / {@code OrderId.from} calls out of
+     * {@code ExpireOrdersService}'s try and back into {@code JpaOrderRepository}.
+     */
+    @Test
+    void expiresTheGoodOrdersEvenWhenACandidateRowCannotBeMapped() {
+        MerchantId healthy = existingMerchant();
+        OrderId healthyOrder = expiringOrder(healthy);
+
+        unmappableExpiringOrder();
+
+        ExpireOrdersService.SweepResult result = sweeperAt(AFTER_EXPIRY).sweep();
+
+        assertThat(result.examined())
+            .as("the bad row is still a candidate -- the query does not hide it")
+            .isEqualTo(2);
+        assertThat(result.failed())
+            .as("and it is counted as one failure, not as a dead sweep")
+            .isEqualTo(1);
+        assertThat(result.expired()).isEqualTo(1);
+
+        assertThat(statusOf(healthy, healthyOrder))
+            .as("THE POINT: the order behind the bad row was still expired")
+            .isEqualTo(OrderStatus.EXPIRED);
+    }
+
+    /**
+     * A row no mapper can rehydrate, inserted the only way one can exist: straight through JDBC,
+     * with an id the application would never mint. Its deadline is the oldest in the table, so it
+     * sorts to the head of the candidate batch -- which is what made the original bug total rather
+     * than partial.
+     */
+    private void unmappableExpiringOrder() {
+        String malformedMerchantId = "not-a-merchant-id";
+
+        jdbc.update("""
+            insert into merchants
+                (merchant_id, business_name, email, country, default_currency, status,
+                 created_at, updated_at)
+            values (?, 'Corrupt Co', ?, 'IN', 'INR', 'ACTIVE', ?, ?)
+            """, malformedMerchantId, UUID.randomUUID() + "@paymesh.test",
+            Timestamp.from(CREATED_AT), Timestamp.from(CREATED_AT));
+
+        jdbc.update("""
+            insert into orders
+                (order_id, merchant_id, amount_minor, amount_paid_minor, currency, status,
+                 metadata, version, expires_at, created_at, updated_at)
+            values (?, ?, ?, 0, 'INR', 'PENDING', '{}'::jsonb, 0, ?, ?, ?)
+            """,
+            "ord_" + UUID.randomUUID(), malformedMerchantId, ORDER_AMOUNT_MINOR,
+            Timestamp.from(EXPIRES_AT.minus(Duration.ofDays(1))),
+            Timestamp.from(CREATED_AT), Timestamp.from(CREATED_AT));
     }
 
     // --- the transaction boundary --------------------------------------------------------------

@@ -1040,7 +1040,7 @@ class PaymentIntentIntegrationTest {
         }
 
         @Override
-        public List<PaymentIntent> findStrandedInProcessing(Instant confirmedBefore, int limit) {
+        public List<String> findStrandedInProcessing(Instant confirmedBefore, int limit) {
             return delegate.findStrandedInProcessing(confirmedBefore, limit);
         }
 

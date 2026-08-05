@@ -24,7 +24,7 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1318 tests, 0 failures.** Twenty-five Flyway migrations (V1–V25). Twenty-eight ADRs. The Postman
+**1321 tests, 0 failures.** Twenty-five Flyway migrations (V1–V25). Twenty-eight ADRs. The Postman
 collection runs **seventeen folders green** (a newman run executes 233 requests and 566 assertions;
 the count varies because the polling requests re-run themselves) — the newest showing an order
 paid and a signed webhook delivery queued for it without anyone calling a webhook endpoint.
@@ -534,7 +534,7 @@ no financial effect.
 
 ```bash
 cd backend
-./mvnw test                     # 1318 tests; needs Docker, no local database
+./mvnw test                     # 1321 tests; needs Docker, no local database
 ./mvnw spring-boot:run          # port 8080, activates the dev profile via the pom
 
 # API contract, end to end, including cross-tenant isolation and idempotency
@@ -634,12 +634,28 @@ failing test._
    The same dead end open item 1 used to describe, reached through its fix. Neither ADR-014
    nor ADR-015 notices. A grace period after a system-initiated terminal transition is the
    likely answer. Only bites orders that set a deadline.
-2. **One unmappable row disables a sweep permanently and silently.** Both sweeps run their
-   candidate query — which maps every row through the aggregate — *outside* the per-item
-   try/catch that exists to stop one bad row killing the run. A row that fails to map throws
-   out of `sweep()` entirely, has the oldest timestamp, sits at the head of every batch, and
-   the scheduler keeps rescheduling it. Reaching it needs database state the current CHECKs
-   forbid, so this is a latent trap rather than a live bug. Move the mapping inside the catch.
+2. ~~**One unmappable row disables a sweep permanently and silently.**~~ **CLOSED**, and the entry
+   was wrong about two things worth keeping visible.
+
+   **It said "both sweeps". There are three** — order expiry, payment timeout and refund timeout —
+   and all three had it. **And it said reaching the bug "needs database state the current CHECKs
+   forbid, so this is a latent trap rather than a live bug". It does not.**
+   `merchants.merchant_id`, `orders.order_id`, `payment_intents.payment_intent_id` and
+   `refunds.refund_id` are all `VARCHAR(40)` with **no format CHECK**, while `MerchantId.from` and
+   its siblings refuse anything that is not `prefix_uuid`. One malformed identifier — a bad
+   migration, a hand-fixed row, a future import — is a row PostgreSQL accepts today and every sweep
+   chokes on. It was filed as latent because nobody checked whether the ids were constrained.
+
+   The fix is the one the entry prescribed, taken a step further than it said. Candidate queries
+   return **raw identifiers**, so nothing is mapped before the boundary, and the `XxxId.from` calls
+   — which also throw — moved inside the per-item `try` with them. The first attempt moved the
+   aggregate mapping and left the id parsing in the adapter; it still failed the regression test,
+   which is why the candidate types are `String` rather than value objects.
+
+   Proved by sabotage in all three. The order one is an integration test with a genuinely
+   unmappable row, and with the mapping restored it takes down **12 of 14 tests in its class**
+   rather than one — because the bad row persists and kills every later sweep, which is exactly the
+   failure mode described above.
 3. **ADR-014's race guard depends on `READ COMMITTED` and nothing says so.** The expiry sweep
    takes the order's row lock and then does an *unlocked* read of `payment_intents`. It sees
    an intent committed while it waited on the lock only because each statement takes a fresh
@@ -758,6 +774,15 @@ failing test._
     validation failures where the code returns 400.
     <br>~~`IdentityConfiguration`'s javadoc credits `MerchantConfiguration` for the `Clock`
     bean~~ and ~~`PLATFORM_ADMIN` is not grantable~~ are **closed by ADR-027**.
+
+19. **No identifier column has a format CHECK.** `merchant_id`, `order_id`,
+    `payment_intent_id`, `refund_id`, `customer_id` and the rest are `VARCHAR(40)` carrying a
+    primary key or a foreign key and nothing else, while every `XxxId.from` refuses anything that
+    is not `prefix_uuid`. The database will therefore accept an identifier the application cannot
+    read back. This is what closing open item 2 turned up: the sweeps now survive such a row, but
+    every other read path still throws on one. `CHECK (order_id ~ '^ord_[0-9a-f-]{36}$')` per table
+    is the obvious answer, it is a migration touching most of them, and it is worth doing as its
+    own change rather than quietly inside a capability PR.
 
 18. **`SERVICE_ACCOUNT` is the last unreachable enum constant on the platform**, and unlike the
     ones ADR-021/024/027 closed it is unreachable *by decision* rather than by oversight.
@@ -885,7 +910,7 @@ only ever ran in the PENDING branch, where the other side of the ternary is not 
 one more consumer to `payment.succeeded` was enough extra latency for a relay tick to land first
 and expose it. Fixed in the same change.
 
-**Verification:** 1318 tests green; Postman 233 requests / 566 assertions / 0 failures across
+**Verification:** 1318 tests green (Webhook PR); Postman 233 requests / 566 assertions / 0 failures across
 seventeen folders; V24 and V25 applied to a live V23 database *with data in it*; the whole loop
 walked live — register an endpoint, read the secret once, pay an order through the simulator, watch
 a PENDING delivery appear for it, rotate twice from the same version and get the same secret back.
@@ -927,10 +952,14 @@ the documents again.
   an invariant, break the implementation to confirm the test catches it. The places most worth
   attacking: the derivation's frozen vectors, the two-`v1=` rotation header, the SSRF guard's
   address ranges, and the claim that create and rotate must stay off the idempotency filter.
-- **Open item 17's remaining defects are still not worked through**, including the one real bug in
-  it: both sweeps map their candidate rows *outside* the per-item try/catch, so one unmappable row
-  disables a sweep permanently and silently (open item 2). Latent rather than live, but on the
-  money path and the cheapest quality win available. **Its own PR.**
+- **Open item 2 is closed** (see above). What it turned up is now open item 19: no identifier
+  column has a format CHECK, so the database accepts ids the application cannot read back. The
+  sweeps survive one now; nothing else does. A migration adding the CHECKs is the fix and is worth
+  its own PR.
+- **The rest of open item 17 is still not worked through** — the `FailureAnalyzer`,
+  `ModuleBoundaryTest` allowlisting by filename rather than path, the idempotency filter's
+  hard-coded replay `Content-Type`, the `@Email` inconsistency. All cosmetic or test-only; none is
+  on the money path.
 - **Then PR 2, Risk** (`docs/phase-2-plan.md`). Migrations V26–V27, ADR-029 are reserved for it. It
   is the one Phase-2 capability that touches existing code — Payment's confirm calls it
   synchronously — so it is worth designing before building.

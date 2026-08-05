@@ -255,7 +255,7 @@ class PaymentSucceededHandlerTest {
         }
 
         @Override
-        public List<Order> findExpirable(Instant now, int limit) {
+        public List<com.paymesh.order.application.ExpirableOrder> findExpirable(Instant now, int limit) {
             throw new UnsupportedOperationException();
         }
     }

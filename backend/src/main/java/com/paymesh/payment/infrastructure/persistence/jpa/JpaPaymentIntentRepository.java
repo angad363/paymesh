@@ -113,10 +113,10 @@ public final class JpaPaymentIntentRepository implements PaymentIntentRepository
     }
 
     @Override
-    public List<PaymentIntent> findStrandedInProcessing(Instant confirmedBefore, int limit) {
-        return paymentIntents.findStrandedInProcessing(confirmedBefore, Limit.of(limit)).stream()
-            .map(PaymentIntentJpaMapper::toDomain)
-            .toList();
+    public List<String> findStrandedInProcessing(Instant confirmedBefore, int limit) {
+        // RAW, unparsed: PaymentIntentId.from validates and throws, and the sweep's per-item
+        // try/catch is the only place that may happen. Open item 2.
+        return paymentIntents.findStrandedInProcessing(confirmedBefore, Limit.of(limit));
     }
 
     @Override

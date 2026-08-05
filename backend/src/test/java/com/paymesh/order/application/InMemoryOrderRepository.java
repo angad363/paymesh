@@ -77,12 +77,15 @@ final class InMemoryOrderRepository implements OrderRepository {
      * ineligible row being excluded fails here too rather than only against PostgreSQL.
      */
     @Override
-    public List<Order> findExpirable(Instant now, int limit) {
+    public List<ExpirableOrder> findExpirable(Instant now, int limit) {
         return orders.stream()
             .filter(order -> order.status() == OrderStatus.PENDING)
             .filter(order -> order.expiresAt() != null && !order.expiresAt().isAfter(now))
             .sorted(Comparator.comparing(Order::expiresAt))
             .limit(limit)
+            .map(order -> new ExpirableOrder(
+                order.merchantId().value(), order.orderId().value()
+            ))
             .toList();
     }
 }

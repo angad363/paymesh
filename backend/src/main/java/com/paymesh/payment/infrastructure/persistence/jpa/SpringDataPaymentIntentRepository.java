@@ -173,14 +173,18 @@ public interface SpringDataPaymentIntentRepository extends JpaRepository<Payment
      * <p>
      * Longest-stranded first so a backlog drains in the order it accumulated. Reads straight off
      * {@code idx_payment_intents_processing_since}, which is partial on exactly this status.
+     * <p>
+     * IDENTIFIERS, NOT ENTITIES, for the reason {@code findExpirable} carries: the sweep re-reads
+     * each candidate under a lock, so mapping here was discarded work done outside the per-item
+     * try/catch, where one unrehydratable row kills the run. Open item 2.
      */
     @Query("""
-        select p from PaymentIntentJpaEntity p
+        select p.paymentIntentId from PaymentIntentJpaEntity p
         where p.status = 'PROCESSING'
           and p.updatedAt <= :confirmedBefore
         order by p.updatedAt asc
         """)
-    List<PaymentIntentJpaEntity> findStrandedInProcessing(
+    List<String> findStrandedInProcessing(
         @Param("confirmedBefore") Instant confirmedBefore,
         Limit limit
     );

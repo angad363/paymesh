@@ -139,15 +139,18 @@ public final class TimeOutProcessingPaymentsService {
         // real payments being recorded as failed. Those two are not symmetrical.
         Instant cutoff = now.minus(age);
 
-        List<PaymentIntent> candidates = paymentIntents.findStrandedInProcessing(cutoff, batchSize);
+        // IDENTIFIERS, so there is nothing left to map before the per-item boundary below.
+        List<String> candidates = paymentIntents.findStrandedInProcessing(cutoff, batchSize);
 
         int failed = 0;
         int held = 0;
         int errored = 0;
 
-        for (PaymentIntent candidate : candidates) {
+        for (String candidate : candidates) {
             try {
-                if (timeOutOne(candidate.paymentIntentId(), cutoff, now)) {
+                // Parsed inside the try: PaymentIntentId.from validates, and payment_intents
+                // .payment_intent_id has no format CHECK. Open item 2.
+                if (timeOutOne(PaymentIntentId.from(candidate), cutoff, now)) {
                     failed++;
                 } else {
                     held++;
@@ -158,9 +161,13 @@ public final class TimeOutProcessingPaymentsService {
                 // and starve everything behind it. Nothing partial survives its rollback, so the
                 // next sweep retries it safely.
                 errored++;
+                // The merchant is no longer to hand -- the candidate query returns ids only, so a
+                // row that cannot be mapped has no merchant to name. The intent id is enough to
+                // find it, and needing the id alone is exactly what makes this branch reachable
+                // for a row the mapper chokes on.
                 log.warn(
-                    "Could not time out payment intent paymentIntentId={} merchantId={}",
-                    candidate.paymentIntentId().value(), candidate.merchantId().value(), failure
+                    "Could not time out payment intent paymentIntentId={}",
+                    candidate, failure
                 );
             }
         }

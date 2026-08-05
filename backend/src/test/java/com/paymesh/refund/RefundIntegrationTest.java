@@ -29,6 +29,8 @@ import com.paymesh.refund.application.RecordRefundCallbackCommand;
 import com.paymesh.refund.application.RecordRefundCallbackService;
 import com.paymesh.refund.application.RefundAlreadyRequestedException;
 import com.paymesh.refund.application.RefundExceedsCapturedAmountException;
+import com.paymesh.refund.domain.RefundId;
+import com.paymesh.refund.application.RefundCursor;
 import com.paymesh.refund.application.RefundRepository;
 import com.paymesh.refund.application.RefundStateHistoryRepository;
 import com.paymesh.refund.application.TimeOutProcessingRefundsService;
@@ -507,6 +509,90 @@ class RefundIntegrationTest {
 
         // And the merchant can refund again.
         assertThat(refund(fixture, CAPTURED).amountMinor()).isEqualTo(CAPTURED);
+    }
+
+    /**
+     * A CANDIDATE ID THE VALUE OBJECT REFUSES COSTS ONE REFUND, NOT THE SWEEP. Open item 2.
+     *
+     * <p>{@code RefundId.from} throws on anything that is not {@code ref_uuid}, and
+     * {@code refunds.refund_id} is {@code VARCHAR(40)} with no format CHECK. Oldest first means
+     * such a row leads every batch, so before the fix it threw out of {@code sweep()} before a
+     * single refund was examined -- and kept doing so on every pass.
+     *
+     * <p>Driven through a repository that prepends the bad id rather than through a real row,
+     * because {@code fk_refund_callbacks_refund} and friends make a malformed refund awkward to
+     * plant; the id is what the sweep consumes, and it is what the parse chokes on.
+     *
+     * <p><b>Sabotage that must turn this red:</b> move the {@code RefundId.from} call out of the
+     * {@code try} in {@code sweep()}, or map aggregates in {@code findProcessingOlderThan} again.
+     */
+    @Test
+    void timesOutTheGoodRefundsEvenWhenACandidateIdCannotBeParsed() {
+        Fixture fixture = collected();
+        Refund healthy = refund(fixture, CAPTURED);
+
+        RefundRepository malformedFirst = new RefundRepositoryWithBadCandidate(
+            refundRepository, "not-a-refund-id"
+        );
+
+        TimeOutProcessingRefundsService.SweepResult result = new TimeOutProcessingRefundsService(
+            malformedFirst,
+            refundStateHistory,
+            outboxWriter,
+            transactionTemplate,
+            TIMEOUT_AGE,
+            100,
+            Clock.fixed(Instant.now().plus(TIMEOUT_AGE).plusSeconds(60), ZoneOffset.UTC)
+        ).sweep();
+
+        assertThat(result.errored()).as("the unparseable id is one failure").isEqualTo(1);
+
+        // At least one, not exactly one: this class shares a database across its tests, so earlier
+        // refunds left PROCESSING are legitimate candidates too. The named refund below is the
+        // assertion that matters -- it is the one queued BEHIND the unparseable id.
+        assertThat(result.failed()).isGreaterThanOrEqualTo(1);
+        assertThat(statusOf(healthy))
+            .as("THE POINT: the refund behind the bad candidate was still timed out")
+            .isEqualTo(RefundStatus.FAILED.name());
+    }
+
+    /** Everything the real adapter does, plus one id at the head of the candidate list. */
+    private record RefundRepositoryWithBadCandidate(RefundRepository delegate, String malformed)
+        implements RefundRepository {
+
+        @Override
+        public List<String> findProcessingOlderThan(Instant threshold, int limit) {
+            List<String> candidates = new java.util.ArrayList<>();
+            candidates.add(malformed);
+            candidates.addAll(delegate.findProcessingOlderThan(threshold, limit));
+
+            return candidates;
+        }
+
+        @Override
+        public Refund save(Refund refund) {
+            return delegate.save(refund);
+        }
+
+        @Override
+        public java.util.Optional<Refund> findByRefundId(MerchantId merchantId, RefundId refundId) {
+            return delegate.findByRefundId(merchantId, refundId);
+        }
+
+        @Override
+        public java.util.Optional<Refund> findForUpdate(RefundId refundId) {
+            return delegate.findForUpdate(refundId);
+        }
+
+        @Override
+        public List<Refund> findPage(MerchantId merchantId, RefundCursor cursor, int limit) {
+            return delegate.findPage(merchantId, cursor, limit);
+        }
+
+        @Override
+        public long activeTotalMinor(String paymentIntentId) {
+            return delegate.activeTotalMinor(paymentIntentId);
+        }
     }
 
     /** It announces the timeout, so a consumer sees the same shape a decline produces. */

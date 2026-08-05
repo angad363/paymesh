@@ -102,15 +102,23 @@ public final class ExpireOrdersService {
      */
     public SweepResult sweep() {
         Instant now = Instant.now(clock);
-        List<Order> candidates = orderRepository.findExpirable(now, batchSize);
+        // IDENTIFIERS, so there is nothing left to map before the per-item boundary below.
+        List<ExpirableOrder> candidates = orderRepository.findExpirable(now, batchSize);
 
         int expired = 0;
         int held = 0;
         int failed = 0;
 
-        for (Order candidate : candidates) {
+        for (ExpirableOrder candidate : candidates) {
             try {
-                if (expireOne(candidate.merchantId(), candidate.orderId(), now)) {
+                // PARSED HERE, INSIDE THE TRY. These two calls validate and throw, and a
+                // malformed id is a row the database accepts -- neither merchants.merchant_id nor
+                // orders.order_id has a format CHECK. Open item 2.
+                if (expireOne(
+                    MerchantId.from(candidate.merchantId()),
+                    OrderId.from(candidate.orderId()),
+                    now
+                )) {
                     expired++;
                 } else {
                     held++;
@@ -124,7 +132,7 @@ public final class ExpireOrdersService {
                 failed++;
                 log.warn(
                     "Could not expire order orderId={} merchantId={}",
-                    candidate.orderId().value(), candidate.merchantId().value(), failure
+                    candidate.orderId(), candidate.merchantId(), failure
                 );
             }
         }

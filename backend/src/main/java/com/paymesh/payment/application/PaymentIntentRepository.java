@@ -107,7 +107,7 @@ public interface PaymentIntentRepository {
      * @param limit           the batch size, so one sweep cannot load an unbounded backlog
      * @return PROCESSING intents older than the cutoff, longest-stranded first, across all merchants
      */
-    List<PaymentIntent> findStrandedInProcessing(Instant confirmedBefore, int limit);
+    List<String> findStrandedInProcessing(Instant confirmedBefore, int limit);
 
     /**
      * Intents abandoned before they were ever confirmed: still REQUIRES_PAYMENT_METHOD or

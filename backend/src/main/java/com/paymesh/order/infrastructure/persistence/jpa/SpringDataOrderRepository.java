@@ -109,13 +109,17 @@ public interface SpringDataOrderRepository extends JpaRepository<OrderJpaEntity,
      * Oldest deadline first so a backlog drains in the order it accumulated, and so a batch limit
      * cannot starve the orders that have been expired longest. Reads straight off
      * {@code idx_orders_expirable}, which is partial on exactly these two predicates.
+     * <p>
+     * IDENTIFIERS, NOT ENTITIES. The sweep re-reads every candidate under a lock anyway, so the
+     * aggregate this used to build was mapped and discarded -- and mapped OUTSIDE the sweep's
+     * per-item try/catch, where one unrehydratable row throws out of the whole run. Open item 2.
      */
     @Query("""
-        select o from OrderJpaEntity o
+        select o.merchantId, o.orderId from OrderJpaEntity o
         where o.status = 'PENDING'
           and o.expiresAt is not null
           and o.expiresAt <= :now
         order by o.expiresAt asc
         """)
-    List<OrderJpaEntity> findExpirable(@Param("now") Instant now, Limit limit);
+    List<Object[]> findExpirable(@Param("now") Instant now, Limit limit);
 }
