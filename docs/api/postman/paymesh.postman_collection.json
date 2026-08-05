@@ -596,6 +596,58 @@
   {
    "key": "rfSettleTries",
    "value": ""
+  },
+  {
+   "key": "whSlug",
+   "value": ""
+  },
+  {
+   "key": "whEndpointId",
+   "value": ""
+  },
+  {
+   "key": "whSecret",
+   "value": ""
+  },
+  {
+   "key": "whRotatedSecret",
+   "value": ""
+  },
+  {
+   "key": "whOrderKey",
+   "value": ""
+  },
+  {
+   "key": "whOrderId",
+   "value": ""
+  },
+  {
+   "key": "whIntentKey",
+   "value": ""
+  },
+  {
+   "key": "whIntentId",
+   "value": ""
+  },
+  {
+   "key": "whAttachKey",
+   "value": ""
+  },
+  {
+   "key": "whConfirmKey",
+   "value": ""
+  },
+  {
+   "key": "whReplayKey",
+   "value": ""
+  },
+  {
+   "key": "whDeliveryId",
+   "value": ""
+  },
+  {
+   "key": "whPollAttempt",
+   "value": ""
   }
  ],
  "item": [
@@ -7445,13 +7497,17 @@
         "type": "text/javascript",
         "exec": [
          "pm.test('200 OK', () => pm.response.to.have.status(200));",
+         "// 2500, not the 3000 this line used to say. The capture above is 2500 and always was;",
+         "// the wrong figure survived because this assertion only ever ran in the PENDING branch,",
+         "// where amountPaidMinor is 0 and the other side of the ternary is never evaluated. A",
+         "// relay tick landing before this read is all it took to expose it.",
          "const b = pm.response.json();",
-         "// PARTIALLY_PAID because the capture above took 3000 of an authorized 4000. PENDING if the",
+         "// PARTIALLY_PAID because the capture above took 2500 of an authorized 4000. PENDING if the",
          "// relay has not ticked yet, or is switched off. Both are correct; neither is assertable alone.",
          "pm.test('PENDING or PARTIALLY_PAID, depending on the relay', () =>",
          "    pm.expect(b.status).to.be.oneOf(['PENDING', 'PARTIALLY_PAID']));",
          "pm.test('amountPaidMinor agrees with the status', () =>",
-         "    pm.expect(b.amountPaidMinor).to.eql(b.status === 'PENDING' ? 0 : 3000));"
+         "    pm.expect(b.amountPaidMinor).to.eql(b.status === 'PENDING' ? 0 : 2500));"
         ]
        }
       }
@@ -11741,6 +11797,959 @@
          "pm.test('the provider sent the money back', () => pm.expect(b.status).to.eql('SUCCEEDED'));",
          "pm.test('and echoed the caller\\'s reference, which is what makes it joinable', () =>",
          "    pm.expect(b.callbackReference).to.eql('ref_reconciliation_demo'));"
+        ]
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "Webhook (PayMesh calls the merchant back, ADR-028)",
+   "description": "THE FIRST CAPABILITY THAT POINTS OUTWARD. Everything above this folder is PayMesh answering a request. This is PayMesh making one -- signed, retried, and aimed at a URL the merchant chose.\n\nTHE SECRET IS NEVER STORED. webhook_endpoints holds secret_version, an integer. The signing secret is HMAC-SHA256(masterKey, \"paymesh.webhook.v1|<endpointId>|<version>\" || 0x01), derived on demand, so a database dump contains nothing that lets an attacker sign as PayMesh. Rotation is an increment (ADR-028 section 2).\n\nTWO CONSEQUENCES YOU CAN SEE BELOW. The secret is shown exactly twice -- on create and on rotate -- and neither route is on the idempotency filter, because idempotency_records.response_body stores response bodies VERBATIM and registering them would write the secret to the database in cleartext. Rotate is idempotent on its own terms instead: it names the version it is replacing, so a retry re-derives the same secret rather than bumping again. That is the request called 'idempotent by construction' below, and it is the whole argument in one call.\n\nA MERCHANT ENDPOINT BEING DOWN MUST NEVER AFFECT A PAYMENT. No HTTP happens on the payment path: the event dispatcher writes one webhook_events row and one PENDING delivery per subscribed endpoint, inside the transaction it was already in, and a separate timer does the sending.\n\nSTART THE APP WITH BOTH TIMERS ON, or nothing is ever queued:\n    PAYMESH_SIMULATOR_DISPATCH_ENABLED=true \\\n    PAYMESH_EVENTS_OUTBOX_RELAY_ENABLED=true \\\n    ./mvnw spring-boot:run\nThe webhook DISPATCHER is deliberately left off. It would POST at https://merchant.test/, which does not exist, and every delivery below would spend its retry budget against DNS. PENDING is the correct and observable state for a walkthrough; DeliverWebhooksServiceTest and HttpWebhookSenderTest cover the sending.",
+   "item": [
+    {
+     "name": "Register a webhook endpoint, and read the secret once (201)",
+     "request": {
+      "method": "POST",
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/webhook-endpoints",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "webhook-endpoints"
+       ]
+      },
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       },
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       }
+      ],
+      "description": "NO Idempotency-Key, and its absence is the design rather than an omission. This response carries the signing secret, and the idempotency filter persists response bodies verbatim so a retry can replay them -- registering this route would put the secret in the database in cleartext, which is exactly what ADR-028 exists to avoid.\n\nThe cost is stated rather than hidden: a merchant who retries a lost create gets a second endpoint. They can see it and disable it, and two endpoints at one URL are refused outright by the next request.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"url\": \"https://merchant.test/{{whSlug}}/hooks\",\n  \"subscriptions\": [\n    \"order.paid\",\n    \"payment.succeeded\"\n  ]\n}"
+      }
+     },
+     "event": [
+      {
+       "listen": "prerequest",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "// A fresh URL per run, so the folder can be re-run against the same app. The unique is",
+         "// (merchant_id, url) and a fixed URL would 409 on the second run.",
+         "pm.collectionVariables.set('whSlug', pm.variables.replaceIn('{{$guid}}'));",
+         "['whOrderKey','whIntentKey','whAttachKey','whConfirmKey','whReplayKey'].forEach(k => pm.collectionVariables.set(k, pm.variables.replaceIn('{{$guid}}')));",
+         "pm.collectionVariables.set('whPollAttempt', 0);"
+        ]
+       }
+      },
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('201 Created', () => pm.response.to.have.status(201));",
+         "const b = pm.response.json();",
+         "",
+         "pm.test('the id is opaque and prefixed (ADR-003)', () =>",
+         "    pm.expect(b.id).to.match(/^whe_[0-9a-f-]{36}$/));",
+         "pm.test('the secret is shown, once, and is prefixed', () =>",
+         "    pm.expect(b.secret).to.match(/^whsec_[A-Za-z0-9_-]{43}$/));",
+         "pm.test('version 1, because rotation is an integer bump', () =>",
+         "    pm.expect(b.secretVersion).to.eql(1));",
+         "pm.test('ACTIVE', () => pm.expect(b.status).to.eql('ACTIVE'));",
+         "pm.test('no rotation window is open yet', () =>",
+         "    pm.expect(b.previousSecretExpiresAt).to.be.null);",
+         "",
+         "pm.collectionVariables.set('whEndpointId', b.id);",
+         "pm.collectionVariables.set('whSecret', b.secret);"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "The same URL twice is refused (409)",
+     "request": {
+      "method": "POST",
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/webhook-endpoints",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "webhook-endpoints"
+       ]
+      },
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       },
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       }
+      ],
+      "description": "Two endpoints at one URL fan out twice to the same place: the merchant's handler sees every event doubled, and their own idempotency is the only thing between that and a doubled fulfilment.\n\nuq_webhook_endpoints_merchant_url is what makes it true. The service's pre-check is what makes it a readable 409 instead of a 500 -- two concurrent registrations can both pass the check, and the loser still gets this answer.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"url\": \"https://merchant.test/{{whSlug}}/hooks\",\n  \"subscriptions\": [\n    \"order.paid\"\n  ]\n}"
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+         "pm.test('WEBHOOK_ENDPOINT_ALREADY_EXISTS', () =>",
+         "    pm.expect(pm.response.json().code).to.eql('WEBHOOK_ENDPOINT_ALREADY_EXISTS'));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "A plaintext http:// URL is refused (400)",
+     "request": {
+      "method": "POST",
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/webhook-endpoints",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "webhook-endpoints"
+       ]
+      },
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       },
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       }
+      ],
+      "description": "The payload names an amount, a customer and an order. Over http it is readable by anything on the path, and the HMAC proves who sent it -- not that nobody read it.\n\nRefused in two places on purpose: ck_webhook_endpoints_url_https in V24 makes it unrepresentable, and the aggregate parses the URL because a regex cannot see what a parser can. https://user:pass@internal/ passes any prefix test and is refused here too.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"url\": \"http://merchant.test/insecure\",\n  \"subscriptions\": [\n    \"order.paid\"\n  ]\n}"
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+         "pm.test('INVALID_REQUEST', () =>",
+         "    pm.expect(pm.response.json().code).to.eql('INVALID_REQUEST'));",
+         "pm.test('and it says why', () =>",
+         "    pm.expect(pm.response.json().message).to.include('https'));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Subscribing to a type PayMesh does not publish is refused (422)",
+     "request": {
+      "method": "POST",
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/webhook-endpoints",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "webhook-endpoints"
+       ]
+      },
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       },
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       }
+      ],
+      "description": "payment.created is a real internal event -- it is on the outbox right now -- and no translator turns it into a merchant-facing shape, so an endpoint subscribed to it would sit ACTIVE and receive nothing forever. That is a configuration that looks correct and is not, which is worse than one that fails.\n\n422 rather than 400: the request is well-formed and the value is simply not one PayMesh offers. The message lists what it does offer, which is the useful half of the answer.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"url\": \"https://merchant.test/{{whSlug}}/never\",\n  \"subscriptions\": [\n    \"payment.created\"\n  ]\n}"
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('422 Unprocessable Entity', () => pm.response.to.have.status(422));",
+         "pm.test('UNPUBLISHED_EVENT_TYPE', () =>",
+         "    pm.expect(pm.response.json().code).to.eql('UNPUBLISHED_EVENT_TYPE'));",
+         "pm.test('and it names the four that are available', () => {",
+         "    const m = pm.response.json().message;",
+         "    ['payment.succeeded','payment.failed','refund.succeeded','order.paid']",
+         "        .forEach(t => pm.expect(m).to.include(t));",
+         "});"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Setup: an order to pay (201)",
+     "request": {
+      "method": "POST",
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/orders",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "orders"
+       ]
+      },
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       },
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       },
+       {
+        "key": "Idempotency-Key",
+        "value": "{{whOrderKey}}"
+       }
+      ],
+      "description": "Its own order: an order holds at most one live payment intent (ADR-011).",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"amountMinor\": 45000,\n  \"currency\": \"INR\"\n}"
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('201 Created', () => pm.response.to.have.status(201));",
+         "pm.collectionVariables.set('whOrderId', pm.response.json().id);"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Setup: a payment intent against it (201)",
+     "request": {
+      "method": "POST",
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/payment-intents",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "payment-intents"
+       ]
+      },
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       },
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       },
+       {
+        "key": "Idempotency-Key",
+        "value": "{{whIntentKey}}"
+       }
+      ],
+      "description": "AUTOMATIC capture, so the provider's SUCCEEDED callback collects in one hop.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"orderId\": \"{{whOrderId}}\",\n  \"amountMinor\": 45000,\n  \"currency\": \"INR\"\n}"
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('201 Created', () => pm.response.to.have.status(201));",
+         "pm.collectionVariables.set('whIntentId', pm.response.json().id);"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Setup: attach a card (200)",
+     "request": {
+      "method": "POST",
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/payment-intents/{{whIntentId}}/payment-method",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "payment-intents",
+        "{{whIntentId}}",
+        "payment-method"
+       ]
+      },
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       },
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       },
+       {
+        "key": "Idempotency-Key",
+        "value": "{{whAttachKey}}"
+       }
+      ],
+      "description": "Attach is a registered idempotent route; without the header this is a 400.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"paymentMethodType\": \"CARD\"\n}"
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('200 OK', () => pm.response.to.have.status(200));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Setup: confirm, sending it to the provider (202)",
+     "request": {
+      "method": "POST",
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/payment-intents/{{whIntentId}}/confirm",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "payment-intents",
+        "{{whIntentId}}",
+        "confirm"
+       ]
+      },
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       },
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       },
+       {
+        "key": "Idempotency-Key",
+        "value": "{{whConfirmKey}}"
+       }
+      ],
+      "description": "PROCESSING. From here only a provider callback moves it.",
+      "body": {
+       "mode": "raw",
+       "raw": "{}"
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+         "pm.test('PROCESSING', () => pm.expect(pm.response.json().status).to.eql('PROCESSING'));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "The simulator collects it (201)",
+     "request": {
+      "method": "POST",
+      "url": {
+       "raw": "{{baseUrl}}/sim/v1/payments",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "sim",
+        "v1",
+        "payments"
+       ]
+      },
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       },
+       {
+        "key": "X-PayMesh-Simulator-Key",
+        "value": "{{simulatorKey}}"
+       }
+      ],
+      "description": "The fake acquirer, which will queue a signed callback and let its own dispatcher deliver it. That callback moves the intent to SUCCEEDED, which writes payment.succeeded to the outbox, which the relay hands to every consumer -- Order, the Ledger, and now Webhook.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"idempotencyKey\": \"{{whSlug}}\",\n  \"callbackReference\": \"{{whIntentId}}\",\n  \"method\": \"CARD\",\n  \"token\": \"tok_sim_success\",\n  \"amountMinor\": 45000,\n  \"currency\": \"INR\",\n  \"captureMethod\": \"AUTOMATIC\"\n}"
+      }
+     },
+     "event": [
+      {
+       "listen": "prerequest",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.collectionVariables.set('simulatorKey',",
+         "    'dev-only-insecure-simulator-api-key-change-me');"
+        ]
+       }
+      },
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('201 Created', () => pm.response.to.have.status(201));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "THE POINT: a delivery is waiting, and nobody called a webhook endpoint to make it (200)",
+     "request": {
+      "method": "GET",
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}/deliveries",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "webhook-endpoints",
+        "{{whEndpointId}}",
+        "deliveries"
+       ]
+      },
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       }
+      ],
+      "description": "THE LINE THIS FOLDER EXISTS FOR. Payment wrote payment.succeeded and Order wrote order.paid; the relay handed both to their consumers; Webhook translated each into the merchant's shape and queued a delivery per subscribed endpoint. Payment and Order have never heard of Webhook.\n\nPENDING with attempts 0 is the CORRECT state here. The webhook dispatcher is off (see the folder description) because https://merchant.test/ does not resolve, and a walkthrough that burned a retry budget against DNS would prove less than this does.\n\nIT POLLS, because three hops have to happen first: the simulator's dispatcher, the callback, and the outbox relay. Both of those timers must be on."
+     },
+     "event": [
+      {
+       "listen": "prerequest",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "// A pre-request setTimeout is how a Postman run waits; the sandbox holds the request",
+         "// until pending timers settle. Three hops, so longer than the Ledger folder's wait.",
+         "setTimeout(() => {}, 2500);"
+        ]
+       }
+      },
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "const attempt = Number(pm.collectionVariables.get('whPollAttempt') || 0) + 1;",
+         "pm.collectionVariables.set('whPollAttempt', attempt);",
+         "",
+         "pm.test('200 OK', () => pm.response.to.have.status(200));",
+         "const rows = pm.response.json();",
+         "",
+         "if (rows.length === 0 && attempt < 15) {",
+         "    console.log('waiting for the callback and the relay, attempt ' + attempt + ' of 15');",
+         "    postman.setNextRequest(pm.info.requestName);",
+         "} else {",
+         "    pm.test('a delivery was queued without anyone asking for one', () =>",
+         "        pm.expect(rows.length).to.be.above(0));",
+         "",
+         "    const pending = rows.find(r => r.status === 'PENDING');",
+         "",
+         "    pm.test('it is PENDING and scheduled', () => {",
+         "        pm.expect(pending, 'a PENDING delivery').to.not.be.undefined;",
+         "        pm.expect(pending.nextAttemptAt).to.not.be.null;",
+         "    });",
+         "    pm.test('nothing has been attempted yet -- the dispatcher is off', () =>",
+         "        pm.expect(pending.attempts).to.eql(0));",
+         "    pm.test('the delivery id is opaque and prefixed', () =>",
+         "        pm.expect(pending.id).to.match(/^whd_[0-9a-f-]{36}$/));",
+         "",
+         "    pm.collectionVariables.set('whDeliveryId', pending.id);",
+         "}"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Replaying a delivery the dispatcher will retry anyway is refused (409)",
+     "request": {
+      "method": "POST",
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}/deliveries/{{whDeliveryId}}/replay",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "webhook-endpoints",
+        "{{whEndpointId}}",
+        "deliveries",
+        "{{whDeliveryId}}",
+        "replay"
+       ]
+      },
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       },
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       },
+       {
+        "key": "Idempotency-Key",
+        "value": "{{whReplayKey}}"
+       }
+      ],
+      "description": "THE ONE WEBHOOK ROUTE ON THE IDEMPOTENCY FILTER, and the Idempotency-Key above is therefore required. Its response carries no secret, and a retried replay would otherwise collide with the PENDING state the first one produced and answer 409 -- the wrong answer to a network retry of a request that worked.\n\nThe 409 here is a different 409: this delivery has never been attempted, so replaying it would mean two POSTs to the merchant for one event -- the replay's and the retry the schedule already has queued. A merchant's endpoint is supposed to be idempotent, but 'we send duplicates and you deal with it' is not a contract PayMesh should write on purpose. Replay is for a delivery that is DELIVERED or FAILED.",
+      "body": {
+       "mode": "raw",
+       "raw": "{}"
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+         "pm.test('WEBHOOK_DELIVERY_NOT_REPLAYABLE', () =>",
+         "    pm.expect(pm.response.json().code).to.eql('WEBHOOK_DELIVERY_NOT_REPLAYABLE'));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Rotate the secret: an integer bump, and a new secret (200)",
+     "request": {
+      "method": "POST",
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}/rotate-secret",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "webhook-endpoints",
+        "{{whEndpointId}}",
+        "rotate-secret"
+       ]
+      },
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       },
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       }
+      ],
+      "description": "Nothing is re-encrypted because nothing was encrypted. secret_version goes to 2 and the new secret is derived from it.\n\nTHE OLD ONE KEEPS SIGNING FOR 24 HOURS, and previousSecretExpiresAt below is that window. A single signature cannot verify under two secrets, so a merchant who rotates before deploying their new verifier would otherwise see every delivery fail. Inside the window the header carries TWO v1= values, current first -- which makes it a superset of what ProviderCallbackSignatureFilter parses, and a merchant must check whether ANY matches (ADR-028 section 4).",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"fromVersion\": 1\n}"
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('200 OK', () => pm.response.to.have.status(200));",
+         "const b = pm.response.json();",
+         "",
+         "pm.test('version 2', () => pm.expect(b.secretVersion).to.eql(2));",
+         "pm.test('a different secret', () =>",
+         "    pm.expect(b.secret).to.not.eql(pm.collectionVariables.get('whSecret')));",
+         "pm.test('and a 24 hour window in which the old one still signs', () =>",
+         "    pm.expect(b.previousSecretExpiresAt).to.not.be.null);",
+         "",
+         "pm.collectionVariables.set('whRotatedSecret', b.secret);"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Rotating again from the same version returns the same secret: idempotent by construction (200)",
+     "request": {
+      "method": "POST",
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}/rotate-secret",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "webhook-endpoints",
+        "{{whEndpointId}}",
+        "rotate-secret"
+       ]
+      },
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       },
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       }
+      ],
+      "description": "THE REQUEST THAT JUSTIFIES KEEPING THIS ROUTE OFF THE IDEMPOTENCY FILTER.\n\nThe caller names the version it believes is current. Asked to rotate from a version that is already spent, the aggregate returns unchanged and the service re-derives the same secret -- so a client that lost the first response can safely ask again and receive the secret that is actually in force. No stored response body, no secret in idempotency_records, and no second bump that would invalidate a secret the merchant never received.\n\nWatch the version below: still 2, not 3.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"fromVersion\": 1\n}"
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('200 OK', () => pm.response.to.have.status(200));",
+         "const b = pm.response.json();",
+         "",
+         "pm.test('still version 2 -- it did not bump again', () =>",
+         "    pm.expect(b.secretVersion).to.eql(2));",
+         "pm.test('and the same secret came back', () =>",
+         "    pm.expect(b.secret).to.eql(pm.collectionVariables.get('whRotatedSecret')));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Rotating from a version that was never current is refused (409)",
+     "request": {
+      "method": "POST",
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}/rotate-secret",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "webhook-endpoints",
+        "{{whEndpointId}}",
+        "rotate-secret"
+       ]
+      },
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       },
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       }
+      ],
+      "description": "The caller is working from a view of this endpoint that never existed, and a blind bump would invalidate a secret somebody is signing with. The two versions the endpoint will accept are the current one and the one it just replaced; everything else is a conflict.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"fromVersion\": 7\n}"
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+         "pm.test('WEBHOOK_SECRET_VERSION_MISMATCH', () =>",
+         "    pm.expect(pm.response.json().code).to.eql('WEBHOOK_SECRET_VERSION_MISMATCH'));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Resubscribing REPLACES the list rather than adding to it (200)",
+     "request": {
+      "method": "PATCH",
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "webhook-endpoints",
+        "{{whEndpointId}}"
+       ]
+      },
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       },
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       }
+      ],
+      "description": "A replacement, so a merchant unsubscribes by sending a shorter list rather than by needing a second verb. payment.succeeded is gone after this.\n\nAn EMPTY list is refused: an endpoint subscribed to nothing sits ACTIVE and silently receives nothing forever, which is a mistake that looks like a configuration.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"subscriptions\": [\n    \"order.paid\"\n  ]\n}"
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('200 OK', () => pm.response.to.have.status(200));",
+         "pm.test('exactly what was sent, nothing retained', () =>",
+         "    pm.expect(pm.response.json().subscriptions).to.eql(['order.paid']));",
+         "pm.test('the secret is NOT in this response', () =>",
+         "    pm.expect(pm.response.json().secret).to.be.null);"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Disable it: reversible, and the fan-out stops immediately (200)",
+     "request": {
+      "method": "PATCH",
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "webhook-endpoints",
+        "{{whEndpointId}}"
+       ]
+      },
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       },
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       }
+      ],
+      "description": "The same state PayMesh reaches on its own after 20 consecutive DEAD deliveries -- one dead delivery being one that spent its whole five-attempt budget, not one failed attempt. Confusing those two is a factor of five in when an endpoint disables, which is why the aggregate decides it rather than the caller.\n\nRequested as a value on one field because it is one field with two settings; the aggregate still moves through disable() rather than having a status written into it.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"status\": \"DISABLED\"\n}"
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('200 OK', () => pm.response.to.have.status(200));",
+         "pm.test('DISABLED', () => pm.expect(pm.response.json().status).to.eql('DISABLED'));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Re-enable it, and the failure streak resets (200)",
+     "request": {
+      "method": "PATCH",
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "webhook-endpoints",
+        "{{whEndpointId}}"
+       ]
+      },
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       },
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       }
+      ],
+      "description": "Enabling clears consecutive_failures, which the aggregate decides. A merchant who fixed their endpoint and turned it back on should not be one dead delivery away from being disabled again.",
+      "body": {
+       "mode": "raw",
+       "raw": "{\n  \"status\": \"ACTIVE\"\n}"
+      }
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('200 OK', () => pm.response.to.have.status(200));",
+         "pm.test('ACTIVE', () => pm.expect(pm.response.json().status).to.eql('ACTIVE'));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Another merchant's endpoint does not exist as far as you are concerned (404)",
+     "request": {
+      "method": "GET",
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}/deliveries",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "webhook-endpoints",
+        "{{whEndpointId}}",
+        "deliveries"
+       ]
+      },
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{otherAccessToken}}"
+       }
+      ],
+      "description": "A real endpoint id, a real token, a different tenant. 404 and not 403: a 403 would confirm the id exists and turn this route into an oracle for enumerating other merchants' endpoints (ADR-007).\n\nThe endpoint is resolved before the deliveries are read for the same reason -- an empty list would leak the same bit more quietly."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+         "pm.test('WEBHOOK_ENDPOINT_NOT_FOUND', () =>",
+         "    pm.expect(pm.response.json().code).to.eql('WEBHOOK_ENDPOINT_NOT_FOUND'));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "No token, no webhook endpoints (401)",
+     "request": {
+      "method": "GET",
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}/deliveries",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "webhook-endpoints",
+        "{{whEndpointId}}",
+        "deliveries"
+       ]
+      },
+      "header": [],
+      "description": "Nothing under /api/v1 is anonymous except merchant registration and auth."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));"
         ]
        }
       }

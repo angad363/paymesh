@@ -1,10 +1,10 @@
 # PayMesh — Project Status and Roadmap
 
-_Last updated: 5 August 2026, end of the session that closed PR #54. Update this file at the end of
-a working session, not during one._
+_Last updated: 5 August 2026, end of the session that built the Webhook capability. Update this
+file at the end of a working session, not during one._
 
-**Reading this to resume? Go to "What comes next" → "PICK UP HERE".** Phase 2's first PR is merged;
-the next capability is Webhook.
+**Reading this to resume? Go to "What comes next" → "PICK UP HERE".** Phase 2's PR 0 is merged and
+PR 1 (Webhook) is built on `feature/webhook`.
 
 This is the pick-up-here document. It records what exists, what has actually been
 verified, what is deliberately unfinished, and what comes next. For *why* a design
@@ -24,16 +24,16 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1196 tests, 0 failures.** Twenty-three Flyway migrations (V1–V23). Twenty-seven ADRs. The Postman
-collection runs **sixteen folders green** (a newman run executes 213 requests and 519 assertions;
-the count varies because the polling requests re-run themselves) — the newest two showing
-a lost callback repaired from the provider's own record, and the outbox alert on
-`/actuator/health`.
+**1302 tests, 0 failures.** Twenty-five Flyway migrations (V1–V25). Twenty-eight ADRs. The Postman
+collection runs **seventeen folders green** (a newman run executes 232 requests and 565 assertions;
+the count varies because the polling requests re-run themselves) — the newest showing an order
+paid and a signed webhook delivery queued for it without anyone calling a webhook endpoint.
 
 **Phase 2 has started.** See `docs/phase-2-plan.md` for the eight-PR plan and "What comes next"
-below for where it stands. **PR 0 (ADR-027) is OPEN, not merged** — PR #54, branch
-`fix/platform-admin-and-known-defects`. It is green and verified live, and an independent review
-found three things that must be fixed before it merges. They are listed under "What comes next".
+below for where it stands. **PR 0 (ADR-027) is merged** as PR #54. **PR 1, Webhook (ADR-028), is
+built** on `feature/webhook` and is the first Phase-2 capability: merchant-facing endpoints, a
+signing secret that is derived rather than stored, an internal-to-external translator, and a
+scheduled dispatcher with its own retry budget.
 
 **Phase 1 is complete, including its operational half.** The last PR closed the three things that
 were still only described: the outbox relay now gives up on an event rather than freezing its
@@ -93,7 +93,7 @@ The SDD describes ~15 services across 31 sections. This is what the code actuall
 | Capability / piece | SDD sections | State |
 |---|---|---|
 | Identity & Access | §8 (all), §8.6 token lifetimes | Built. No API keys, no OAuth2/OIDC, no denylist. |
-| Merchant | §9 (all) | Built. Registration only; no team roles, API keys or webhook setup (§9.3). |
+| Merchant | §9 (all) | Built. Registration, lifecycle and API keys (ADR-022). §9.3's webhook setup now lives in the Webhook capability rather than under Merchant. No team roles. |
 | Customer | §10, and §10.6's hash/display split | Built in the encrypted *shape*; encryption itself deferred (ADR-006). No payment-method endpoints. |
 | Order | §11.1–§11.4, §11.6 | Built, including `order_state_history`. §11.5's events are written **and now published**. Every status in the enum is reachable. |
 | Payment | §12.1 (partially), §12.2–§12.3, §12.5–§12.6 | Core built. **§12.4 confirm is not implemented**; 2 of the 10 §12.1 states are reachable. |
@@ -105,7 +105,8 @@ The SDD describes ~15 services across 31 sections. This is what the code actuall
 | Risk & Fraud | §14 | Not started. |
 | Ledger | §15.1–§15.2, §15.6 | Core built (ADR-018): double-entry accounts, journals, immutable entries, and a merchant balance. **§15.3's internal posting API is deliberately absent** — the only writer is an event consumer, so every posting traces to a committed state change. **§15.5's `balance_holds` and `account_balances` are not built**: nothing reserves funds until Settlement, and a SUM over entries cannot drift the way a projection can. No fee split (§15.2) — there is no fee schedule. No reversal path yet; Refund brings it. |
 | Refund | §16.1–§16.3, §16.5–§16.6 | Built (ADR-019). Create, read, list, cancel, and a Refund-owned callback route. **§16.4's `refund_reservations` and `refund_attempts` are not built** — the first is a second copy of what `refunds.status` says, the second is for a conversation a refund does not have. §16.3's ops retry route is absent. §16.6's third line — reconciling a lost callback — is the known gap. |
-| Settlement, Webhook, Notification/Reporting/Audit, AI Ops | §17–§20 | Not started. |
+| Webhook | §18.1–§18.4 | Built (ADR-028). Endpoints, subscriptions, a derived signing secret, an internal-to-external translator, a scheduled dispatcher with backoff, and replay. **§18.4's `webhook_delivery_attempts` is deliberately not built** — the counters on the delivery row answer what a merchant debugging a failure asks, and a row per attempt is a log wearing a table's clothes. No merchant-facing event catalogue endpoint; the four published types are named in the 422 you get for asking for a fifth. |
+| Settlement, Notification/Reporting/Audit, AI Ops | §17, §19–§20 | Not started. |
 | End-to-end workflows | §21 | The create-order → collect → refund path exists, and **§21.4 reconciliation is now built** (ADR-026). |
 | Security & privacy | §25 | Partial: authn, tenant isolation, secret guards. No encryption at rest, no key management, no audit trail beyond `security_events`. |
 | Observability | §26 | `/actuator/health` and `/actuator/info`, the former now carrying the outbox backlog alert (ADR-025). No OpenTelemetry, metrics, tracing or structured correlation ids. |
@@ -333,6 +334,73 @@ Properties worth not breaking:
 - **Refund is a leaf.** It imports Payment through exactly one adapter plus its configuration
   (ADR-008); nothing imports Refund. Payment learns that a refund succeeded from an event.
 
+### Webhook — `com.paymesh.webhook`
+
+**The first capability that points outward.** Everything else in this codebase answers a request;
+this one makes one — signed, retried, and aimed at a URL the merchant chose.
+
+| Endpoint | Auth | Notes |
+|---|---|---|
+| `POST /api/v1/webhook-endpoints` | Bearer | `whe_` id. **Returns the signing secret, once.** Deliberately NOT idempotency-filtered |
+| `PATCH /api/v1/webhook-endpoints/{id}` | Bearer | Subscriptions (a replacement, not an addition) and/or status |
+| `POST /api/v1/webhook-endpoints/{id}/rotate-secret` | Bearer | Names the version it replaces. Returns the new secret, once |
+| `GET /api/v1/webhook-endpoints/{id}/deliveries` | Bearer | Newest first, capped at 100 |
+| `POST /api/v1/webhook-endpoints/{id}/deliveries/{deliveryId}/replay` | Bearer + Idempotency-Key | The only webhook route on the filter |
+
+Three tables (V24–V25): `webhook_endpoints`, `webhook_events`, `webhook_deliveries`.
+`webhook_delivery_attempts` is deliberately absent — ADR-028 §3.
+
+Properties worth not breaking:
+
+- **The signing secret is never stored anywhere.** The endpoint row holds `secret_version`, an
+  integer. The secret is `HMAC-SHA256(masterKey, "paymesh.webhook.v1|<endpointId>|<version>" ||
+  0x01)`, derived on demand, `whsec_`-prefixed. A database dump contains nothing that lets an
+  attacker sign as PayMesh, there is no ciphertext column and no decrypt path, and rotation is an
+  increment. **JDK 21 has no HKDF** (JEP 478/510 land it in 24/25), so this is a single-block
+  HKDF-Expand under RFC 5869 §3.3's licence to skip Extract — one `Mac` call, no new dependency.
+  ADR-028 §2 carries three frozen known-answer vectors.
+- **Two routes are off the idempotency filter, and that is structural.**
+  `idempotency_records.response_body` persists response bodies verbatim so a retry can replay them,
+  so registering create or rotate would write the secret to the database in cleartext — one table
+  away from the storage the whole design avoids. Rotate is idempotent on its own terms instead: the
+  caller names the version it is replacing, so a retry re-derives the same secret rather than
+  bumping again.
+- **A merchant endpoint being down must never affect a payment.** The fan-out runs inside the event
+  dispatcher's transaction and only ever writes rows — one `webhook_events` row and one PENDING
+  delivery per subscribed endpoint. All sending happens later, on a timer, one transaction and one
+  socket per delivery. The 20-endpoint-per-merchant cap exists because that loop is on the money
+  path.
+- **The payload is a `String`, serialized once.** A merchant's HMAC covers the bytes they received,
+  so a replay must resend *those bytes* rather than equivalent JSON. Holding it parsed would make
+  the bytes a function of map ordering and Jackson configuration. `webhook_events.payload` is
+  `TEXT` behind an immutability trigger, and the request goes out as raw UTF-8 rather than through
+  a converter that might re-serialize it.
+- **The external shape is not the internal one**, and the translator's tests assert literal strings
+  rather than parsed objects, because a reordered key breaks a signature even when the JSON is
+  equivalent. `previousStatus`, `captureMethod`, `merchantId` and `providerReference` are
+  deliberately not on the wire.
+- **`payment.failed` has two producers with two different key sets** —
+  `RecordProviderCallbackService` writes `occurredAt` and no failure text,
+  `TimeOutProcessingPaymentsService` writes `failedAt` plus `failureCode` and `failureMessage`.
+  Both translate to one schema. Reading only `occurredAt` would have stamped every timed-out
+  payment with the envelope's clock instead of the authority's.
+- **Two counters, and confusing them is a factor of five.** A failed *attempt* reschedules the
+  delivery (1m, 5m, 30m, 2h, 6h, then FAILED). Only a delivery that spends its whole budget moves
+  the *endpoint's* consecutive-failure streak, by one; twenty of those disable it. The budget is
+  deliberately not ADR-025's: a merchant returning 503 for six hours is ordinary operation.
+- **A webhook URL is an SSRF primitive, and the guard is at delivery rather than registration.** A
+  name can resolve differently at each. Every address the host answers with is checked — not the
+  first — and loopback, wildcard, link-local (the metadata service), RFC1918, multicast, IPv6
+  unique-local and CGNAT are all refused. Redirects are refused rather than followed, which closes
+  the one-line version of the same attack. **The residual DNS-rebinding race is documented and
+  accepted** (ADR-028 §7): the client resolves again after the check.
+- **Rotation keeps the old version signing for 24 hours**, so the header carries two `v1=` values
+  inside the window, current first. That makes the outbound format a **superset** of what
+  `ProviderCallbackSignatureFilter` parses — that one keeps the last `v1` it sees, and a merchant
+  must check whether *any* matches.
+- **Webhook is a leaf.** It imports nothing from any capability; it consumes four event types as a
+  `Map` through the shared dispatcher, exactly like the Ledger does.
+
 ### Provider Simulator — `com.paymesh.simulator`
 
 **Not the merchant API.** Everything is under `/sim/v1/**`, authenticated by a dedicated shared key
@@ -465,7 +533,7 @@ no financial effect.
 
 ```bash
 cd backend
-./mvnw test                     # 501 tests; needs Docker, no local database
+./mvnw test                     # 1302 tests; needs Docker, no local database
 ./mvnw spring-boot:run          # port 8080, activates the dev profile via the pom
 
 # API contract, end to end, including cross-tenant isolation and idempotency
@@ -527,6 +595,10 @@ The collection is not decorative: dropping the tenant predicate in
 | 022 | Authenticate machines with merchant API credentials |
 | 023 | Finish the lifecycle claims, and give the token table a writer |
 | 024 | Disabling people, at the two scopes that mean different things |
+| 025 | Give the outbox relay a retry budget and a dead letter, and alert on the backlog |
+| 026 | Read the provider's own daily record, and repair what a lost callback left wrong |
+| 027 | Make `PLATFORM_ADMIN` grantable by giving a platform role no merchant at all |
+| 028 | Sign webhooks with a secret that is derived and never stored |
 
 Note that the SDD's Appendix D has its own ADR list with the same numbers and
 different decisions. When citing one, say which source you mean.
@@ -725,7 +797,7 @@ Ledger's `MERCHANT_AVAILABLE` account, which `AccountType`'s own javadoc names a
 | PR | Delivers | Depends on | Migrations | ADR |
 |---|---|---|---|---|
 | 0 ✅ | `PLATFORM_ADMIN` grantable — **merged, PR #54** | — | V23 | ADR-027 |
-| 1 | Webhook | — | V24–V25 | ADR-028 |
+| 1 ✅ | Webhook — **built, `feature/webhook`** | — | V24–V25 | ADR-028 |
 | 2 | Risk | — | V26–V27 | ADR-029 |
 | 3 | Ledger available balance | — | V28–V29 | ADR-030 |
 | 4 | Settlement | PR3 | V30–V32 | ADR-031 |
@@ -783,17 +855,69 @@ not attacker-reachable. And a platform admin who also holds a merchant role can 
 suspended merchant they administer — no escalation, since they can unilaterally reactivate it
 anyway, at most a lost audit step.
 
-### PICK UP HERE — after PR #54
+### Webhook is built. What it settled, and what it deliberately does not cover
 
-- **Open item 17's remaining defects have not been worked through**, including the one real bug in
+**The signing secret is derived and never stored (ADR-028).** That one decision removed a whole
+subsystem: no `Cipher`, no AES-GCM facility, no master-key-to-ciphertext map, no decrypt on every
+send — a grep of the codebase found zero of any of it, so "encrypted secret" had been quietly
+requesting all of it. The blast radius is identical either way (one key, every secret) and the only
+capability lost is a merchant supplying their own, which Stripe, GitHub and Shopify all decline to
+offer. It also removed the need to put the two secret-returning routes on the idempotency filter,
+which would have written the secret to `idempotency_records.response_body` in cleartext.
+
+**The one mapping this capability guessed at was proved before anything was built on it.** Five
+entities in this repo map `@JdbcTypeCode(SqlTypes.JSON)` and every one maps a `Map`;
+`subscriptions` is the first `List`, and an un-annotated `List<String>` defaults to a SQL *array*
+rather than jsonb. `WebhookEndpointPersistenceTest` round-trips it and reads it back through
+`subscriptions->>0`. A mapping that fails `ddl-auto=validate` fails at context startup across every
+integration test at once, which is the least readable way to learn anything.
+
+**What tracing the producers turned up, and no amount of reading the design would have.**
+`payment.failed` is emitted from two places with two different key sets — one writes `occurredAt`
+and no failure text, the other writes `failedAt` plus `failureCode` and `failureMessage`. A
+translator reading only `occurredAt` would have stamped every timed-out payment with the envelope's
+clock. Both shapes are now pinned as literal expected JSON.
+
+**And what running it turned up.** The Postman collection had an assertion pinning
+`amountPaidMinor` to 3000 where the capture above it takes 2500. It had never failed because it
+only ever ran in the PENDING branch, where the other side of the ternary is not evaluated; adding
+one more consumer to `payment.succeeded` was enough extra latency for a relay tick to land first
+and expose it. Fixed in the same change.
+
+**Verification:** 1302 tests green; Postman 232 requests / 565 assertions / 0 failures across
+seventeen folders; V24 and V25 applied to a live V23 database *with data in it*; the whole loop
+walked live — register an endpoint, read the secret once, pay an order through the simulator, watch
+a PENDING delivery appear for it, rotate twice from the same version and get the same secret back.
+
+**What is NOT covered, stated rather than left to be discovered:**
+
+- **No live walk of an actual outbound delivery.** The webhook dispatcher was left off for the
+  Postman run: `https://merchant.test/` does not resolve, and a walkthrough that spent a retry
+  budget against DNS would prove less than the PENDING row does. A local receiver would need real
+  TLS, because the URL must be `https` and the JDK client will not accept a self-signed
+  certificate. What stands in for it is `HttpWebhookSenderTest`, which asserts the exact
+  `X-PayMesh-Signature` header, the byte-for-byte body and the charset against the real
+  `RestClient` through `MockRestServiceServer` — including the two-`v1=` rotation window.
+- **No merchant-facing documentation of how to verify a signature.** The scheme is in ADR-028 §4
+  and in the Postman folder's prose; there is no integrator-facing page.
+- **No endpoint listing route.** Five routes were specified and five were built; a merchant who
+  loses an endpoint id has no way to enumerate.
+- **The DNS-rebinding race in the SSRF guard is open and documented** (ADR-028 §7).
+
+### PICK UP HERE — after Webhook
+
+- **Merge `feature/webhook`.** It is green and verified live but has not been reviewed. Nothing
+  merges on the author's report — the reviewer should re-run the suite and, where a test protects
+  an invariant, break the implementation to confirm the test catches it. The places most worth
+  attacking: the derivation's frozen vectors, the two-`v1=` rotation header, the SSRF guard's
+  address ranges, and the claim that create and rotate must stay off the idempotency filter.
+- **Open item 17's remaining defects are still not worked through**, including the one real bug in
   it: both sweeps map their candidate rows *outside* the per-item try/catch, so one unmappable row
-  disables a sweep permanently and silently (open item 2). Latent rather than live — reaching it
-  needs database state the current CHECKs forbid — but it is on the money path and it is the
-  cheapest quality win available. **Its own PR**, not bundled into a capability: PR #54 was already
-  a security-sensitive change across identity and `shared/security`, and CLAUDE.md asks for one
-  focused change per PR. This is why the plan's "PR 0 = PLATFORM_ADMIN + all of item 17" was split.
-- **Then PR 1, Webhook** (`docs/phase-2-plan.md`), which depends on nothing and is the
-  highest-value Phase-2 capability. Migrations V24–V25, ADR-028 are reserved for it.
+  disables a sweep permanently and silently (open item 2). Latent rather than live, but on the
+  money path and the cheapest quality win available. **Its own PR.**
+- **Then PR 2, Risk** (`docs/phase-2-plan.md`). Migrations V26–V27, ADR-029 are reserved for it. It
+  is the one Phase-2 capability that touches existing code — Payment's confirm calls it
+  synchronously — so it is worth designing before building.
 
 **The judgement call to revisit when a second provider arrives.** Reconciliation reads this
 provider's `TIMED_OUT` as "nothing was collected", which is true of the simulator's file because

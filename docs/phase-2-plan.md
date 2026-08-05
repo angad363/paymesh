@@ -51,8 +51,8 @@ nothing and is the thing an integrator actually notices; it goes first.
 
 | # | Branch | Delivers | Depends on | Migrations | ADR |
 |---|---|---|---|---|---|
-| 0 | `fix/platform-admin-and-known-defects` | `PLATFORM_ADMIN` becomes grantable; the open-item-17 defect list | — | V23 | ADR-027 |
-| 1 | `feature/webhook` | Endpoints, HMAC-signed delivery, backoff, replay | — | V24–V25 | ADR-028 |
+| 0 ✅ | `fix/platform-admin-and-known-defects` | `PLATFORM_ADMIN` becomes grantable — **merged, PR #54**. The open-item-17 defect list was split out and is still open | — | V23 | ADR-027 |
+| 1 ✅ | `feature/webhook` | Endpoints, HMAC-signed delivery, backoff, replay — **built** | — | V24–V25 | ADR-028 |
 | 2 | `feature/risk` | Evaluation on confirm, review queue, denylist, Redis velocity | — | V26–V27 | ADR-029 |
 | 3 | `feature/ledger-available-balance` | `MERCHANT_AVAILABLE`, holding period, pending→available release | — | V28–V29 | ADR-030 |
 | 4 | `feature/settlement` | Batches, items, payouts, retries, statements | PR3 | V30–V32 | ADR-031 |
@@ -118,6 +118,13 @@ green through a real `PLATFORM_ADMIN` grant.
 ### PR 1 — Webhook
 
 **Branch:** `feature/webhook` · **Migrations:** V24 (endpoints, events), V25 (deliveries) · **ADR-028**
+
+> **BUILT.** What this section describes now exists; where the two disagree, read ADR-028, which
+> amends this plan in three places (three tables rather than four, a derived secret rather than
+> an encrypted one, and the retry numbers). Two things worth carrying forward that this section
+> could not have known: `payment.failed` is emitted by two producers with two different key
+> sets, so the translator reads both; and create and rotate are deliberately **off** the
+> idempotency filter, because it persists response bodies verbatim and theirs carry the secret.
 
 The flagship of Phase 2 and the piece an integrator actually sees. SDD §18.
 
