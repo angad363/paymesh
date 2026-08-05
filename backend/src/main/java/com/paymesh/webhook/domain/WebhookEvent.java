@@ -58,12 +58,16 @@ public final class WebhookEvent {
     }
 
     /**
+     * @param webhookEventId minted by the caller rather than here, because the translator writes it
+     *     into the payload as {@code id} and those bytes are what get signed. Generating it here
+     *     would mean the row's key and the id the merchant reads were different values.
      * @param sourceEventId the outbox {@code evt_} id. Unique, and the natural key that makes the
      *     fan-out handler idempotent -- the inbox stops the SAME event twice, not a different event
      *     describing the same fact, which is what {@code EventHandler}'s own contract warns about.
      * @param payload already serialized, because serializing later would defeat the point
      */
     public static WebhookEvent translate(
+        WebhookEventId webhookEventId,
         String merchantId,
         String sourceEventId,
         String eventType,
@@ -71,6 +75,10 @@ public final class WebhookEvent {
         Instant occurredAt,
         Instant now
     ) {
+        if (webhookEventId == null) {
+            throw new IllegalArgumentException("A webhook event has an identifier");
+        }
+
         if (merchantId == null || merchantId.isBlank()) {
             throw new IllegalArgumentException("A webhook event belongs to a merchant");
         }
@@ -92,7 +100,7 @@ public final class WebhookEvent {
         }
 
         return new WebhookEvent(
-            WebhookEventId.generate(), merchantId, sourceEventId, eventType,
+            webhookEventId, merchantId, sourceEventId, eventType,
             CURRENT_SCHEMA_VERSION, payload, occurredAt, now
         );
     }
