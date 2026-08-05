@@ -104,6 +104,21 @@ paymesh:
       #     PAYMESH_SIMULATOR_DISPATCH_ENABLED=true
       # The service is a plain bean, so the tests drive dispatch() directly and never need it.
       enabled: false
+  webhook:
+    # The master key every merchant's signing secret is derived from (ADR-028 section 2). One
+    # value, every secret -- so a published one lets anyone sign as PayMesh to every merchant at
+    # once, and DevelopmentSecretGuard refuses this exact string unless dev is the sole profile.
+    # WebhookSecrets separately refuses anything under 32 bytes; this is 44.
+    master-key: dev-only-insecure-webhook-master-key-change-me
+    # THE SSRF GUARD, OFF. Development receivers are on localhost, which is precisely the class of
+    # address the guard exists to refuse. Honoured only when dev is the SINGLE active profile --
+    # WebhookConfiguration re-checks, so setting this in a deployment achieves nothing.
+    allow-private-addresses: true
+    dispatch:
+      # OFF under dev, same reason as the simulator's above: the suite runs under this profile and
+      # a timer POSTing at merchants would mutate the delivery rows a test is asserting on.
+      # DeliverWebhooksService is a plain bean, so tests call dispatch() directly.
+      enabled: false
   orders:
     expiry-sweep:
       enabled: false

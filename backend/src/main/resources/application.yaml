@@ -400,6 +400,53 @@ paymesh:
       age: 6h
       interval: 5m
       batchSize: 100
+  webhook:
+    # THE ONE SECRET THIS CAPABILITY HAS. Every endpoint's signing secret is
+    # HMAC-SHA256(master-key, "paymesh.webhook.v1|<endpointId>|<version>" || 0x01), so no secret
+    # is ever stored and rotation is an integer bump (ADR-028 section 2). Declared but
+    # deliberately EMPTY: this file is committed, and the application refuses to start without it
+    # (@NotBlank on WebhookProperties). Supply it as:
+    #     PAYMESH_WEBHOOK_MASTER_KEY=<32+ random bytes>
+    # or run the dev profile, which supplies a throwaway value.
+    #
+    # WHAT ROTATING THIS COSTS, so nobody does it casually: it invalidates every merchant's secret
+    # at once, which is the outcome per-endpoint rotation exists to avoid. Break-glass only.
+    # WebhookSecrets refuses a key under 32 bytes outright -- a short master key would make every
+    # derived secret weaker than the HMAC it feeds.
+    master-key:
+    # Whether a webhook may be POSTed at a loopback, link-local, RFC1918, CGNAT or IPv6 ULA
+    # address. FALSE, and it is a security control rather than a preference: a merchant supplies
+    # the URL and PayMesh's server makes the request, so a permissive value turns every endpoint
+    # into an SSRF primitive pointed at the instance metadata service. The dev profile turns it on
+    # because dev receivers are on localhost, and WebhookConfiguration honours that ONLY when dev
+    # is the single active profile.
+    allow-private-addresses: false
+    dispatch:
+      # true: register the scheduled bean. Off -> the timer does not exist at all
+      # (@ConditionalOnProperty), rather than running and doing nothing. On by default, off under
+      # dev -- the profile the test suite runs under.
+      enabled: true
+      # How long after one pass FINISHES the next begins. Resolved straight into @Scheduled from
+      # the environment and NOT bound into WebhookDispatchProperties: two places to read one value
+      # means one of them eventually drifts. Same note as the simulator's interval.
+      #
+      # Thirty seconds, not the simulator's two. A merchant's webhook is not a test fixture
+      # somebody is watching; the first attempt is due immediately and the backoff schedule
+      # (1m, 5m, 30m, 2h, 6h) dwarfs this, so a tighter loop would only add empty queries.
+      interval: 30s
+      # How many due deliveries one pass may take. Each is its own transaction and its own socket,
+      # so this bounds sockets per pass rather than lock duration.
+      batch-size: 20
+      # How long to wait for the merchant's TCP and TLS handshake.
+      connect-timeout: 3s
+      # How long to wait for the merchant's response.
+      #
+      # SHORT ON PURPOSE, and the first number to look at if deliveries pile up. The HTTP call
+      # happens INSIDE the delivery row's transaction, so this is also the longest a hung merchant
+      # can hold one row lock and one database connection. The shape that does not have this
+      # property is claim-send-acknowledge with a lease expiry; ADR-028 section 6 lists it under
+      # accepted costs rather than pretending the cost is not there.
+      read-timeout: 5s
   simulator:
     # THE ONLY AUTHENTICATION ON /sim/v1/**. Declared but deliberately EMPTY, and the
     # application refuses to start without it (@NotBlank on SimulatorProperties).

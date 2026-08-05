@@ -503,7 +503,88 @@ between a forged request and a merchant's money, not two.
 
 ---
 
-### 3.10 The cross-cutting platform
+### 3.10 Webhook — telling the merchant, without being able to hurt them
+
+`POST /api/v1/webhook-endpoints`, and four more routes around it. **This is the first thing PayMesh
+does that is not answering a request.** Everything above waits to be called; this one calls out.
+
+**The merchant gives you a URL and you make requests to it. Think about what that means.** Two
+things go wrong immediately if you do not plan for them.
+
+*The first is that they need to know it was really you.* Anyone who learns the URL can POST to it,
+and "a payment succeeded" is a message with money on the other side of it. So every delivery
+carries `X-PayMesh-Signature: t=<unix seconds>,v1=<hex>` — an HMAC over the timestamp and the exact
+bytes, under a secret only that endpoint has. Same shape as the signature PayMesh *verifies* on the
+way in, pointed the other way.
+
+*The second is that a URL you were handed is a URL that might point back at you.*
+`http://169.254.169.254/` is the cloud metadata service, and a server that will fetch any URL a
+stranger names is a server that will hand over its own credentials. So the address is checked at
+send time — every address the name resolves to, not the first — and redirects are refused rather
+than followed, because a public URL answering `302 Location: http://169.254.169.254/` is the same
+attack with one extra step.
+
+**Now the interesting decision: where does the signing secret live?**
+
+The obvious answer is a column, encrypted. That answer quietly asks for a cipher, a master key, a
+key-version map and a decrypt on every send — none of which exists in this codebase — and it does
+not actually buy anything, because one master key protecting every secret has the same blast radius
+either way.
+
+So the secret is not stored at all. The endpoint row holds an integer, `secret_version`, and the
+secret is **computed from it** whenever it is needed:
+
+```
+secret = "pmsec_" + base64url( HMAC-SHA256(masterKey, "paymesh.webhook.v1|<endpointId>|<version>" || 0x01) )
+```
+
+A database dump now contains nothing an attacker can sign with. Rotation is `version + 1`. And two
+smaller things fall out of it that were not the point but matter:
+
+- **The secret can be shown twice** — on create and on rotate — and never needs to be shown again,
+  because it can always be recomputed. Lost it? Rotate.
+- **Those two routes stay off the idempotency filter**, which they had to. That filter stores
+  response bodies *verbatim* so a retry can replay them, and these responses carry the secret. A
+  retried rotation is made safe a different way: the caller says which version it is replacing, so
+  asking twice gets the same secret back instead of bumping twice.
+
+**And the rule that shapes everything else: a merchant's endpoint being down must never affect a
+payment.**
+
+That sounds obvious and is easy to violate — the natural place to POST a webhook is right where the
+payment succeeded. Do that and a merchant whose server hangs for thirty seconds has made every
+payment on the platform take thirty seconds.
+
+So nothing here makes an HTTP call anywhere near a payment. When `payment.succeeded` is announced,
+Webhook writes rows: one record of the external event, one PENDING delivery per subscribed
+endpoint. That is all, and it happens inside the transaction that was already open. A separate
+timer picks the deliveries up later, one at a time, each in its own transaction and on its own
+socket.
+
+**What happens when the merchant is down**, which is not an error — it is Tuesday:
+
+| Attempt | Sent after |
+|---|---|
+| 1 | immediately |
+| 2 | 1 minute |
+| 3 | 5 minutes |
+| 4 | 30 minutes |
+| 5 | 2 hours |
+| 6 | 6 hours — and if this one fails, the delivery is FAILED |
+
+Six attempts, five waits, **8h36m** end to end: long enough to survive an overnight deploy in a
+timezone where nobody is awake, short of a day so a dead endpoint does not hold rows forever.
+(It shipped as five attempts and 2h36m — five waits carry six attempts, and the off-by-one meant
+the six-hour wait was never reached. Caught in review.) **A merchant
+who is down for a week gets their endpoint disabled** — but only after twenty deliveries have each
+spent that entire budget, not after twenty failed attempts. Those are different numbers by a factor
+of five, and the merchant can turn it back on.
+
+A failed delivery can be replayed, and the bytes that go out the second time are the same bytes,
+because the payload was serialized once and stored as text. Send equivalent-but-different JSON and
+the merchant's signature check fails on a message that is, as far as they can tell, forged.
+
+### 3.11 The cross-cutting platform
 
 Not user-visible, but three pieces do most of the safety work.
 
@@ -558,6 +639,11 @@ confirm the ID exists and turn the endpoint into an enumeration tool.
 | `GET /api/v1/refunds/{id}` | Bearer | — |
 | `GET /api/v1/refunds` | Bearer | — |
 | `POST /api/v1/refunds/{id}/cancel` | Bearer | **required** |
+| `POST /api/v1/webhook-endpoints` | Bearer | **deliberately not** — it returns the secret |
+| `PATCH /api/v1/webhook-endpoints/{id}` | Bearer | — |
+| `POST /api/v1/webhook-endpoints/{id}/rotate-secret` | Bearer | **deliberately not** — same reason |
+| `GET /api/v1/webhook-endpoints/{id}/deliveries` | Bearer | — |
+| `POST /api/v1/webhook-endpoints/{id}/deliveries/{deliveryId}/replay` | Bearer | **required** |
 | `POST /internal/v1/provider-callbacks/{provider}` | HMAC signature | — |
 | `POST /internal/v1/refund-callbacks/{provider}` | HMAC signature | — |
 | `POST /sim/v1/payments` | simulator key | in the body, not a header |
@@ -572,6 +658,10 @@ consumer, so every posting traces back to a committed payment or refund (§3.8).
 
 The two callback routes are separate on purpose, and the `/sim/v1` ones are not the merchant API at
 all — they carry a dedicated shared key and a merchant's token is refused.
+
+The two webhook routes marked *deliberately not* are the only writes on this list that skip
+idempotency, and §3.10 says why: the filter stores response bodies verbatim, and theirs carry a
+signing secret.
 
 ---
 
@@ -621,9 +711,9 @@ Sanity check: `GET http://localhost:8080/actuator/health` → `{"status":"UP"}`.
 ### 5.1 The fast path — run the whole collection
 
 A Postman collection already exists at
-`docs/api/postman/paymesh.postman_collection.json`, with **16 folders and 210 requests**
+`docs/api/postman/paymesh.postman_collection.json`, with **17 folders and 229 requests**
 covering every route plus the failure cases. It's the fastest way to see everything work, and it
-passes clean: a full newman run executes **218 requests and 524 assertions, 0 failures**.
+passes clean: a full newman run executes **233 requests and 566 assertions, 0 failures**.
 
 (More executed than defined, because the polling requests re-run themselves with
 `postman.setNextRequest` until the timer they are waiting on fires.)
@@ -983,14 +1073,13 @@ did *not* close, because it would be easy to assume otherwise:
 _Nothing. Every Phase-1 capability is built — see §3. What remains is Phase 2 and the
 operational work in §6.3._
 
-### 6.2 Phase-2+ services, none started
+### 6.2 Phase-2+ services — Webhook is built, the rest are not
 
 | Service | SDD | What it would do |
 |---|---|---|
 | **API Gateway / Edge** | §7 | Rate limiting, API keys, request routing. **None of it exists** — including the rate limit the public merchant endpoint needs. |
 | **Risk & Fraud** | §14 | Score a payment before it's attempted; block or challenge |
 | **Settlement** | §17 | Pay merchants their balance on a schedule |
-| **Webhook** | §18 | Notify *merchants* of events (the mirror of the provider callbacks that come in) |
 | **Notification / Reporting / Audit** | §19–20 | Email/SMS, dashboards, compliance trail |
 | **AI Operations** | §20 | Explain and summarize operational state. Advisory only — must **never** post a ledger entry, move money, or approve a refund. |
 
@@ -1104,8 +1193,8 @@ cd backend
 ./mvnw spring-boot:run          # port 8080
 ```
 
-The documented count is **1176 tests, 0 failures**, across 22 Flyway migrations (V1–V22)
-and 26 ADRs.
+The documented count is **1318 tests, 0 failures**, across 25 Flyway migrations (V1–V25)
+and 28 ADRs.
 
 The Postman collection is a second, independent check and worth running after any change to the
 HTTP surface — it exercises the routes rather than the services, and it caught a 321-assertion
