@@ -72,9 +72,10 @@ it is the reason it worked.
 
 Two things, and the first is not cosmetic.
 
-**`PLATFORM_ADMIN` is not grantable.** `user_roles.merchant_id` is `NOT NULL`
-(V2, line 91) and the primary key is `(user_id, merchant_id, role)`, so no
-endpoint can produce a platform-scoped role. But merchant activation is
+**`PLATFORM_ADMIN` was not grantable** — closed by ADR-027; this section is kept
+as written to record why PR 0 came first. `user_roles.merchant_id` was `NOT NULL`
+(V2, line 91) and the primary key was `(user_id, merchant_id, role)`, so no
+endpoint could produce a platform-scoped role. But merchant activation is
 `PLATFORM_ADMIN`-only, and `MerchantStatusFilter` refuses every merchant-scoped
 write until a merchant is `ACTIVE`. The consequence is that the Postman
 collection has to **mint a token with the published dev signing secret** to get

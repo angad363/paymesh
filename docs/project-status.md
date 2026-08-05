@@ -1,10 +1,10 @@
 # PayMesh — Project Status and Roadmap
 
-_Last updated: 4 August 2026, end of the session that opened Phase 2. Update this file at the end of
+_Last updated: 5 August 2026, end of the session that closed PR #54. Update this file at the end of
 a working session, not during one._
 
-**Reading this to resume? Go to "What comes next" → "PICK UP HERE".** Phase 2's first PR is open and
-unmerged with three known findings against it.
+**Reading this to resume? Go to "What comes next" → "PICK UP HERE".** Phase 2's first PR is merged;
+the next capability is Webhook.
 
 This is the pick-up-here document. It records what exists, what has actually been
 verified, what is deliberately unfinished, and what comes next. For *why* a design
@@ -724,7 +724,7 @@ Ledger's `MERCHANT_AVAILABLE` account, which `AccountType`'s own javadoc names a
 
 | PR | Delivers | Depends on | Migrations | ADR |
 |---|---|---|---|---|
-| 0 🔶 | `PLATFORM_ADMIN` grantable — **PR #54 open, review findings outstanding** | — | V23 | ADR-027 |
+| 0 ✅ | `PLATFORM_ADMIN` grantable — **merged, PR #54** | — | V23 | ADR-027 |
 | 1 | Webhook | — | V24–V25 | ADR-028 |
 | 2 | Risk | — | V26–V27 | ADR-029 |
 | 3 | Ledger available balance | — | V28–V29 | ADR-030 |
@@ -733,54 +733,57 @@ Ledger's `MERCHANT_AVAILABLE` account, which `AccountType`'s own javadoc names a
 | 6 | Reporting | PR4 (content) | V34–V35 | ADR-033 |
 | 7 | Audit | PR2, PR4 (subjects) | V36 | ADR-034 |
 
-### PICK UP HERE — PR #54 is open and must not merge as it stands
+### PR #54 is merged. What it settled, and the one thing it deliberately left uncovered
 
-**Branch `fix/platform-admin-and-known-defects`, PR https://github.com/angad363/paymesh/pull/54.**
-
-What it does: `PLATFORM_ADMIN` becomes grantable (**ADR-027**). V23 makes `user_roles.merchant_id`
-nullable behind a biconditional CHECK, a platform role travels in the claim with **no `:merchantId`
-suffix at all**, and the first admin comes from a startup property
+**`PLATFORM_ADMIN` is grantable (ADR-027).** V23 makes `user_roles.merchant_id` nullable behind a
+biconditional CHECK, a platform role travels in the claim with **no `:merchantId` suffix at all**,
+and the first admin comes from a startup property
 (`paymesh.security.bootstrap-platform-admin-email`) that promotes an existing account rather than
 seeding a password hash into a migration. The escalation the nullability would have opened — a
 merchant admin granting themselves `PLATFORM_ADMIN` at their own tenant, which
 `requirePlatformAdmin()` used to read as platform authority — is refused independently by the
 constraint, the aggregate and the claim parser.
 
-**Verification already done, do not redo it:** 1196 tests green; Postman 213 requests / 519
-assertions / 0 failures; V23 applied to a live V22 database *with data in it*; the whole loop walked
-live with no minted token (register merchant → register human → bootstrap on restart → log in →
-activate → promote a second admin), plus the three negatives. Both guards were proved by breaking
-the implementation and confirming exactly the intended tests failed and no others.
+**Verification, do not redo it:** 1197 tests green; Postman 217 requests / 522 assertions / 0
+failures; V23 applied to a live V22 database *with data in it*; the whole loop walked live with no
+minted token (register merchant → register human → bootstrap on restart → log in → activate →
+promote a second admin), plus the three negatives.
 
-**Three findings from independent review, worst first. All must be fixed before merge:**
+**The last-admin guard needed a lock, and getting there cost two rounds.** The first round of review
+found the guard was check-then-act — `countPlatformAdmins()` then a delete, no lock, READ COMMITTED
+— so two overlapping demotions of the last two admins both read 2 and both committed. The fix took
+`FOR UPDATE` on every platform-admin row. The **second** round found that fix had inverted the lock
+order: Hibernate rewrites the roles collection as delete-all-and-recreate, so every other writer of
+the `User` aggregate takes `users` before `user_roles`, and a guard that locked `user_roles` first
+deadlocked against all six of them (reproduced as 40P01, mapping to nothing, so a bare 500). The
+target is now read under a lock on its `users` row *before* the count. Recorded in ADR-027 §4.
 
-1. **TOCTOU race in `ManageUserAccessService.revokePlatformAdmin` can demote the platform to zero
-   admins.** The last-admin guard is check-then-act: `countPlatformAdmins()` then a delete, with no
-   row lock and no elevated isolation (`TransactionTemplate` is plain, so READ COMMITTED). Two
-   concurrent demotions of the last two admins both read `count == 2`, both pass the check, both
-   commit. The result is the exact dead end `LastPlatformAdminException` exists to prevent, reachable
-   through the ordinary API with two overlapping requests. **This is the one that matters** — and
-   note the house rule applies: prefer a database constraint. The application check cannot express
-   "at least one row must remain" on its own.
-2. **`bootstrapPlatformAdmin` is not transactional**, unlike `grantPlatformAdmin` beside it. The
-   role grant and the `PLATFORM_ADMIN_GRANTED` security event are two independent commits, so a
-   failure between them leaves a platform admin with no audit record — and the next boot no-ops
-   because an admin now exists, so it never self-corrects. Wrap it the way every sibling method is.
-3. **Stale text, four places.** `UserAdminController` javadoc cites a class `PlatformAdminBootstrap`
-   that does not exist (the real thing is `IdentityConfiguration.platformAdminBootstrap` calling
-   `ManageUserAccessService.bootstrapPlatformAdmin`); `docs/project-walkthrough.md` ~line 637 still
-   says `PLATFORM_ADMIN` is ungrantable and `merchant_id` is `NOT NULL`; `ADR-024` §5 still describes
-   a platform admin's token as carrying a merchant scope; `User.java` ~line 157 and `UserTest.java`
-   ~line 49 still cite `(user_id, merchant_id, role)` as the primary key, which V23 drops.
+Two things about that guard worth not rediscovering. **A deferred constraint trigger cannot replace
+the lock** — V15 and V16 use one for their cross-row invariants and it looks like the house answer
+here, but it fires inside the committing transaction under its own snapshot, so both demotions still
+pass it. **And the lock does nothing for the startup bootstrap**, whose count runs against an empty
+set; `uq_user_roles_platform_scoped` is what stops two instances bootstrapping the same email, by
+failing the loser's startup.
 
-Two things the review checked and deliberately did **not** flag, recorded so they are not
-re-litigated: `CallerRole.parse` uppercases before `valueOf`, so a colon-less `"platform_admin"`
-would parse — but the claim is only ever written server-side from `Role.name()` and the token is
-HMAC-signed, so it is not attacker-reachable. And a platform admin who also holds a merchant role can
-now transact at a suspended merchant they administer — no escalation, since they can unilaterally
-reactivate it anyway, at most a lost audit step.
+**`reactivate` is transactional at last.** It was the third appearance of the same finding —
+`reject()` in ADR-023's PR, this method in ADR-024's PR, both noted and not fixed. Every method in
+`ManageUserAccessService` that writes twice now writes once.
 
-### After PR #54
+**The deadlock has no automated test, on purpose.** One was written and deleted. The losing
+interleaving is a window of microseconds; with the lock order inverted the test passed 40 out of 40
+attempts, so it would have shipped as false coverage. The reviewer reproduced 40P01 by hand-driving
+two `psql` sessions, which a service-level test cannot do. The fix rests on the lock-order argument
+in `SpringDataUserRepository.lockUserRow` and ADR-027 §4, not on a green assertion. **If you touch
+the order of locks in `revokePlatformAdmin`, nothing will fail.**
+
+Two things review checked and deliberately did **not** flag, recorded so they are not re-litigated:
+`CallerRole.parse` uppercases before `valueOf`, so a colon-less `"platform_admin"` would parse — but
+the claim is only ever written server-side from `Role.name()` and the token is HMAC-signed, so it is
+not attacker-reachable. And a platform admin who also holds a merchant role can now transact at a
+suspended merchant they administer — no escalation, since they can unilaterally reactivate it
+anyway, at most a lost audit step.
+
+### PICK UP HERE — after PR #54
 
 - **Open item 17's remaining defects have not been worked through**, including the one real bug in
   it: both sweeps map their candidate rows *outside* the per-item try/catch, so one unmappable row

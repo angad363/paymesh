@@ -60,6 +60,12 @@ final class Fakes {
             return Optional.ofNullable(byId.get(userId.value()));
         }
 
+        /** Single-threaded, so there is nothing to lock against. */
+        @Override
+        public Optional<User> findByUserIdForUpdate(UserId userId) {
+            return findByUserId(userId);
+        }
+
         @Override
         public long countPlatformAdminsForUpdate() {
             return byId.values().stream()

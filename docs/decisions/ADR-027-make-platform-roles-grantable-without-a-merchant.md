@@ -91,6 +91,26 @@ Demotion is refused when it would leave the platform with zero, checked as a **c
 rather than as "is the caller the target" — demoting the only *other* admin reaches the
 same dead end from the other side.
 
+**The count locks, and that is not decoration.** A count followed by a delete is
+check-then-act, and under READ COMMITTED two overlapping demotions of the last two admins
+each read 2, each pass, and each commit — reaching the dead end through the ordinary API
+with two clicks. The house rule prefers a database constraint, and here it cannot be one:
+a `CHECK` sees a single row, and a deferred constraint trigger — the mechanism V15 and V16
+use for their cross-row invariants — fires inside the committing transaction under its own
+snapshot, so both demotions would still pass it. Serialising the readers is the part that
+has to happen, so `countPlatformAdminsForUpdate` takes `FOR UPDATE` on every platform-admin
+row and the second demotion waits, then counts what is really left.
+
+**Two things follow from that, both load-bearing.** The target is read under a lock on its
+`users` row *before* the count, because Hibernate rewrites the roles collection as
+delete-all-and-recreate and so every other writer of this aggregate takes `users` before
+`user_roles`; locking them the other way round deadlocks against all six of them, and 40P01
+maps to nothing, so a caller would get a bare 500. And the lock does **nothing** for the
+startup bootstrap, whose count runs against an empty set — `FOR UPDATE` holds matching rows
+and there is no gap lock under READ COMMITTED. Two instances bootstrapping the same email
+at once are stopped by `uq_user_roles_platform_scoped` instead: the loser's insert fails,
+that instance fails to start, and it boots clean on retry because an admin now exists.
+
 ### 5. The first one comes from a startup property
 
 `paymesh.security.bootstrap-platform-admin-email`. An endpoint requiring a caller who

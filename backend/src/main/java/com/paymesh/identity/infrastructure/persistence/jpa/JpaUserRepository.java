@@ -74,6 +74,17 @@ public final class JpaUserRepository implements UserRepository {
     }
 
     @Override
+    public Optional<User> findByUserIdForUpdate(UserId userId) {
+        // Two statements rather than one locking finder: the EAGER roles collection makes a
+        // @Lock query join user_roles, and PostgreSQL will not lock across an outer join. Lock
+        // the parent row on its own, then read the aggregate -- the read runs after the lock is
+        // granted, so under READ COMMITTED it sees whatever the previous holder committed.
+        users.lockUserRow(userId.value());
+
+        return findByUserId(userId);
+    }
+
+    @Override
     public long countPlatformAdminsForUpdate() {
         return users.countPlatformAdminsForUpdate();
     }

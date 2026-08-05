@@ -133,10 +133,20 @@ public final class ManageUserAccessService {
      * demotions of the last two admins each read 2, each pass, and each commit -- reaching the dead
      * end through the ordinary API. {@code countPlatformAdminsForUpdate} locks every platform-admin
      * row, so the second transaction waits for the first and then counts what is really left.
+     *
+     * <h2>THE TARGET IS READ UNDER LOCK, AND THE ORDER OF THE TWO LOCKS MATTERS</h2>
+     *
+     * The user row goes first, and not for its own sake. Hibernate rewrites the roles collection as
+     * delete-all-and-recreate, so every other writer of this aggregate locks {@code users} and then
+     * {@code user_roles}; taking the count's row locks first would invert that against all six of
+     * them and deadlock. It also buys the correct error: two clients demoting the same person used
+     * to have the loser read a stale snapshot, still see the role, and answer 409 "this is the last
+     * admin" when the truth was 404 "they hold no platform role". Locked, the loser re-reads and
+     * says so.
      */
     public User revokePlatformAdmin(UserId userId, String operatorId) {
         return transactions.execute(status -> {
-            User target = require(userId);
+            User target = requireForUpdate(userId);
 
             if (target.hasPlatformRole(Role.PLATFORM_ADMIN)
                 && users.countPlatformAdminsForUpdate() <= 1) {
@@ -182,8 +192,14 @@ public final class ManageUserAccessService {
      * The grant and its {@code PLATFORM_ADMIN_GRANTED} event are one fact, and committing them
      * separately would let a failure between them leave a platform admin with no audit record.
      * That one does not self-correct: the next boot sees an admin already exists and no-ops
-     * forever. It also gives {@code countPlatformAdminsForUpdate} a transaction to hold its lock
-     * in, which is what makes the "are there none" read mean anything.
+     * forever.
+     * <p>
+     * <b>Atomicity is the whole reason, and the lock is not part of it.</b> The count here runs
+     * against an empty set in the only branch that acts, and {@code FOR UPDATE} over no rows locks
+     * nothing -- PostgreSQL has no gap lock under READ COMMITTED. Two instances bootstrapping the
+     * same email simultaneously therefore both read zero; what stops them is
+     * {@code uq_user_roles_platform_scoped}, which fails the loser's insert and its startup. It
+     * boots clean on retry, because by then an admin exists.
      *
      * @return the promoted user, or empty when nothing was done
      */
@@ -225,16 +241,31 @@ public final class ManageUserAccessService {
         });
     }
 
+    /**
+     * Lifts a suspension.
+     *
+     * <h2>WRAPPED ON THE THIRD TIME OF ASKING</h2>
+     *
+     * Two writes -- the user and the {@code USER_REACTIVATED} event -- and until now they were two
+     * commits, so a failure between them restored somebody's access with nothing in the security
+     * log saying who did it or when. That is the same shape reviewers flagged on {@code reject()}
+     * in ADR-023's PR and on this method in ADR-024's PR, both times noted and not fixed. Fixing
+     * the pattern rather than the instance is the point: {@code suspend}, {@code close},
+     * {@code revokeAccessAt}, both platform-role methods and the bootstrap are all transactional,
+     * and this was the last one that was not.
+     */
     public User reactivate(UserId userId, String operatorId) {
-        User reactivated = users.save(require(userId).reactivate(now()));
+        return transactions.execute(status -> {
+            User reactivated = users.save(require(userId).reactivate(now()));
 
-        securityEvents.save(SecurityEvent.record(
-            SecurityEventType.USER_REACTIVATED, userId.value(), null, now()
-        ));
+            securityEvents.save(SecurityEvent.record(
+                SecurityEventType.USER_REACTIVATED, userId.value(), null, now()
+            ));
 
-        log.warn("User reactivated userId={} operator={}", userId.value(), operatorId);
+            log.warn("User reactivated userId={} operator={}", userId.value(), operatorId);
 
-        return reactivated;
+            return reactivated;
+        });
     }
 
     /** Terminal, like a merchant closure and for the same reason. */
@@ -340,6 +371,12 @@ public final class ManageUserAccessService {
 
     private User require(UserId userId) {
         return users.findByUserId(userId).orElseThrow(() -> new UserNotFoundException(userId.value()));
+    }
+
+    /** {@link #require} for a caller about to decide something on what it reads. */
+    private User requireForUpdate(UserId userId) {
+        return users.findByUserIdForUpdate(userId)
+            .orElseThrow(() -> new UserNotFoundException(userId.value()));
     }
 
     private Instant now() {
