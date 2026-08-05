@@ -77,7 +77,19 @@ public class IdempotencyConfiguration {
         //
         // The revoke is a DELETE and is not here either: this registry is keyed on POST templates,
         // and a repeated DELETE answering 404 is the conventional reading of "already gone".
-        "POST /api/v1/users/{userId}/merchant-access"
+        "POST /api/v1/users/{userId}/merchant-access",
+        // Replaying a webhook delivery, for the same reason: the second one collides with the
+        // PENDING state the first one produced and answers 409, which is the wrong answer to a
+        // network retry of a request that worked.
+        //
+        // THE OTHER TWO WEBHOOK WRITES ARE DELIBERATELY NOT HERE, and this one is structural too.
+        // Create and rotate return the endpoint's signing secret, and idempotency_records
+        // .response_body stores response bodies VERBATIM so a retry can replay them -- registering
+        // either would write that secret to the database in cleartext, one table away from the
+        // storage ADR-028's whole design exists to avoid. Rotate is idempotent on its own terms
+        // instead: the caller names the version it is rotating from, so a repeat re-derives the
+        // same secret rather than bumping again.
+        "POST /api/v1/webhook-endpoints/{endpointId}/deliveries/{deliveryId}/replay"
     );
 
     @Bean

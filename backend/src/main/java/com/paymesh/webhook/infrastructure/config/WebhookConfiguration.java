@@ -2,6 +2,11 @@ package com.paymesh.webhook.infrastructure.config;
 
 import com.paymesh.webhook.application.DeliverWebhooksService;
 import com.paymesh.webhook.application.FanOutWebhookEventService;
+import com.paymesh.webhook.application.ListWebhookDeliveriesService;
+import com.paymesh.webhook.application.RegisterWebhookEndpointService;
+import com.paymesh.webhook.application.ReplayWebhookDeliveryService;
+import com.paymesh.webhook.application.RotateWebhookSecretService;
+import com.paymesh.webhook.application.UpdateWebhookEndpointService;
 import com.paymesh.webhook.application.WebhookDeliveryRepository;
 import com.paymesh.webhook.application.WebhookEndpointRepository;
 import com.paymesh.webhook.application.WebhookEventRepository;
@@ -24,6 +29,7 @@ import org.springframework.core.env.Environment;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.ObjectMapper;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 
 /**
@@ -147,6 +153,57 @@ public class WebhookConfiguration {
             deliveries, endpoints, events, sender, transactions, clock,
             dispatchProperties.batchSize()
         );
+    }
+
+    @Bean
+    RegisterWebhookEndpointService registerWebhookEndpointService(
+        WebhookEndpointRepository endpoints,
+        WebhookProperties properties,
+        TransactionTemplate transactions,
+        Clock clock
+    ) {
+        return new RegisterWebhookEndpointService(
+            endpoints,
+            WebhookPayloadTranslator.PUBLISHED_TYPES,
+            properties.masterKey().getBytes(StandardCharsets.UTF_8),
+            transactions,
+            clock
+        );
+    }
+
+    @Bean
+    UpdateWebhookEndpointService updateWebhookEndpointService(
+        WebhookEndpointRepository endpoints, TransactionTemplate transactions, Clock clock
+    ) {
+        return new UpdateWebhookEndpointService(
+            endpoints, WebhookPayloadTranslator.PUBLISHED_TYPES, transactions, clock
+        );
+    }
+
+    @Bean
+    RotateWebhookSecretService rotateWebhookSecretService(
+        WebhookEndpointRepository endpoints,
+        WebhookProperties properties,
+        TransactionTemplate transactions,
+        Clock clock
+    ) {
+        return new RotateWebhookSecretService(
+            endpoints, properties.masterKey().getBytes(StandardCharsets.UTF_8), transactions, clock
+        );
+    }
+
+    @Bean
+    ListWebhookDeliveriesService listWebhookDeliveriesService(
+        WebhookDeliveryRepository deliveries, WebhookEndpointRepository endpoints
+    ) {
+        return new ListWebhookDeliveriesService(deliveries, endpoints);
+    }
+
+    @Bean
+    ReplayWebhookDeliveryService replayWebhookDeliveryService(
+        WebhookDeliveryRepository deliveries, TransactionTemplate transactions, Clock clock
+    ) {
+        return new ReplayWebhookDeliveryService(deliveries, transactions, clock);
     }
 
     /**
