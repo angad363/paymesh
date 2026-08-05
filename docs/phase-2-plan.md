@@ -117,16 +117,26 @@ green through a real `PLATFORM_ADMIN` grant.
 
 ### PR 1 — Webhook
 
-**Branch:** `feature/webhook` · **Migrations:** V24 (endpoints, events), V25 (deliveries, attempts) · **ADR-028**
+**Branch:** `feature/webhook` · **Migrations:** V24 (endpoints, events), V25 (deliveries) · **ADR-028**
 
 The flagship of Phase 2 and the piece an integrator actually sees. SDD §18.
 
-Four tables: `webhook_endpoints` (merchant, URL, encrypted secret,
-subscriptions, status), `webhook_events` (public event id unique, type, version,
-payload — the *stable external* shape, deliberately not the internal event),
-`webhook_deliveries` (event + endpoint unique, status, attempts, next attempt),
-`webhook_delivery_attempts` (delivery + attempt unique, status, duration,
-response excerpt).
+**Three tables, amended by ADR-028 §3 — this section originally said four.**
+`webhook_endpoints` (merchant, URL, **`secret_version` rather than an encrypted
+secret**, subscriptions, status), `webhook_events` (public event id unique, type,
+version, payload as `text` — the *stable external* shape, deliberately not the
+internal event), `webhook_deliveries` (event + endpoint unique, status, attempts,
+next attempt, last status code and response excerpt).
+
+`webhook_delivery_attempts` is **not** built. Its per-attempt forensics are
+mostly restated by the counters on the delivery row, and it can be added later
+without touching either table that carries an invariant. ADR-028 §3.
+
+The secret is **derived, never stored** — `HMAC-SHA256(masterKey, info || 0x01)`
+keyed on endpoint id and `secret_version`, so rotation is an integer bump and
+there is no ciphertext column. This removed the cipher subsystem the original
+"encrypted secret" wording would have required, and note that **JDK 21 has no
+HKDF** (JEP 478/510 land it in 24/25). ADR-028 §2.
 
 Five endpoints, per SDD §18.3: create endpoint, patch subscriptions/status,
 rotate secret (shown once), list deliveries, replay a delivery.

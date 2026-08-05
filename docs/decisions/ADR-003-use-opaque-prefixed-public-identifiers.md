@@ -24,7 +24,12 @@ Public identifiers are opaque strings of the form `<prefix>_<uuid>`.
 
 - The prefix names the type: `mrc_` merchant, `usr_` user, `cus_` customer,
   `pmt_` payment-method token. Planned: `ord_`, `pi_`, `pay_`, `ref_`, `stl_`,
-  `whe_`, `evt_`.
+  `whe_`, `evt_`, `whv_` webhook event, `whd_` webhook delivery.
+  `whv_` and `whd_` were added by ADR-028. A webhook event could not reuse
+  `evt_`: that already belongs to the outbox (`shared/outbox/domain/EventId`),
+  and two unrelated types sharing a prefix destroys the property this ADR exists
+  for — a mis-routed id rejected rather than silently misinterpreted. The
+  outbox's `evt_` value is carried on `webhook_events.source_event_id`.
 - The remainder is a random UUID, so ids are unguessable and carry no volume
   information.
 - Each identifier is a value-object record that validates prefix and UUID in its
