@@ -37,8 +37,11 @@ import java.util.List;
  * Create and rotate return a secret, and {@code idempotency_records.response_body} persists response
  * bodies verbatim so a retry can replay them -- registering either route would write the secret to
  * the database in cleartext, one table away from the storage ADR-028 exists to avoid. Rotate is
- * idempotent on its own terms instead ({@code fromVersion}); create is not, and a merchant who
- * retries a lost create gets a second endpoint they can see and delete. Only
+ * idempotent on its own terms instead ({@code fromVersion}).
+ * <p>
+ * <b>Create is not idempotent</b>, and the recovery path is rotation rather than retry: a second
+ * create at the same URL answers 409 with no secret, because handing the secret back to whoever
+ * POSTs an existing URL would turn create into "reveal this endpoint's secret". Only
  * {@code POST .../replay} is on {@code IdempotentRoutes}.
  */
 @RestController

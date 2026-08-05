@@ -34,8 +34,8 @@ CREATE TABLE webhook_deliveries (
 
     status                 VARCHAR(20)              NOT NULL,
 
-    -- Attempts made against THIS delivery. The budget is five (1m, 5m, 30m, 2h,
-    -- 6h) and then the delivery is FAILED. About eight and a half hours, which
+    -- Attempts made against THIS delivery. The budget is SIX, spaced by five waits
+    -- (1m, 5m, 30m, 2h, 6h), and then the delivery is FAILED. 8h36m, which
     -- is deliberately long enough to survive a merchant's overnight deploy and
     -- deliberately short of a day so a dead endpoint does not hold rows
     -- indefinitely. A different scale from ADR-025's outbox budget on purpose:

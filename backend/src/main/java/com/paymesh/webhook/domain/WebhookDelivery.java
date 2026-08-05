@@ -11,7 +11,7 @@ import java.util.List;
  *
  * The outbox relay's budget is tuned for in-process work that should always succeed, so a repeated
  * failure there is a bug. Here a merchant returning 503 for six hours is <b>ordinary operation</b>.
- * The schedule below spans about eight and a half hours: long enough to survive a merchant's
+ * The schedule below spans <b>8h36m</b> across six attempts: long enough to survive a merchant's
  * overnight deploy or an outage in a timezone where nobody is awake, and short of a day so a dead
  * endpoint does not hold rows indefinitely.
  *
@@ -25,7 +25,7 @@ import java.util.List;
 public final class WebhookDelivery {
 
     /**
-     * Five attempts, then the delivery is dead. Index n is the wait before attempt n+1.
+     * The wait before each retry. Index n is the wait between attempt n+1 and attempt n+2.
      * <p>
      * Not exponential-by-formula but a written list, because the numbers were chosen for what they
      * cover rather than for a curve, and a list can be read against the reasoning in ADR-028 §6.
@@ -38,7 +38,19 @@ public final class WebhookDelivery {
         Duration.ofHours(6)
     );
 
-    public static final int MAX_ATTEMPTS = BACKOFF.size();
+    /**
+     * SIZE PLUS ONE, AND THE PLUS ONE IS NOT A FENCEPOST TO TIDY AWAY. n attempts have n-1 waits
+     * between them, so five waits carry six attempts.
+     * <p>
+     * <b>This was {@code BACKOFF.size()} and it was wrong.</b> The last entry was never reached --
+     * {@code attemptFailed} declared the delivery dead on the fifth attempt, before ever indexing
+     * the six-hour wait -- so the horizon was 1m + 5m + 30m + 2h = 2h36m rather than the 8h36m that
+     * the class javadoc above, V25's header, {@code application.yaml} and ADR-028 §6 all state. A
+     * merchant down for an overnight deploy, which is the case those numbers were chosen for, lost
+     * their deliveries about three times too early, and the endpoint's disable streak advanced
+     * about three times too fast.
+     */
+    public static final int MAX_ATTEMPTS = BACKOFF.size() + 1;
 
     /** Enough of the merchant's answer to debug with, and no more. The read is capped too. */
     public static final int MAX_RESPONSE_EXCERPT = 512;

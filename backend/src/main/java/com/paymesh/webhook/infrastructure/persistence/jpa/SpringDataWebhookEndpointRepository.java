@@ -13,8 +13,6 @@ public interface SpringDataWebhookEndpointRepository
         String merchantId, String endpointId
     );
 
-    Optional<WebhookEndpointJpaEntity> findByMerchantIdAndUrl(String merchantId, String url);
-
     List<WebhookEndpointJpaEntity> findByMerchantIdOrderByCreatedAtAsc(String merchantId);
 
     /**

@@ -32,7 +32,7 @@ import java.util.List;
  * <h2>Two counters, and confusing them is a factor of five</h2>
  *
  * A failed attempt reschedules the delivery. Only a delivery that spends its <i>whole</i> budget --
- * five attempts over about eight and a half hours -- moves the endpoint's consecutive-failure streak,
+ * six attempts over 8h36m -- moves the endpoint's consecutive-failure streak,
  * by one. Twenty of those in a row disable the endpoint. ADR-028 §6.
  */
 public final class DeliverWebhooksService {

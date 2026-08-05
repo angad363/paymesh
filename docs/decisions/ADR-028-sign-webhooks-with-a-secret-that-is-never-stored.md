@@ -72,15 +72,23 @@ which `ProviderCallbackSignatureFilter` already imports. **Extract is skipped**,
 
 **That licence has a precondition, and it is enforced rather than assumed.** The master key must be
 at least 32 bytes of raw entropy. A typed passphrase in that property withdraws §3.3's permission
-and silently weakens the whole scheme, so `DevelopmentSecretGuard` checks the decoded length, not
-only that the value is not the published development one.
+and silently weakens the whole scheme.
+
+**Two checks, in two classes, because they answer different questions.**
+`DevelopmentSecretGuard` asks *where did this value come from* and refuses the published
+development one — it says nothing about length, and an earlier draft of this paragraph wrongly
+claimed it did. `WebhookSecrets.requireStrongMasterKey` asks *is this long enough for §3.3* and is
+called eagerly from `WebhookConfiguration`, so a short key fails at startup rather than on the
+first merchant to register. That eager call was missing when this shipped and review caught it;
+`WebhookMasterKeyStartupTest` now pins both halves, including the case that passes one check and
+fails the other.
 
 ### 2.2. Pinned, because a silent change breaks every merchant at once
 
 SHA-256. No salt. `info` exactly as above, `|`-separated, version in decimal, US-ASCII. Thirty-two
 bytes out. Base64 URL-safe without padding. `pmsec_` prefix.
 
-### 2.1 The prefix is `pmsec_`, and it used to be `whsec_`
+#### The prefix is `pmsec_`, and it used to be `whsec_`
 
 `whsec_` is Stripe's, and using it was the obvious call: it is the string an integrator already
 recognises in a log or a support ticket.
@@ -219,19 +227,23 @@ the exception is visible rather than looking like an oversight.
 Nothing below is derived from production data, because there is none. Each is a defensible first
 choice with the reasoning attached so a later change is an argument rather than a coin flip.
 
-**Retry schedule: 1m, 5m, 30m, 2h, 6h — five attempts, then `FAILED`.** Total retry horizon is
-about eight and a half hours. That is deliberately long enough to survive a merchant's overnight
+**Retry schedule: 1m, 5m, 30m, 2h, 6h — six attempts, then `FAILED`.** Five waits carry six
+attempts, and the arithmetic is spelled out because getting it wrong is silent: the total retry
+horizon is 8h36m. **It shipped as 2h36m.** `MAX_ATTEMPTS` was `BACKOFF.size()`, so the delivery
+was declared dead on the fifth attempt and the six-hour wait was never reached — every document
+quoting this figure was right and the code was not. `WebhookDeliveryTest.spansTheRetryHorizonAdr028Claims`
+now asserts the total as one figure so the two cannot drift apart again. That is deliberately long enough to survive a merchant's overnight
 deploy or an outage in a timezone where nobody is awake, and deliberately short of a day so a dead
 endpoint does not hold rows indefinitely. It is a different scale from ADR-025's outbox budget on
 purpose: an outbox event failing repeatedly is a bug, while a merchant returning 503 for six hours
 is ordinary operation.
 
 **Endpoint disabled after 20 consecutive dead deliveries.** A *dead* delivery is one that exhausted
-its own five attempts, so twenty of them is a hundred failed HTTP requests before PayMesh stops
+its own six attempts, so twenty of them is a hundred and twenty failed HTTP requests before PayMesh stops
 trying. Enough that intermittent trouble never disables a working integration; few enough that a
 permanently-dead endpoint stops costing. Any success resets the counter to zero. **One dead
 delivery increments it by exactly one** — the two counters are separate and the interaction is
-stated because five-per-delivery versus one-per-delivery is a factor-of-five difference in when an
+stated because six-per-delivery versus one-per-delivery is a factor-of-six difference in when an
 endpoint disables.
 
 **Rotation overlap: 24 hours.** One full day covers a normal deploy cycle for a merchant who
@@ -287,6 +299,19 @@ Recorded as a known limitation rather than described as solved.
   `IdempotencyRecordJpaEntity` persists the whole response body so a retry can replay it, so
   registering a route that returns a secret would write that secret to
   `idempotency_records.response_body` in cleartext — in the same database whose dump §2 uses to
-  reject plaintext storage. Derivation makes the filter unnecessary instead of merely awkward:
-  create is naturally idempotent on `UNIQUE (merchant_id, url)`, and rotate takes a `from_version`
-  so a retry re-derives the same version rather than bumping again. Only `replay` registers.
+  reject plaintext storage. Only `replay` registers.
+
+  **Rotate is idempotent; create is not, and an earlier draft of this bullet claimed both were.**
+  It said create was "naturally idempotent on `UNIQUE (merchant_id, url)`" — that a retry would
+  find the existing endpoint and re-derive its secret. It does not: a second create at the same URL
+  answers `409` with no secret, which `WebhookIntegrationTest.refusesASecondEndpointAtOneUrl` pins.
+  The claim was wrong and the behaviour is right: handing the secret back to whoever POSTs a URL
+  that already exists would turn create into "reveal this endpoint's secret", which is the thing
+  showing it once exists to prevent.
+
+  The honest form of the argument is narrower and still sufficient: **a lost create response is
+  recovered by rotating, not by retrying.** Rotate takes a `from_version`, so asking twice
+  re-derives the same secret rather than bumping again (§2) — its response can be lost and asked
+  for again safely. The merchant is therefore never stranded without a secret, which is the only
+  thing the filter would have bought on these two routes, and it is bought without writing a secret
+  to `idempotency_records`.

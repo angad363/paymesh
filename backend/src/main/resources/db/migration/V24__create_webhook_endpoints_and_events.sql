@@ -101,10 +101,21 @@ CREATE TABLE webhook_endpoints (
     CONSTRAINT uq_webhook_endpoints_merchant_endpoint
         UNIQUE (merchant_id, endpoint_id),
 
-    -- Makes creation naturally idempotent: a retried create finds the existing
-    -- endpoint and re-derives the same secret rather than minting a second
-    -- endpoint for the same URL. This is what lets the route stay off the
-    -- IdempotencyFilter and keep the secret out of idempotency_records.
+    -- Two endpoints at one URL would fan out twice to the same place: the
+    -- merchant's handler sees every event doubled, and their own idempotency is
+    -- the only thing between that and a doubled fulfilment.
+    --
+    -- CREATE IS NOT IDEMPOTENT, and an earlier version of this comment claimed
+    -- it was -- that a retried create would find the existing row and re-derive
+    -- the same secret. It does not: it answers 409 and returns no secret, which
+    -- WebhookIntegrationTest.refusesASecondEndpointAtOneUrl pins.
+    --
+    -- The 409 is the right answer and the claim was the wrong argument. Handing
+    -- the secret back to whoever POSTs a URL that already exists turns create
+    -- into "reveal this endpoint's secret", which is exactly the thing showing
+    -- it once is for. The recovery path for a lost create response is to rotate,
+    -- which IS idempotent because the caller names the version it is replacing.
+    -- That is what lets this route stay off the IdempotencyFilter. ADR-028 s8.
     CONSTRAINT uq_webhook_endpoints_merchant_url
         UNIQUE (merchant_id, url),
 

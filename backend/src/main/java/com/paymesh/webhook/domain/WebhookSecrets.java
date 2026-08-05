@@ -56,7 +56,7 @@ public final class WebhookSecrets {
     /**
      * What a merchant sees -- recognisable in a log or a support ticket.
      *
-     * <h2>PAYMESH'S OWN, AND DELIBERATELY NOT STRIPE'S {@code whsec_} (ADR-028 §2.1)</h2>
+     * <h2>PAYMESH'S OWN, AND DELIBERATELY NOT STRIPE'S {@code whsec_} (ADR-028 §2.2)</h2>
      *
      * <p>An earlier version of this class used {@code whsec_} because it is the prefix an
      * integrator recognises. GitHub's secret scanner recognises it too, and classified this

@@ -224,18 +224,31 @@ class DeliverWebhooksServiceTest {
 
     /**
      * One attempt short of dead, so the next failure is the one that spends the budget.
-     * <p>
-     * Aged backwards on purpose: the fourth failure schedules two hours out, so a delivery failed
-     * "now" four times would not be due now. Three hours ago it is.
+     *
+     * <p>Walked through the REAL schedule rather than failed repeatedly at one instant, and the
+     * difference is not cosmetic: each failure schedules the next attempt further out, so a
+     * delivery failed five times "now" is due six hours from now and the dispatcher would not pick
+     * it up. Following the clock the aggregate itself sets leaves it due, and leaves it due however
+     * the schedule is later retuned -- an earlier version hard-coded a three-hour rewind and broke
+     * the moment the last wait grew past it.
      */
     private WebhookDelivery exhausted(WebhookEndpoint endpoint) {
         WebhookDelivery delivery = queue(endpoint);
-        Instant earlier = NOW.minus(Duration.ofHours(3));
+        Instant clock = NOW;
 
         for (int i = 0; i < WebhookDelivery.MAX_ATTEMPTS - 1; i++) {
-            delivery = delivery.attemptFailed(500, "boom", earlier);
+            delivery = delivery.attemptFailed(500, "boom", clock);
+            clock = delivery.nextAttemptAt();
         }
 
-        return delivery;
+        // Rewound so the whole walk sits in the past and the row is due at NOW.
+        Duration elapsed = Duration.between(NOW, clock);
+
+        return WebhookDelivery.rehydrate(
+            delivery.deliveryId(), delivery.webhookEventId(), delivery.endpointId(),
+            delivery.merchantId(), delivery.status(), delivery.attempts(),
+            delivery.nextAttemptAt().minus(elapsed), delivery.lastStatusCode(),
+            delivery.lastResponseExcerpt(), delivery.createdAt(), delivery.updatedAt()
+        );
     }
 }

@@ -24,10 +24,11 @@ public final class JpaWebhookEndpointRepository implements WebhookEndpointReposi
     /**
      * {@code saveAndFlush}, so a violation surfaces here rather than at an arbitrary later flush.
      *
-     * <p>The service's duplicate-URL pre-check is a check, not a lock: two concurrent registrations
-     * can both pass it. {@code uq_webhook_endpoints_merchant_url} is the real guard, and the loser
-     * must still get a 409 rather than a 500 -- two endpoints at one URL would fan out twice to the
-     * same place.
+     * <p>{@code uq_webhook_endpoints_merchant_url} is the ONLY guard on a duplicate URL, and there
+     * is deliberately no application pre-check beside it. A pre-check would add a query, a race and
+     * a second place to be wrong, and would still need this catch block underneath it -- the
+     * constraint is what makes the rule true, and this translation is what makes it a readable 409
+     * rather than a 500. Two endpoints at one URL would fan out twice to the same place.
      */
     @Override
     public WebhookEndpoint save(WebhookEndpoint endpoint) {

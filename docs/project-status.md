@@ -24,8 +24,8 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1303 tests, 0 failures.** Twenty-five Flyway migrations (V1–V25). Twenty-eight ADRs. The Postman
-collection runs **seventeen folders green** (a newman run executes 234 requests and 567 assertions;
+**1318 tests, 0 failures.** Twenty-five Flyway migrations (V1–V25). Twenty-eight ADRs. The Postman
+collection runs **seventeen folders green** (a newman run executes 233 requests and 566 assertions;
 the count varies because the polling requests re-run themselves) — the newest showing an order
 paid and a signed webhook delivery queued for it without anyone calling a webhook endpoint.
 
@@ -385,7 +385,8 @@ Properties worth not breaking:
   Both translate to one schema. Reading only `occurredAt` would have stamped every timed-out
   payment with the envelope's clock instead of the authority's.
 - **Two counters, and confusing them is a factor of five.** A failed *attempt* reschedules the
-  delivery (1m, 5m, 30m, 2h, 6h, then FAILED). Only a delivery that spends its whole budget moves
+  delivery (six attempts, waits of 1m, 5m, 30m, 2h, 6h, 8h36m end to end, then FAILED). Only a
+  delivery that spends its whole budget moves
   the *endpoint's* consecutive-failure streak, by one; twenty of those disable it. The budget is
   deliberately not ADR-025's: a merchant returning 503 for six hours is ordinary operation.
 - **A webhook URL is an SSRF primitive, and the guard is at delivery rather than registration.** A
@@ -533,7 +534,7 @@ no financial effect.
 
 ```bash
 cd backend
-./mvnw test                     # 1303 tests; needs Docker, no local database
+./mvnw test                     # 1318 tests; needs Docker, no local database
 ./mvnw spring-boot:run          # port 8080, activates the dev profile via the pom
 
 # API contract, end to end, including cross-tenant isolation and idempotency
@@ -884,10 +885,25 @@ only ever ran in the PENDING branch, where the other side of the ternary is not 
 one more consumer to `payment.succeeded` was enough extra latency for a relay tick to land first
 and expose it. Fixed in the same change.
 
-**Verification:** 1303 tests green; Postman 234 requests / 567 assertions / 0 failures across
+**Verification:** 1318 tests green; Postman 233 requests / 566 assertions / 0 failures across
 seventeen folders; V24 and V25 applied to a live V23 database *with data in it*; the whole loop
 walked live — register an endpoint, read the secret once, pay an order through the simulator, watch
 a PENDING delivery appear for it, rotate twice from the same version and get the same secret back.
+
+**Five defects review found that 1300 green tests did not**, all in the author's own work:
+
+| Found | Why the suite missed it |
+|---|---|
+| The retry horizon was 2h36m, not the 8h36m four documents state — `MAX_ATTEMPTS` was `BACKOFF.size()`, so the six-hour wait was unreachable | The schedule test walked four of the five steps and stopped |
+| `V24` and ADR-028 claimed a retried create "re-derives the same secret"; it answers 409 with no secret, and the controller javadoc said the opposite | Nothing asserts a comment |
+| `requireStrongMasterKey` was documented as failing at startup and was only ever called from `derive` | A short key throws either way, just later |
+| A javadoc described a "duplicate-URL pre-check" that does not exist, beside a query method nobody calls | Dead code compiles |
+| The sixth guarded secret shipped without the startup test its own class javadoc mandates | The other five have one; nothing enforces the rule |
+
+The first is a behavioural defect and the rest are the codebase lying about itself, which in a repo
+this heavily commented is the same category of problem. All five are fixed, the two new guards are
+proved by sabotage, and the retry horizon is now asserted as a single figure so it cannot drift from
+the documents again.
 
 **What is NOT covered, stated rather than left to be discovered:**
 

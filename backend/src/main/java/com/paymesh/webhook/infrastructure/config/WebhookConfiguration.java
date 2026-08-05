@@ -11,6 +11,7 @@ import com.paymesh.webhook.application.WebhookDeliveryRepository;
 import com.paymesh.webhook.application.WebhookEndpointRepository;
 import com.paymesh.webhook.application.WebhookEventRepository;
 import com.paymesh.webhook.application.WebhookSender;
+import com.paymesh.webhook.domain.WebhookSecrets;
 import com.paymesh.webhook.infrastructure.events.WebhookFanOutHandler;
 import com.paymesh.webhook.infrastructure.events.WebhookPayloadTranslator;
 import com.paymesh.webhook.infrastructure.http.HttpWebhookSender;
@@ -42,6 +43,23 @@ import java.time.Clock;
 public class WebhookConfiguration {
 
     private static final String DEV_PROFILE = "dev";
+
+    /**
+     * THE MASTER KEY IS CHECKED HERE, AT STARTUP, AND NOT ON THE FIRST DELIVERY.
+     *
+     * <p>{@code WebhookSecrets.requireStrongMasterKey} is public precisely so this can happen, and
+     * for a while nothing called it: the only caller was {@code derive} itself, so a key under 32
+     * bytes booted fine and failed on the first merchant who registered an endpoint. A platform
+     * that starts and then cannot sign is worse than one that refuses to start, which is the whole
+     * instinct behind {@code DevelopmentSecretGuard} and is why the check is eager now.
+     */
+    private static byte[] verifiedMasterKey(WebhookProperties properties) {
+        byte[] masterKey = properties.masterKey().getBytes(StandardCharsets.UTF_8);
+
+        WebhookSecrets.requireStrongMasterKey(masterKey);
+
+        return masterKey;
+    }
 
     @Bean
     WebhookEndpointRepository webhookEndpointRepository(
@@ -130,6 +148,10 @@ public class WebhookConfiguration {
         Environment environment,
         Clock clock
     ) {
+        WebhookSecrets.requireStrongMasterKey(
+            properties.masterKey().getBytes(StandardCharsets.UTF_8)
+        );
+
         return HttpWebhookSender.create(
             properties.masterKey(),
             properties.allowPrivateAddresses() && isDevelopmentOnly(environment),
@@ -165,7 +187,7 @@ public class WebhookConfiguration {
         return new RegisterWebhookEndpointService(
             endpoints,
             WebhookPayloadTranslator.PUBLISHED_TYPES,
-            properties.masterKey().getBytes(StandardCharsets.UTF_8),
+            verifiedMasterKey(properties),
             transactions,
             clock
         );
@@ -188,7 +210,7 @@ public class WebhookConfiguration {
         Clock clock
     ) {
         return new RotateWebhookSecretService(
-            endpoints, properties.masterKey().getBytes(StandardCharsets.UTF_8), transactions, clock
+            endpoints, verifiedMasterKey(properties), transactions, clock
         );
     }
 

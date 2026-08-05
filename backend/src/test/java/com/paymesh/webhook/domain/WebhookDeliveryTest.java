@@ -38,9 +38,16 @@ class WebhookDeliveryTest {
         assertThat(delivered.isDead()).isFalse();
     }
 
-    /** The written schedule from ADR-028 §6, asserted rather than described. */
+    /**
+     * THE WHOLE WRITTEN SCHEDULE FROM ADR-028 §6, ASSERTED RATHER THAN DESCRIBED -- and every step
+     * of it, which is what this test used not to do.
+     *
+     * <p>It stopped at the four-hour mark and asserted PENDING, which passed while the six-hour
+     * entry was unreachable dead code and {@code MAX_ATTEMPTS} was one too small. A test that walks
+     * a list must walk all of it; stopping one short is how the last element goes unexercised.
+     */
     @Test
-    void reschedulesOnTheWrittenBackoffSchedule() {
+    void reschedulesOnEveryStepOfTheWrittenBackoffSchedule() {
         WebhookDelivery delivery = queued();
 
         delivery = delivery.attemptFailed(503, "unavailable", NOW);
@@ -55,8 +62,39 @@ class WebhookDeliveryTest {
         delivery = delivery.attemptFailed(503, "unavailable", NOW);
         assertThat(delivery.nextAttemptAt()).isEqualTo(NOW.plus(Duration.ofHours(2)));
 
+        delivery = delivery.attemptFailed(503, "unavailable", NOW);
+        assertThat(delivery.nextAttemptAt())
+            .as("the six-hour wait, which was unreachable until MAX_ATTEMPTS was corrected")
+            .isEqualTo(NOW.plus(Duration.ofHours(6)));
+
         assertThat(delivery.status()).isEqualTo(DeliveryStatus.PENDING);
-        assertThat(delivery.attempts()).isEqualTo(4);
+        assertThat(delivery.attempts()).isEqualTo(5);
+    }
+
+    /**
+     * THE HORIZON THOSE NUMBERS EXIST TO PRODUCE, asserted as one figure so it cannot drift from
+     * the four documents that quote it.
+     *
+     * <p>1m + 5m + 30m + 2h + 6h = 8h36m: long enough to survive a merchant's overnight deploy in a
+     * timezone where nobody is awake, and short of a day so a dead endpoint does not hold rows
+     * indefinitely. It was 2h36m before {@code MAX_ATTEMPTS} was corrected.
+     */
+    @Test
+    void spansTheRetryHorizonAdr028Claims() {
+        WebhookDelivery delivery = queued();
+        Instant clock = NOW;
+
+        for (int attempt = 1; attempt < WebhookDelivery.MAX_ATTEMPTS; attempt++) {
+            delivery = delivery.attemptFailed(503, "unavailable", clock);
+            clock = delivery.nextAttemptAt();
+        }
+
+        assertThat(Duration.between(NOW, clock))
+            .isEqualTo(Duration.ofHours(8).plusMinutes(36));
+
+        assertThat(delivery.attemptFailed(503, "unavailable", clock).status())
+            .as("the next failure after the last wait is the one that gives up")
+            .isEqualTo(DeliveryStatus.FAILED);
     }
 
     @Test
