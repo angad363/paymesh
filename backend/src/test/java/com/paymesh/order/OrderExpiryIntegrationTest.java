@@ -416,13 +416,15 @@ class OrderExpiryIntegrationTest {
 
         ExpireOrdersService.SweepResult result = sweeperAt(AFTER_EXPIRY).sweep();
 
-        assertThat(result.examined())
-            .as("the bad row is still a candidate -- the query does not hide it")
-            .isEqualTo(2);
+        // AT LEAST, never exactly: the sweep is platform-wide, so it also picks up whatever other
+        // tests in this class left expirable. See the class javadoc -- "expired exactly 1" would
+        // pass or fail on test order rather than on behaviour.
         assertThat(result.failed())
-            .as("and it is counted as one failure, not as a dead sweep")
-            .isEqualTo(1);
-        assertThat(result.expired()).isEqualTo(1);
+            .as("the bad row is counted as a failure, not thrown out of the sweep")
+            .isGreaterThanOrEqualTo(1);
+        assertThat(result.expired())
+            .as("and the sweep still did work after meeting it")
+            .isGreaterThanOrEqualTo(1);
 
         assertThat(statusOf(healthy, healthyOrder))
             .as("THE POINT: the order behind the bad row was still expired")
@@ -436,7 +438,10 @@ class OrderExpiryIntegrationTest {
      * than partial.
      */
     private void unmappableExpiringOrder() {
-        String malformedMerchantId = "not-a-merchant-id";
+        // Unique, because merchant_id is the primary key and another test in another class plants
+        // one of these too. Malformed either way: MerchantId.from wants "mrc_" + a bare UUID.
+        // "bad-" + UUID is exactly 40 characters, which is the column width.
+        String malformedMerchantId = "bad-" + UUID.randomUUID();
 
         jdbc.update("""
             insert into merchants

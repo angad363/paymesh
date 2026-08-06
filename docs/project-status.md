@@ -24,7 +24,7 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1321 tests, 0 failures.** Twenty-five Flyway migrations (V1–V25). Twenty-eight ADRs. The Postman
+**1324 tests, 0 failures.** Twenty-five Flyway migrations (V1–V25). Twenty-eight ADRs. The Postman
 collection runs **seventeen folders green** (a newman run executes 233 requests and 566 assertions;
 the count varies because the polling requests re-run themselves) — the newest showing an order
 paid and a signed webhook delivery queued for it without anyone calling a webhook endpoint.
@@ -534,7 +534,7 @@ no financial effect.
 
 ```bash
 cd backend
-./mvnw test                     # 1321 tests; needs Docker, no local database
+./mvnw test                     # 1324 tests; needs Docker, no local database
 ./mvnw spring-boot:run          # port 8080, activates the dev profile via the pom
 
 # API contract, end to end, including cross-tenant isolation and idempotency
@@ -637,25 +637,41 @@ failing test._
 2. ~~**One unmappable row disables a sweep permanently and silently.**~~ **CLOSED**, and the entry
    was wrong about two things worth keeping visible.
 
-   **It said "both sweeps". There are three** — order expiry, payment timeout and refund timeout —
-   and all three had it. **And it said reaching the bug "needs database state the current CHECKs
-   forbid, so this is a latent trap rather than a live bug". It does not.**
-   `merchants.merchant_id`, `orders.order_id`, `payment_intents.payment_intent_id` and
-   `refunds.refund_id` are all `VARCHAR(40)` with **no format CHECK**, while `MerchantId.from` and
-   its siblings refuse anything that is not `prefix_uuid`. One malformed identifier — a bad
-   migration, a hand-fixed row, a future import — is a row PostgreSQL accepts today and every sweep
-   chokes on. It was filed as latent because nobody checked whether the ids were constrained.
+   **It said "both sweeps". There were five.** Order expiry, payment processing-timeout, refund
+   processing-timeout, the abandoned-checkout sweep, and the simulator's callback dispatcher — the
+   last of these with no per-item `try/catch` at all, so *anything* thrown while delivering the
+   first row ended the pass. The webhook dispatcher was a sixth near-miss: it returned ids rather
+   than aggregates and its comment claimed immunity on that basis, but `WebhookDeliveryId.from`
+   validates, so the throwing call had simply moved from the mapper to the adapter — still outside
+   the boundary. Only the outbox relay was already right, and deliberately: `UnpublishedEvent` is
+   a raw record whose `toEvent()` is documented as "the only place this row is allowed to throw".
+   That was the prior art the other five should have copied.
+
+   **And it said reaching the bug "needs database state the current CHECKs forbid, so this is a
+   latent trap rather than a live bug". It does not.** `merchants.merchant_id`, `orders.order_id`,
+   `payment_intents.payment_intent_id` and `refunds.refund_id` are all `VARCHAR(40)` with **no
+   format CHECK**, while `MerchantId.from` and its siblings refuse anything that is not
+   `prefix_uuid`. One malformed identifier — a bad migration, a hand-fixed row, a future import —
+   is a row PostgreSQL accepts today and every sweep chokes on. It was filed as latent because
+   nobody checked whether the ids were constrained. Open item 19 is the constraint that would make
+   it latent for real.
 
    The fix is the one the entry prescribed, taken a step further than it said. Candidate queries
    return **raw identifiers**, so nothing is mapped before the boundary, and the `XxxId.from` calls
    — which also throw — moved inside the per-item `try` with them. The first attempt moved the
    aggregate mapping and left the id parsing in the adapter; it still failed the regression test,
-   which is why the candidate types are `String` rather than value objects.
+   which is why the candidate types are `String` rather than value objects, and it is the same
+   half-fix the webhook dispatcher had already shipped.
 
-   Proved by sabotage in all three. The order one is an integration test with a genuinely
+   Proved by sabotage in all five. The order one is an integration test with a genuinely
    unmappable row, and with the mapping restored it takes down **12 of 14 tests in its class**
    rather than one — because the bad row persists and kills every later sweep, which is exactly the
    failure mode described above.
+
+   **How the last three were found:** by review, not by the suite. 1321 tests were green across a
+   fix whose own documentation claimed to be exhaustive and was not. The lesson is narrow and
+   worth stating — "I fixed every instance" is a claim about a search, and a search nobody
+   re-ran is a claim nobody checked.
 3. **ADR-014's race guard depends on `READ COMMITTED` and nothing says so.** The expiry sweep
    takes the order's row lock and then does an *unlocked* read of `payment_intents`. It sees
    an intent committed while it waited on the lock only because each statement takes a fresh

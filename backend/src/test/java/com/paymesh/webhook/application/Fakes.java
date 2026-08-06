@@ -17,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 /**
  * The collaborators the webhook service tests share. Same shape and same reason as Order's,
@@ -122,9 +123,22 @@ final class Fakes {
 
         private final Map<String, WebhookDelivery> byId = new LinkedHashMap<>();
         private int inserts;
+        private String poisonedCandidate;
 
         int inserts() {
             return inserts;
+        }
+
+        /**
+         * Puts one raw id at the head of the candidate list that no stored delivery matches.
+         * <p>
+         * The only way to reproduce a candidate the dispatcher cannot parse, because every id this
+         * fake would otherwise return came from a {@code WebhookDeliveryId} that already validated.
+         * {@code webhook_deliveries.webhook_delivery_id} carries no format CHECK, so the real query
+         * can return one of these.
+         */
+        void poisonCandidateList(String rawId) {
+            this.poisonedCandidate = rawId;
         }
 
         List<WebhookDelivery> all() {
@@ -174,12 +188,15 @@ final class Fakes {
         }
 
         @Override
-        public List<WebhookDeliveryId> findDue(Instant now, int limit) {
-            return byId.values().stream()
+        public List<String> findDue(Instant now, int limit) {
+            Stream<String> real = byId.values().stream()
                 .filter(d -> d.isPending() && !d.nextAttemptAt().isAfter(now))
                 .limit(limit)
-                .map(WebhookDelivery::deliveryId)
-                .toList();
+                .map(d -> d.deliveryId().value());
+
+            return poisonedCandidate == null
+                ? real.toList()
+                : Stream.concat(Stream.of(poisonedCandidate), real).toList();
         }
 
         @Override

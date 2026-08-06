@@ -184,6 +184,37 @@ class DeliverWebhooksServiceTest {
             .isEqualTo(1);
     }
 
+    /**
+     * A CANDIDATE ID THE PARSER REFUSES COSTS ONE DELIVERY, NOT THE PASS. Open item 2.
+     *
+     * <p>The sibling of the test above, and the half this class originally missed.
+     * {@code findDue} returned {@code List<WebhookDeliveryId>}, so {@code WebhookDeliveryId.from}
+     * -- which throws -- ran in the adapter, outside {@code dispatch()}'s try. The comment there
+     * claimed immunity ("that is why findDue returns ids") that the code did not have: an id is
+     * only safe to return unmapped if it is also returned unparsed.
+     *
+     * <p>It is reachable because {@code webhook_deliveries.webhook_delivery_id} is a VARCHAR with
+     * no format CHECK, and the bad row leads every batch, so the dispatcher would have stopped
+     * permanently and silently.
+     *
+     * <p><b>Sabotage that must turn this red:</b> move the {@code WebhookDeliveryId.from} call out
+     * of {@code dispatch()}'s try and back into {@code findDue}.
+     */
+    @Test
+    void aCandidateIdTheParserRefusesCostsOneDeliveryAndNotTheBatch() {
+        queue(endpoint());
+        deliveries.poisonCandidateList("not-a-delivery-id");
+
+        DeliverWebhooksService.DispatchResult result = service.dispatch();
+
+        assertThat(result.errored())
+            .as("counted as one failure, not thrown out of the pass")
+            .isEqualTo(1);
+        assertThat(result.delivered())
+            .as("THE POINT: the delivery behind the unparseable id still went out")
+            .isEqualTo(1);
+    }
+
     /** A retry scheduled into the future is not due yet. */
     @Test
     void doesNotSendADeliveryWhoseBackoffHasNotElapsed() {

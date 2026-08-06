@@ -10,6 +10,7 @@ import com.paymesh.order.application.CancelOrderService;
 import com.paymesh.order.application.OrderRepository;
 import com.paymesh.order.domain.Order;
 import com.paymesh.order.domain.OrderId;
+import com.paymesh.payment.application.AbandonedIntent;
 import com.paymesh.payment.application.AttachPaymentMethodService;
 import com.paymesh.payment.application.CancelPaymentIntentService;
 import com.paymesh.payment.application.ConfirmPaymentIntentCommand;
@@ -1045,7 +1046,7 @@ class PaymentIntentIntegrationTest {
         }
 
         @Override
-        public List<PaymentIntent> findAbandonedBeforeConfirmation(Instant untouchedBefore, int limit) {
+        public List<AbandonedIntent> findAbandonedBeforeConfirmation(Instant untouchedBefore, int limit) {
             return delegate.findAbandonedBeforeConfirmation(untouchedBefore, limit);
         }
     }

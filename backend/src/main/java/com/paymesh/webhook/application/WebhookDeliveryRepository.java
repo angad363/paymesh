@@ -31,13 +31,18 @@ public interface WebhookDeliveryRepository {
      * first.
      *
      * <p>IDS, NOT AGGREGATES, AND NOT AS A MICRO-OPTIMISATION. Open item 2 in
-     * {@code docs/project-status.md} is a live example of the shape being avoided: both existing
-     * sweeps map their candidate rows outside the per-item try/catch, so one unmappable row
-     * disables the sweep permanently and silently. Returning ids means there is nothing to map
-     * here, and each row is rehydrated inside its own transaction where a failure costs one
-     * delivery instead of the batch.
+     * {@code docs/project-status.md} is the shape being avoided: a sweep that maps its candidate
+     * rows outside the per-item try/catch, where one unmappable row disables it permanently and
+     * silently. Returning ids means there is nothing to map here, and each row is rehydrated inside
+     * its own transaction where a failure costs one delivery instead of the batch.
+     *
+     * <p><b>RAW STRINGS, and that is the half this originally got wrong.</b> This returned
+     * {@code List<WebhookDeliveryId>}, and {@code WebhookDeliveryId.from} validates -- so the
+     * throwing call simply moved from the mapper to the adapter, still outside the boundary, and
+     * {@code whd_} ids carry no format CHECK. The parse belongs in the dispatcher's try with
+     * everything else that can fail.
      */
-    List<WebhookDeliveryId> findDue(Instant now, int limit);
+    List<String> findDue(Instant now, int limit);
 
     /**
      * Locks one candidate for this dispatcher, re-checking that it is still PENDING.

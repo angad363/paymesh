@@ -18,8 +18,13 @@ public interface OutboundCallbackRepository {
      * row in it for the duration of every HTTP call in it, so a batch of twenty would keep nineteen
      * locks alive while the first one waited on a socket. Each row is claimed individually by
      * {@link #findPendingForUpdate}, which is where the race is actually settled.
+     * <p>
+     * <b>Ids, not aggregates.</b> The claim re-reads the row anyway and the dispatcher used nothing
+     * else off the candidate, so mapping one here was discarded work done outside the dispatcher's
+     * per-item try/catch -- where one row the mapper cannot rehydrate takes the whole pass, forever,
+     * because it sorts first in every subsequent batch. Open item 2.
      */
-    List<OutboundCallback> findDue(Instant now, int limit);
+    List<String> findDue(Instant now, int limit);
 
     /**
      * Claims one still-PENDING row for this transaction, or answers empty.

@@ -39,6 +39,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -237,23 +238,98 @@ class SimulatorCallbackDeliveryIntegrationTest {
         assertThat(row.get("last_response_status")).isEqualTo(404);
     }
 
+    /**
+     * ONE BAD CALLBACK COSTS ONE CALLBACK, NOT THE PASS. Open item 2, fifth and last sweep.
+     *
+     * <p>This dispatcher had the defect in its worst form: it mapped every candidate to an
+     * {@code OutboundCallback} in the repository -- outside the loop -- <b>and had no per-item
+     * try/catch at all</b>, so anything thrown while delivering row one ended the pass. The bad
+     * row leads every batch by {@code deliverAfter}, so the simulator would have stopped
+     * delivering permanently, which in a demo reads as "payments stopped settling".
+     *
+     * <p>Driven here with a sender that throws rather than an unmappable row, because it reaches
+     * the same branch: {@code deliverOne} throws out of its transaction either way. The mapping
+     * half of the fix is the candidate query now selecting ids, which the compiler enforces.
+     *
+     * <p><b>Sabotage that must turn this red:</b> remove the try/catch around
+     * {@code deliverOne} in {@code DispatchProviderCallbacksService.dispatch()}.
+     */
+    @Test
+    void deliversTheGoodCallbacksEvenWhenOneThrows() {
+        // Queued first, so it leads the batch the way the unmappable row would.
+        String poisoned = processingIntent();
+
+        createSimulatedPayment(poisoned, "tok_sim_success", SimulatedCaptureMethod.AUTOMATIC);
+
+        String healthy = processingIntent();
+
+        createSimulatedPayment(healthy, "tok_sim_success", SimulatedCaptureMethod.AUTOMATIC);
+
+        DispatchProviderCallbacksService.DispatchResult result =
+            dispatcherWhoseFirstSendThrows().dispatch();
+
+        assertThat(result.errored())
+            .as("counted as one failure, not thrown out of the pass")
+            .isEqualTo(1);
+        assertThat(result.delivered())
+            .as("THE POINT: the callback behind the throwing one still went out")
+            .isEqualTo(1);
+        assertThat(statusOf(healthy)).isEqualTo("SUCCEEDED");
+        assertThat(statusOf(poisoned))
+            .as("and the one that threw rolled back whole -- nothing partial survived")
+            .isEqualTo("PROCESSING");
+
+        // The row is still PENDING and its attempt count never moved, so it is due again
+        // immediately. Draining it here proves the retry rather than asserting it, and leaves the
+        // table as this test found it -- the other tests in this class assert platform-wide counts.
+        dispatcher().dispatch();
+
+        assertThat(statusOf(poisoned))
+            .as("and the next pass delivered it")
+            .isEqualTo("SUCCEEDED");
+    }
+
     // ------------------------------------------------------------------ helpers
+
+    /**
+     * The production dispatcher with a sender that throws exactly once, on the first body it is
+     * handed, and behaves normally afterwards.
+     */
+    private DispatchProviderCallbacksService dispatcherWhoseFirstSendThrows() {
+        CallbackSender real = sender();
+        AtomicBoolean thrown = new AtomicBoolean();
+
+        CallbackSender flaky = body -> {
+            if (thrown.compareAndSet(false, true)) {
+                throw new IllegalStateException("the surprise nobody predicted");
+            }
+
+            return real.send(body);
+        };
+
+        return new DispatchProviderCallbacksService(
+            outboundCallbacks, flaky, transactions, clock, 20, 5, Duration.ofSeconds(5)
+        );
+    }
 
     /**
      * The production service with one collaborator swapped: a sender aimed at this test's port. The
      * signing, the body handling and the transaction boundaries are all the production objects.
      */
     private DispatchProviderCallbacksService dispatcher() {
-        CallbackSender sender = new HttpCallbackSender(
+        return new DispatchProviderCallbacksService(
+            outboundCallbacks, sender(), transactions, clock, 20, 5, Duration.ofSeconds(5)
+        );
+    }
+
+    /** The real sender, aimed at this test's port. */
+    private CallbackSender sender() {
+        return new HttpCallbackSender(
             RestClient.builder().build(),
             "http://localhost:" + port + "/internal/v1/provider-callbacks/SIMULATOR",
             DEV_SECRET,
             objectMapper,
             clock
-        );
-
-        return new DispatchProviderCallbacksService(
-            outboundCallbacks, sender, transactions, clock, 20, 5, Duration.ofSeconds(5)
         );
     }
 

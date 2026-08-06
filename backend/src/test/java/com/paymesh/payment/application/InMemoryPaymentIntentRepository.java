@@ -130,13 +130,16 @@ class InMemoryPaymentIntentRepository implements PaymentIntentRepository {
      * not.
      */
     @Override
-    public List<PaymentIntent> findAbandonedBeforeConfirmation(Instant untouchedBefore, int limit) {
+    public List<AbandonedIntent> findAbandonedBeforeConfirmation(Instant untouchedBefore, int limit) {
         return intents.stream()
             .filter(intent -> intent.status() == PaymentIntentStatus.REQUIRES_PAYMENT_METHOD
                 || intent.status() == PaymentIntentStatus.REQUIRES_CONFIRMATION)
             .filter(intent -> !intent.updatedAt().isAfter(untouchedBefore))
             .sorted(Comparator.comparing(PaymentIntent::updatedAt))
             .limit(limit)
+            .map(intent -> new AbandonedIntent(
+                intent.merchantId().value(), intent.paymentIntentId().value()
+            ))
             .toList();
     }
 }

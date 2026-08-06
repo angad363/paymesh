@@ -146,6 +146,86 @@ class AbandonedIntentSweepIntegrationTest {
             .isEqualTo(1L);
     }
 
+    // --- one bad row ----------------------------------------------------------------------------
+
+    /**
+     * ONE UNMAPPABLE ROW COSTS ONE CHECKOUT, NOT THE SWEEP. Open item 2, fourth sweep.
+     *
+     * <p>The same defect as order expiry, in the sweep that was missed when the first three were
+     * fixed: {@code findAbandonedBeforeConfirmation} built a {@code PaymentIntent} per candidate
+     * row <b>outside</b> this sweep's per-item try/catch. This row has the oldest
+     * {@code updated_at}, so it led every batch, threw out of {@code sweep()} before a single
+     * checkout was examined, and the scheduler re-ran it forever.
+     *
+     * <p>Worse here than in order expiry, because this sweep is what frees
+     * {@code uq_payment_intents_live_per_order}. Dead, every abandoned checkout keeps its order's
+     * only live slot -- and a permanently held order then also blocks the expiry sweep behind it.
+     *
+     * <p>It is reachable because {@code merchants.merchant_id} has no format CHECK while
+     * {@code MerchantId.from} refuses anything that is not {@code prefix_uuid}.
+     *
+     * <p><b>Sabotage that must turn this red:</b> make
+     * {@code findAbandonedBeforeConfirmation} return mapped aggregates again, or move the
+     * {@code MerchantId.from} / {@code PaymentIntentId.from} calls out of the service's try.
+     */
+    @Test
+    void cancelsTheGoodCheckoutsEvenWhenACandidateRowCannotBeMapped() {
+        PaymentIntent healthy = abandonedIntent();
+
+        unmappableAbandonedIntent();
+
+        CancelAbandonedPaymentIntentsService.SweepResult result = sweeper.sweep();
+
+        // AT LEAST, never exactly: the sweep is platform-wide and other tests in this class leave
+        // abandoned intents behind, so an exact count would assert on test order.
+        assertThat(result.errored())
+            .as("the bad row is counted as a failure, not thrown out of the sweep")
+            .isGreaterThanOrEqualTo(1);
+
+        assertThat(statusOf(healthy))
+            .as("THE POINT: the checkout behind the bad row was still cancelled")
+            .isEqualTo("CANCELLED");
+    }
+
+    /**
+     * A row no mapper can rehydrate, inserted the only way one can exist: straight through JDBC,
+     * with a merchant id the application would never mint. Backdated furthest, so it sorts to the
+     * head of the candidate batch -- which is what made the original bug total rather than partial.
+     */
+    private void unmappableAbandonedIntent() {
+        // Unique, because merchant_id is the primary key and another test in another class plants
+        // one of these too. Malformed either way: MerchantId.from wants "mrc_" + a bare UUID.
+        // "bad-" + UUID is exactly 40 characters, which is the column width.
+        String malformedMerchantId = "bad-" + UUID.randomUUID();
+        String orderId = OrderId.generate().value();
+        OffsetDateTime longAgo =
+            OffsetDateTime.ofInstant(Instant.now().minusSeconds(172_800), ZoneOffset.UTC);
+
+        jdbc.update("""
+            insert into merchants
+                (merchant_id, business_name, email, country, default_currency, status,
+                 created_at, updated_at)
+            values (?, 'Corrupt Co', ?, 'IN', 'INR', 'ACTIVE', ?, ?)
+            """, malformedMerchantId, UUID.randomUUID() + "@paymesh.test", longAgo, longAgo);
+
+        jdbc.update("""
+            insert into orders
+                (order_id, merchant_id, amount_minor, amount_paid_minor, currency, status,
+                 metadata, version, created_at, updated_at)
+            values (?, ?, ?, 0, 'INR', 'PENDING', '{}'::jsonb, 0, ?, ?)
+            """, orderId, malformedMerchantId, ORDER_AMOUNT_MINOR, longAgo, longAgo);
+
+        jdbc.update("""
+            insert into payment_intents
+                (payment_intent_id, merchant_id, order_id, amount_minor, currency, capture_method,
+                 status, captured_amount_minor, refunded_amount_minor, metadata, version,
+                 created_at, updated_at)
+            values (?, ?, ?, ?, 'INR', 'AUTOMATIC', 'REQUIRES_PAYMENT_METHOD', 0, 0, '{}'::jsonb, 0,
+                    ?, ?)
+            """, "pi_" + UUID.randomUUID(), malformedMerchantId, orderId, ORDER_AMOUNT_MINOR,
+            longAgo, longAgo);
+    }
+
     /** Backdated past the configured age, which is the only way to reach the cutoff in a test. */
     private PaymentIntent abandonedIntent() {
         PaymentIntent intent = intent(merchantWithOrder());

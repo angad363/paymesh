@@ -121,6 +121,11 @@ public interface PaymentIntentRepository {
      * <p>
      * Unscoped by merchant, like the other sweeps: abandonment is not a tenant-specific event and the
      * merchant is read off each row rather than supplied.
+     * <p>
+     * <b>Identifiers, not aggregates.</b> The cancel this feeds re-reads the intent under a row lock
+     * and uses nothing else off the candidate, so mapping one here was discarded work done outside
+     * the sweep's per-item try/catch -- where one unrehydratable row kills the run. See
+     * {@link AbandonedIntent}.
      */
-    List<PaymentIntent> findAbandonedBeforeConfirmation(Instant untouchedBefore, int limit);
+    List<AbandonedIntent> findAbandonedBeforeConfirmation(Instant untouchedBefore, int limit);
 }

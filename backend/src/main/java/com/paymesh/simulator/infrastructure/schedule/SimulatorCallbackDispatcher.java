@@ -53,8 +53,9 @@ public final class SimulatorCallbackDispatcher {
 
         if (result.examined() > 0) {
             log.info(
-                "Provider callback dispatch examined={} delivered={} retried={} abandoned={}",
-                result.examined(), result.delivered(), result.retried(), result.abandoned()
+                "Provider callback dispatch examined={} delivered={} retried={} abandoned={} errored={}",
+                result.examined(), result.delivered(), result.retried(), result.abandoned(),
+                result.errored()
             );
         }
     }
