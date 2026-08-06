@@ -1193,7 +1193,7 @@ cd backend
 ./mvnw spring-boot:run          # port 8080
 ```
 
-The documented count is **1324 tests, 0 failures**, across 25 Flyway migrations (V1–V25)
+The documented count is **1324 tests, 0 failures**, across 26 Flyway migrations (V1–V26)
 and 28 ADRs.
 
 The Postman collection is a second, independent check and worth running after any change to the

@@ -250,7 +250,7 @@ final class Fakes {
                 .limit(limit)
                 .map(row -> new UnpublishedEvent(
                     row.eventId(), row.merchantId(), row.aggregateType(), row.aggregateId(),
-                    row.eventType(), row.eventVersion(), row.payload(), row.occurredAt(),
+                    row.eventType(), row.eventVersion(), row.payloadJson(), row.occurredAt(),
                     attempts.getOrDefault(row.eventId(), 0)
                 ))
                 .toList();

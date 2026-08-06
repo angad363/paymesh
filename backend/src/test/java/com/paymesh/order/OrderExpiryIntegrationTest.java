@@ -392,20 +392,36 @@ class OrderExpiryIntegrationTest {
     /**
      * ONE UNMAPPABLE ROW COSTS ONE ORDER, NOT THE SWEEP. Open item 2, and it was not latent.
      *
-     * <p>The item was filed as "needing database state the current CHECKs forbid". It needs one
-     * identifier nobody constrained: {@code merchants.merchant_id} and {@code orders.order_id} are
-     * {@code VARCHAR(40)} with no format CHECK, while {@code MerchantId.from} and
-     * {@code OrderId.from} refuse anything that is not {@code prefix_uuid}. PostgreSQL accepts the
-     * row below today.
+     * <p>The item was filed as "needing database state the current CHECKs forbid". It needed one
+     * identifier nobody constrained, and until V26 that was every one of them.
      *
      * <p>Before the fix the candidate query built an {@code Order} per row, <b>outside</b> the
      * per-item try/catch. This row has the oldest deadline, so it led every batch, threw out of
      * {@code sweep()} before a single order was examined, and the scheduler re-ran it forever --
      * order expiry silently dead platform-wide, with one WARN per pass and no failing test.
      *
-     * <p><b>Sabotage that must turn this red:</b> make {@code findExpirable} return mapped
-     * aggregates again, or move the {@code MerchantId.from} / {@code OrderId.from} calls out of
-     * {@code ExpireOrdersService}'s try and back into {@code JpaOrderRepository}.
+     * <h2>WHY THE BAD ROW IS A MALFORMED {@code metadata} AND NO LONGER A MALFORMED ID</h2>
+     *
+     * It used to plant {@code bad-<uuid>} in {@code merchants.merchant_id}. V26 (open item 19) gave
+     * that column the format CHECK it always deserved, so PostgreSQL now refuses the insert -- the
+     * constraint closed the door this test came through, which is the constraint working.
+     * <p>
+     * <b>It did not close the bug.</b> {@code orders.metadata} is JSONB with no shape constraint
+     * and maps to a {@code Map}, so a JSON <i>array</i> there is still a row no mapper can
+     * rehydrate. That is the point worth keeping: constraining identifiers narrows what can be
+     * unreadable, it does not make mapping infallible, and the per-item boundary stays load-bearing
+     * for everything a CHECK cannot describe.
+     *
+     * <p><b>Sabotage that must turn this red:</b> make {@code findExpirable} map its rows through
+     * {@code OrderJpaMapper} again. Verified: it takes down <b>12 of 14 tests in this class</b>
+     * with {@code Could not deserialize string to java type: java.util.Map} -- the same blast
+     * radius the malformed-id version of this row produced, because the bad row persists and kills
+     * every later sweep.
+     * <p>
+     * Note what is no longer a sabotage: moving the {@code MerchantId.from} / {@code OrderId.from}
+     * calls back out of the try. Since V26 those ids cannot be malformed, so that edit is
+     * undetectable here. It is still wrong -- the parse belongs inside the boundary with everything
+     * else that can throw -- but this test is not what would catch it.
      */
     @Test
     void expiresTheGoodOrdersEvenWhenACandidateRowCannotBeMapped() {
@@ -432,32 +448,26 @@ class OrderExpiryIntegrationTest {
     }
 
     /**
-     * A row no mapper can rehydrate, inserted the only way one can exist: straight through JDBC,
-     * with an id the application would never mint. Its deadline is the oldest in the table, so it
-     * sorts to the head of the candidate batch -- which is what made the original bug total rather
-     * than partial.
+     * A row no mapper can rehydrate, inserted the only way one can exist: straight through JDBC.
+     * <p>
+     * Every identifier on it is well-formed -- V26 requires that now. What the mapper chokes on is
+     * {@code metadata}, which the entity reads as a {@code Map} and which this sets to a JSON
+     * ARRAY. Nothing forbids that: the column is plain JSONB with no shape constraint, so
+     * {@code '[]'::jsonb} is a value PostgreSQL stores happily and Hibernate cannot hand back.
+     * <p>
+     * Its deadline is the oldest in the table, so it sorts to the head of the candidate batch --
+     * which is what made the original bug total rather than partial.
      */
     private void unmappableExpiringOrder() {
-        // Unique, because merchant_id is the primary key and another test in another class plants
-        // one of these too. Malformed either way: MerchantId.from wants "mrc_" + a bare UUID.
-        // "bad-" + UUID is exactly 40 characters, which is the column width.
-        String malformedMerchantId = "bad-" + UUID.randomUUID();
-
-        jdbc.update("""
-            insert into merchants
-                (merchant_id, business_name, email, country, default_currency, status,
-                 created_at, updated_at)
-            values (?, 'Corrupt Co', ?, 'IN', 'INR', 'ACTIVE', ?, ?)
-            """, malformedMerchantId, UUID.randomUUID() + "@paymesh.test",
-            Timestamp.from(CREATED_AT), Timestamp.from(CREATED_AT));
+        MerchantId merchantId = existingMerchant();
 
         jdbc.update("""
             insert into orders
                 (order_id, merchant_id, amount_minor, amount_paid_minor, currency, status,
                  metadata, version, expires_at, created_at, updated_at)
-            values (?, ?, ?, 0, 'INR', 'PENDING', '{}'::jsonb, 0, ?, ?, ?)
+            values (?, ?, ?, 0, 'INR', 'PENDING', '[]'::jsonb, 0, ?, ?, ?)
             """,
-            "ord_" + UUID.randomUUID(), malformedMerchantId, ORDER_AMOUNT_MINOR,
+            OrderId.generate().value(), merchantId.value(), ORDER_AMOUNT_MINOR,
             Timestamp.from(EXPIRES_AT.minus(Duration.ofDays(1))),
             Timestamp.from(CREATED_AT), Timestamp.from(CREATED_AT));
     }

@@ -39,10 +39,24 @@ public interface SpringDataOutboxRepository extends JpaRepository<OutboxEventJpa
      * single-threaded reader is about to process serially would buy nothing. It is the upgrade path
      * if a second instance ever runs; the inbox already makes concurrent delivery safe rather than
      * merely unlikely, so this would be an efficiency change and not a correctness one.
+     *
+     * <h2>COLUMNS, NOT THE ENTITY, AND {@code payload} AS TEXT</h2>
+     *
+     * This returned {@code List<OutboxEventJpaEntity>}, which meant Hibernate deserialized the
+     * JSONB {@code payload} into a {@code Map} as each entity materialized -- <b>inside this call</b>,
+     * which is outside the relay's per-item try/catch. A payload that is not a JSON object (an
+     * array, say: legal JSONB, no CHECK forbids it) therefore threw out of the whole pass, and the
+     * poisoned row is the OLDEST so it led every subsequent batch. The relay was the sixth instance
+     * of open item 2 and the one that looked immune, because {@code UnpublishedEvent} was careful to
+     * keep the *identifiers* raw and never noticed the payload arriving already-parsed.
+     * <p>
+     * Selecting {@code payload::text} keeps it a string all the way to {@code toEvent()}, which is
+     * the one place this row is allowed to throw.
      */
     @Query(
         value = """
-            select *
+            select event_id, merchant_id, aggregate_type, aggregate_id, event_type,
+                   event_version, payload::text, occurred_at, attempt_count
               from outbox_events
              where published_at is null
                and dead_lettered_at is null
@@ -51,7 +65,7 @@ public interface SpringDataOutboxRepository extends JpaRepository<OutboxEventJpa
             """,
         nativeQuery = true
     )
-    List<OutboxEventJpaEntity> findUnpublished(@Param("limit") int limit);
+    List<Object[]> findUnpublished(@Param("limit") int limit);
 
     /**
      * Records one failed delivery attempt and, on the attempt that exhausts the budget, gives up.

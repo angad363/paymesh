@@ -4,9 +4,10 @@ import com.paymesh.shared.outbox.application.OutboxReader;
 import com.paymesh.shared.outbox.application.UnpublishedEvent;
 import com.paymesh.shared.outbox.domain.EventId;
 
+import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.List;
-import java.util.Map;
 
 /**
  * PostgreSQL-backed implementation of the relay's read/stamp port.
@@ -66,26 +67,44 @@ public final class JpaOutboxReader implements OutboxReader {
     }
 
     /**
-     * Column-for-column, with no validation of any kind -- that is the contract.
+     * Column-for-column, with no validation and <b>no parsing</b> of any kind -- that is the
+     * contract, and the second half of it is what this class originally broke.
      * <p>
-     * A null payload is mapped to an empty map rather than passed through: {@code payload} is
-     * {@code NOT NULL} in the schema, so a null here would be corruption, and letting it reach a
-     * consumer as a NullPointerException deep inside a handler is a worse way to learn that than an
-     * empty map the handler refuses.
+     * The candidate query returns columns rather than entities specifically so nothing here
+     * deserializes: {@code payload} arrives as the raw {@code ::text} of the JSONB column and stays
+     * a string until {@code UnpublishedEvent.toEvent} parses it inside the relay's per-item try. A
+     * mapper call in this method would be outside that boundary, which is exactly the shape open
+     * item 2 is about.
      */
-    private static UnpublishedEvent toRow(OutboxEventJpaEntity entity) {
-        Map<String, Object> payload = entity.payload();
-
+    private static UnpublishedEvent toRow(Object[] row) {
         return new UnpublishedEvent(
-            entity.eventId(),
-            entity.merchantId(),
-            entity.aggregateType(),
-            entity.aggregateId(),
-            entity.eventType(),
-            entity.eventVersion(),
-            payload == null ? Map.of() : payload,
-            entity.occurredAt(),
-            entity.attemptCount()
+            (String) row[0],
+            (String) row[1],
+            (String) row[2],
+            (String) row[3],
+            (String) row[4],
+            ((Number) row[5]).intValue(),
+            (String) row[6],
+            toInstant(row[7]),
+            ((Number) row[8]).intValue()
         );
+    }
+
+    /**
+     * {@code occurred_at} is {@code timestamptz}. A native query hands that back as whatever the
+     * driver prefers -- {@link OffsetDateTime} on the PostgreSQL driver, {@link Timestamp} on
+     * others -- and neither is an {@link Instant}, so the conversion is explicit rather than a cast
+     * that works until the day it does not.
+     */
+    private static Instant toInstant(Object value) {
+        return switch (value) {
+            case Instant instant -> instant;
+            case OffsetDateTime offset -> offset.toInstant();
+            case Timestamp timestamp -> timestamp.toInstant();
+            case null -> null;
+            default -> throw new IllegalStateException(
+                "Unexpected occurred_at type " + value.getClass()
+            );
+        };
     }
 }

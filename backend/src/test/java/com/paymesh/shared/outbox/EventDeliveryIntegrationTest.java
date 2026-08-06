@@ -340,14 +340,28 @@ class EventDeliveryIntegrationTest {
     /**
      * ONE UNMAPPABLE ROW MUST NOT WEDGE THE RELAY, against the real table this time.
      * <p>
-     * The poisoned row is written by raw JDBC with an {@code event_version} of 0 -- the domain and
-     * {@code ck_outbox_events_version} both refuse it, so nothing in the application can produce it,
-     * which is why the insert bypasses the application entirely. It is the OLDEST unpublished row, so
-     * it sits at the head of the batch and would take everything behind it down with it.
+     * The poisoned row is written by raw JDBC with a {@code payload} of {@code []} -- legal JSONB
+     * that no CHECK forbids, and which the relay reads as a {@code Map}. Nothing in the application
+     * can produce it, which is why the insert bypasses the application entirely. It is the OLDEST
+     * unpublished row, so it sits at the head of the batch and would take everything behind it down.
+     *
+     * <h2>THIS TEST USED TO POISON THE {@code event_id}, AND THAT IS WHY IT MATTERS</h2>
+     *
+     * V26 gave every identifier column a format CHECK, so a malformed {@code event_id} is no longer
+     * insertable and {@code toEvent}'s {@code EventId.from} can no longer throw. Rewriting this
+     * around the only remaining door found that <b>the relay did not survive that door</b>: the
+     * candidate query returned entities, so Hibernate deserialized the JSONB payload while
+     * materializing each one -- inside the repository call, outside the per-item try. The relay was
+     * the sixth instance of open item 2, and the one whose own javadoc claimed immunity because it
+     * was careful about identifiers and never noticed the payload arriving already parsed.
      * <p>
-     * <b>Sabotage that must turn this red:</b> move {@code row.toEvent()} above the {@code try} in
-     * {@code PublishOutboxEventsService.publish} -- the shape open item 2 describes in both existing
-     * sweeps. The whole pass then throws and the healthy order never reaches PAID.
+     * (The javadoc here also claimed the poison was an {@code event_version} of 0. It never was;
+     * {@code ck_outbox_events_version} would have rejected that insert outright.)
+     *
+     * <p><b>Sabotage that must turn this red:</b> move {@code row.toEvent(json)} above the
+     * {@code try} in {@code PublishOutboxEventsService.publish}, or make {@code findUnpublished}
+     * select {@code payload} rather than {@code payload::text}. Either way the whole pass throws
+     * and the healthy order never reaches PAID.
      */
     @Test
     void drainsTheRestOfTheBatchWhenOneRowCannotBeMapped() {
@@ -768,10 +782,10 @@ class EventDeliveryIntegrationTest {
                 insert into outbox_events (event_id, merchant_id, aggregate_type, aggregate_id,
                                            event_type, event_version, payload, occurred_at)
                 values (?, ?, 'PAYMENT_INTENT', 'pi_corrupt', 'payment.succeeded', 1,
-                        cast('{}' as jsonb), ?)
+                        cast('[]' as jsonb), ?)
                 """)
             .params(
-                "not-an-event-id",
+                EventId.generate().value(),
                 merchantId.value(),
                 // OffsetDateTime, not Instant: the JDBC driver cannot infer a SQL type for the
                 // latter. Hibernate can, which is why the application's own writes do not need this.
