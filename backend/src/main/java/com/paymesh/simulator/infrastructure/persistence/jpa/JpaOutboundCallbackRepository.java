@@ -24,10 +24,9 @@ public final class JpaOutboundCallbackRepository implements OutboundCallbackRepo
     }
 
     @Override
-    public List<OutboundCallback> findDue(Instant now, int limit) {
-        return callbacks.findDue(now, PageRequest.of(0, limit)).stream()
-            .map(SimulatorJpaMapper::toDomain)
-            .toList();
+    public List<String> findDue(Instant now, int limit) {
+        // RAW ids: mapping here would sit outside the dispatcher's per-item try/catch. See the port.
+        return callbacks.findDue(now, PageRequest.of(0, limit));
     }
 
     @Override

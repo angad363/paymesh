@@ -23,13 +23,17 @@ public interface SpringDataOutboundCallbackRepository
      * pairs deterministic: their second row is enqueued a millisecond later precisely so this
      * ordering has something to sort on. {@code createdAt} and the id break remaining ties so the
      * query is stable rather than merely usually stable.
+     * <p>
+     * IDENTIFIERS, NOT ENTITIES: the dispatcher claims each row under a lock and used nothing else
+     * off the candidate, so mapping here was discarded work done outside its per-item try/catch.
+     * Open item 2.
      */
     @Query("""
-        select c from OutboundCallbackJpaEntity c
+        select c.outboundCallbackId from OutboundCallbackJpaEntity c
          where c.status = 'PENDING' and c.deliverAfter <= :now
          order by c.deliverAfter, c.createdAt, c.outboundCallbackId
         """)
-    List<OutboundCallbackJpaEntity> findDue(@Param("now") Instant now, org.springframework.data.domain.Pageable page);
+    List<String> findDue(@Param("now") Instant now, org.springframework.data.domain.Pageable page);
 
     /**
      * Claims one row: {@code SELECT ... FOR UPDATE SKIP LOCKED} with the status re-checked.

@@ -2,6 +2,7 @@ package com.paymesh.order.infrastructure.persistence.jpa;
 
 import com.paymesh.order.application.OrderCursor;
 import com.paymesh.order.application.OrderReferenceAlreadyExistsException;
+import com.paymesh.order.application.ExpirableOrder;
 import com.paymesh.order.application.OrderRepository;
 import com.paymesh.order.domain.Order;
 import com.paymesh.order.domain.OrderId;
@@ -87,9 +88,11 @@ public final class JpaOrderRepository implements OrderRepository {
     }
 
     @Override
-    public List<Order> findExpirable(Instant now, int limit) {
+    public List<ExpirableOrder> findExpirable(Instant now, int limit) {
         return orders.findExpirable(now, Limit.of(limit)).stream()
-            .map(OrderJpaMapper::toDomain)
+            // UNPARSED on purpose -- MerchantId.from and OrderId.from throw, and a throwing
+            // call here is outside the sweep's per-item boundary. See ExpirableOrder.
+            .map(row -> new ExpirableOrder((String) row[0], (String) row[1]))
             .toList();
     }
 }

@@ -14,6 +14,8 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -43,6 +45,54 @@ class TimeOutProcessingPaymentsServiceTest {
     private final Fakes.RecordingOutbox outbox = new Fakes.RecordingOutbox(transactions);
 
     private final TimeOutProcessingPaymentsService service = serviceWithBatchSize(100);
+
+    // --- one bad row ----------------------------------------------------------------------------
+
+    /**
+     * A CANDIDATE ID THE VALUE OBJECT REFUSES COSTS ONE INTENT, NOT THE SWEEP. Open item 2.
+     *
+     * <p>{@code PaymentIntentId.from} throws on anything that is not {@code pi_uuid}, and
+     * {@code payment_intents.payment_intent_id} is {@code VARCHAR(40)} with no format CHECK -- so
+     * this is a row PostgreSQL accepts. Longest-stranded first means it leads every batch, so
+     * before the fix it threw out of {@code sweep()} before a single intent was examined, forever.
+     *
+     * <p><b>Sabotage that must turn this red:</b> move the {@code PaymentIntentId.from} call out of
+     * the {@code try} in {@code sweep()}.
+     */
+    @Test
+    void timesOutTheGoodIntentsEvenWhenACandidateIdCannotBeParsed() {
+        // One id the value object refuses, at the head of the batch where the oldest row sits.
+        InMemoryPaymentIntentRepository malformedFirst = new InMemoryPaymentIntentRepository() {
+            @Override
+            public List<String> findStrandedInProcessing(Instant confirmedBefore, int limit) {
+                List<String> candidates = new ArrayList<>();
+                candidates.add("not-a-payment-intent-id");
+                candidates.addAll(super.findStrandedInProcessing(confirmedBefore, limit));
+
+                return candidates;
+            }
+        };
+
+        MerchantId merchantId = MerchantId.generate();
+        PaymentIntentId healthy = malformedFirst.save(
+            newIntent(merchantId)
+                .attach(PaymentMethodType.CARD, NOW.minus(AGE).minusSeconds(60))
+                .confirm(NOW.minus(AGE).minusSeconds(60))
+        ).paymentIntentId();
+
+        SweepResult result = new TimeOutProcessingPaymentsService(
+            malformedFirst, history, outbox, transactions,
+            Clock.fixed(NOW, ZoneOffset.UTC), AGE, 100
+        ).sweep();
+
+        assertEquals(1, result.errored(), "the unparseable id is one failure");
+        assertEquals(1, result.failed(), "and the intent behind it was still timed out");
+
+        assertEquals(
+            PaymentIntentStatus.FAILED,
+            malformedFirst.findByPaymentIntentId(merchantId, healthy).orElseThrow().status()
+        );
+    }
 
     // --- it fires -------------------------------------------------------------------------
 

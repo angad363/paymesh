@@ -1,8 +1,9 @@
 package com.paymesh.payment.application;
 
-import com.paymesh.payment.domain.PaymentIntent;
+import com.paymesh.payment.domain.PaymentIntentId;
 import com.paymesh.payment.domain.PaymentIntentNotCancellableException;
 import com.paymesh.payment.domain.PaymentStateChange;
+import com.paymesh.shared.tenant.MerchantId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -81,22 +82,26 @@ public final class CancelAbandonedPaymentIntentsService {
         Instant now = Instant.now(clock);
         Instant cutoff = now.minus(age);
 
-        List<PaymentIntent> candidates =
+        // IDENTIFIERS, so there is nothing left to map before the per-item boundary below.
+        List<AbandonedIntent> candidates =
             paymentIntents.findAbandonedBeforeConfirmation(cutoff, batchSize);
 
         int cancelled = 0;
         int held = 0;
         int errored = 0;
 
-        for (PaymentIntent candidate : candidates) {
+        for (AbandonedIntent candidate : candidates) {
             try {
                 // The merchant is read off the candidate row, never supplied -- the same rule the
                 // other two sweeps follow. The cancel it delegates to re-reads the intent under a row
                 // lock and asks the aggregate again, so a customer who returns between this query and
                 // that lock is served rather than cancelled underneath.
+                //
+                // PARSED HERE, INSIDE THE TRY. Both calls validate and throw, and a malformed id is
+                // a row the database accepts -- no id column has a format CHECK. Open item 2.
                 cancelPaymentIntent.cancel(
-                    candidate.merchantId(),
-                    candidate.paymentIntentId(),
+                    MerchantId.from(candidate.merchantId()),
+                    PaymentIntentId.from(candidate.paymentIntentId()),
                     REASON,
                     PaymentStateChange.ActorType.SYSTEM,
                     ACTOR
@@ -114,8 +119,9 @@ public final class CancelAbandonedPaymentIntentsService {
                 // which is the same starvation this class exists to remove.
                 errored++;
                 log.warn(
-                    "Could not cancel abandoned payment intent {}",
-                    candidate.paymentIntentId().value(),
+                    "Could not cancel abandoned payment intent {} for merchant {}",
+                    candidate.paymentIntentId(),
+                    candidate.merchantId(),
                     failure
                 );
             }

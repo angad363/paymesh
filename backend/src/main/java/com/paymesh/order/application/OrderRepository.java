@@ -73,5 +73,5 @@ public interface OrderRepository {
      * @param limit the batch size, so one sweep cannot load an unbounded backlog into memory
      * @return PENDING orders past their expiry, oldest deadline first, across all merchants
      */
-    List<Order> findExpirable(Instant now, int limit);
+    List<ExpirableOrder> findExpirable(Instant now, int limit);
 }

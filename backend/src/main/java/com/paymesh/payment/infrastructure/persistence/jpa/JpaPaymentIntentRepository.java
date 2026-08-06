@@ -1,5 +1,6 @@
 package com.paymesh.payment.infrastructure.persistence.jpa;
 
+import com.paymesh.payment.application.AbandonedIntent;
 import com.paymesh.payment.application.OrderHasActivePaymentIntentException;
 import com.paymesh.payment.application.PaymentIntentCursor;
 import com.paymesh.payment.application.PaymentIntentRepository;
@@ -113,17 +114,19 @@ public final class JpaPaymentIntentRepository implements PaymentIntentRepository
     }
 
     @Override
-    public List<PaymentIntent> findStrandedInProcessing(Instant confirmedBefore, int limit) {
-        return paymentIntents.findStrandedInProcessing(confirmedBefore, Limit.of(limit)).stream()
-            .map(PaymentIntentJpaMapper::toDomain)
-            .toList();
+    public List<String> findStrandedInProcessing(Instant confirmedBefore, int limit) {
+        // RAW, unparsed: PaymentIntentId.from validates and throws, and the sweep's per-item
+        // try/catch is the only place that may happen. Open item 2.
+        return paymentIntents.findStrandedInProcessing(confirmedBefore, Limit.of(limit));
     }
 
     @Override
-    public List<PaymentIntent> findAbandonedBeforeConfirmation(Instant untouchedBefore, int limit) {
+    public List<AbandonedIntent> findAbandonedBeforeConfirmation(Instant untouchedBefore, int limit) {
         return paymentIntents.findAbandonedBeforeConfirmation(untouchedBefore, Limit.of(limit))
             .stream()
-            .map(PaymentIntentJpaMapper::toDomain)
+            // UNPARSED on purpose -- MerchantId.from and PaymentIntentId.from throw, and a throwing
+            // call here is outside the sweep's per-item boundary. See AbandonedIntent.
+            .map(row -> new AbandonedIntent((String) row[0], (String) row[1]))
             .toList();
     }
 

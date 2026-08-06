@@ -72,27 +72,31 @@ public final class DeliverWebhooksService {
      * than the whole batch being held for the duration of every HTTP call in it.
      */
     public DispatchResult dispatch() {
-        List<WebhookDeliveryId> due = deliveries.findDue(Instant.now(clock), batchSize);
+        // RAW IDS, so there is nothing left to map or parse before the per-item boundary below.
+        List<String> due = deliveries.findDue(Instant.now(clock), batchSize);
 
         int delivered = 0;
         int retried = 0;
         int dead = 0;
         int errored = 0;
 
-        for (WebhookDeliveryId deliveryId : due) {
+        for (String candidate : due) {
             Attempt attempt;
 
             try {
-                attempt = deliverOne(deliveryId);
+                // ID PARSED HERE, INSIDE THE TRY. WebhookDeliveryId.from validates and throws, and
+                // webhook_deliveries.webhook_delivery_id has no format CHECK.
+                attempt = deliverOne(WebhookDeliveryId.from(candidate));
             } catch (RuntimeException failure) {
                 // ONE BAD ROW MUST NOT DISABLE THE PASS. An optimistic-lock collision with a
-                // concurrent PATCH of the endpoint, a row the mapper cannot rehydrate, a
-                // constraint nobody predicted: each costs one delivery, which is still PENDING
-                // and will be picked up next pass. Open item 2 in docs/project-status.md is the
-                // same mistake made in two existing sweeps -- there the mapping sits OUTSIDE the
-                // per-item boundary, so one unmappable row stops the sweep permanently and
-                // silently. That is why findDue returns ids.
-                log.error("Webhook delivery {} threw and will be retried", deliveryId.value(), failure);
+                // concurrent PATCH of the endpoint, a row the mapper cannot rehydrate, an id the
+                // parser refuses, a constraint nobody predicted: each costs one delivery, which is
+                // still PENDING and will be picked up next pass. Open item 2 in
+                // docs/project-status.md is the same mistake made in the older sweeps -- there the
+                // mapping sat OUTSIDE the per-item boundary, so one unmappable row stopped the
+                // sweep permanently and silently. That is why findDue returns raw strings: an id
+                // this loop cannot parse is one delivery lost, not the dispatcher.
+                log.error("Webhook delivery {} threw and will be retried", candidate, failure);
 
                 errored++;
 

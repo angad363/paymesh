@@ -89,16 +89,33 @@ public final class DispatchProviderCallbacksService {
      */
     public DispatchResult dispatch() {
         Instant now = Instant.now(clock);
-        List<String> due = callbacks.findDue(now, batchSize).stream()
-            .map(OutboundCallback::outboundCallbackId)
-            .toList();
+        // IDS, so there is nothing left to map before the per-item boundary below.
+        List<String> due = callbacks.findDue(now, batchSize);
 
         int delivered = 0;
         int retried = 0;
         int abandoned = 0;
+        int errored = 0;
 
         for (String callbackId : due) {
-            switch (deliverOne(callbackId)) {
+            Attempt attempt;
+
+            try {
+                attempt = deliverOne(callbackId);
+            } catch (RuntimeException failure) {
+                // ONE BAD ROW MUST NOT DISABLE THE PASS. The claim inside deliverOne is the first
+                // time this row is mapped, so a row the mapper cannot rehydrate throws HERE rather
+                // than out of dispatch() -- and it is still PENDING, so the next pass retries it.
+                // Without this the oldest such row leads every batch and the simulator delivers
+                // nothing again, which in a demo reads as "payments stopped settling". Open item 2.
+                errored++;
+
+                log.warn("Provider callback {} threw and will be retried", callbackId, failure);
+
+                continue;
+            }
+
+            switch (attempt) {
                 case DELIVERED -> delivered++;
                 case RETRIED -> retried++;
                 case ABANDONED -> abandoned++;
@@ -109,7 +126,7 @@ public final class DispatchProviderCallbacksService {
             }
         }
 
-        return new DispatchResult(due.size(), delivered, retried, abandoned);
+        return new DispatchResult(due.size(), delivered, retried, abandoned, errored);
     }
 
     private Attempt deliverOne(String callbackId) {
@@ -162,7 +179,15 @@ public final class DispatchProviderCallbacksService {
         GONE
     }
 
-    /** What one pass did. Counted so the scheduled bean can log something worth reading. */
-    public record DispatchResult(int examined, int delivered, int retried, int abandoned) {
+    /**
+     * What one pass did. Counted so the scheduled bean can log something worth reading.
+     *
+     * @param errored rows that threw and were left PENDING for the next pass. Non-zero here means
+     *     the pass survived something it previously would have died on, so it is worth a log line
+     *     rather than silence.
+     */
+    public record DispatchResult(
+        int examined, int delivered, int retried, int abandoned, int errored
+    ) {
     }
 }

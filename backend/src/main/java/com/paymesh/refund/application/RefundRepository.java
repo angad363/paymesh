@@ -34,5 +34,5 @@ public interface RefundRepository {
      * Oldest first so a backlog drains in the order it accumulated, and bounded so one pass cannot
      * take an unbounded lock footprint.
      */
-    List<Refund> findProcessingOlderThan(java.time.Instant threshold, int limit);
+    List<String> findProcessingOlderThan(java.time.Instant threshold, int limit);
 }

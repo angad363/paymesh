@@ -2,6 +2,7 @@ package com.paymesh.refund.application;
 
 import com.paymesh.refund.domain.Refund;
 import com.paymesh.refund.domain.RefundStateChange;
+import com.paymesh.refund.domain.RefundId;
 import com.paymesh.refund.domain.RefundStatus;
 import com.paymesh.shared.outbox.application.OutboxWriter;
 import com.paymesh.shared.outbox.domain.EventId;
@@ -92,16 +93,21 @@ public final class TimeOutProcessingRefundsService {
      */
     public SweepResult sweep() {
         Instant now = Instant.now(clock);
-        List<Refund> stale = refunds.findProcessingOlderThan(now.minus(age), batchSize);
+        // IDENTIFIERS, so there is nothing left to map before the per-item boundary below.
+        List<String> stale = refunds.findProcessingOlderThan(now.minus(age), batchSize);
 
         int failed = 0;
         int errored = 0;
 
-        for (Refund refund : stale) {
+        for (String candidate : stale) {
             try {
+                // Parsed inside the try: RefundId.from validates, and refunds.refund_id has no
+                // format CHECK. Open item 2.
+                RefundId refundId = RefundId.from(candidate);
+
                 // Each in its own transaction, so one failure does not roll back the ones before it.
                 transactions.execute(status -> {
-                    failOne(refund, now);
+                    failOne(refundId, now);
                     return null;
                 });
 
@@ -111,7 +117,7 @@ public final class TimeOutProcessingRefundsService {
 
                 log.warn(
                     "Could not time out refund refundId={}: {}",
-                    refund.refundId().value(), exception.getMessage()
+                    candidate, exception.getMessage()
                 );
             }
         }
@@ -119,10 +125,12 @@ public final class TimeOutProcessingRefundsService {
         return new SweepResult(stale.size(), failed, errored);
     }
 
-    private void failOne(Refund refund, Instant now) {
+    private void failOne(RefundId refundId, Instant now) {
         // Re-read under a lock: a callback may have settled it between the query and here, and
         // failing a refund the provider just succeeded would be the worst outcome this class has.
-        Refund locked = refunds.findForUpdate(refund.refundId()).orElse(null);
+        // The candidate query returns only this id, so this read is also the FIRST time the row is
+        // mapped -- and it happens inside the caller's try, which is the point of open item 2.
+        Refund locked = refunds.findForUpdate(refundId).orElse(null);
 
         if (locked == null || locked.status() != RefundStatus.PROCESSING) {
             return;

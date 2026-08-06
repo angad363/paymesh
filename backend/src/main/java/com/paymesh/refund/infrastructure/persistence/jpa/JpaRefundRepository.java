@@ -75,11 +75,10 @@ public final class JpaRefundRepository implements RefundRepository {
     }
 
     @Override
-    public List<Refund> findProcessingOlderThan(Instant threshold, int limit) {
-        return refunds.findProcessingOlderThan(threshold, Limit.of(limit))
-            .stream()
-            .map(RefundJpaMapper::toDomain)
-            .toList();
+    public List<String> findProcessingOlderThan(Instant threshold, int limit) {
+        // RAW, unparsed: RefundId.from validates and throws, and the sweep's per-item try/catch is
+        // the only place that may happen. Open item 2.
+        return refunds.findProcessingOlderThan(threshold, Limit.of(limit));
     }
 
     @Override
