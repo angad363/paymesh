@@ -25,9 +25,9 @@ A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliv
 consumers, and Order is the first consumer (ADR-016).
 
 **1324 tests, 0 failures.** Twenty-five Flyway migrations (V1–V25). Twenty-eight ADRs. The Postman
-collection runs **seventeen folders green** (a newman run executes 233 requests and 566 assertions;
-the count varies because the polling requests re-run themselves) — the newest showing an order
-paid and a signed webhook delivery queued for it without anyone calling a webhook endpoint.
+collection runs **seventeen folders green** (a newman run executes 233–234 requests and 566–567
+assertions; the count varies because the polling requests re-run themselves) — the newest showing an
+order paid and a signed webhook delivery queued for it without anyone calling a webhook endpoint.
 
 **Phase 2 has started.** See `docs/phase-2-plan.md` for the eight-PR plan and "What comes next"
 below for where it stands. **PR 0 (ADR-027) is merged** as PR #54. **PR 1, Webhook (ADR-028), is
@@ -672,6 +672,19 @@ failing test._
    fix whose own documentation claimed to be exhaustive and was not. The lesson is narrow and
    worth stating — "I fixed every instance" is a claim about a search, and a search nobody
    re-ran is a claim nobody checked.
+
+   **Also proved outside the suite**, against the local V25 database with rows already in it: a
+   malformed-merchant order planted so it held the oldest deadline, then the sweep enabled.
+
+   ```
+   WARN  ExpireOrdersService  : Could not expire order orderId=ord_925f588c… merchantId=bad-live-check-0001
+   INFO  OrderExpirySweeper   : Order expiry sweep examined=2 expired=1 held=0 failed=1
+   ```
+
+   The bad row is examined, warned about and counted — and **the healthy order behind it reached
+   `EXPIRED`**. Before the fix that first tick threw out of `sweep()` and expired nothing, on that
+   tick and every tick after it. Every later pass reads `examined=1 failed=1`: a permanently bad
+   row costs one order per sweep, which is the whole point.
 3. **ADR-014's race guard depends on `READ COMMITTED` and nothing says so.** The expiry sweep
    takes the order's row lock and then does an *unlocked* read of `payment_intents`. It sees
    an intent committed while it waited on the lock only because each statement takes a fresh

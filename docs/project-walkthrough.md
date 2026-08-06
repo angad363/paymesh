@@ -713,7 +713,7 @@ Sanity check: `GET http://localhost:8080/actuator/health` → `{"status":"UP"}`.
 A Postman collection already exists at
 `docs/api/postman/paymesh.postman_collection.json`, with **17 folders and 229 requests**
 covering every route plus the failure cases. It's the fastest way to see everything work, and it
-passes clean: a full newman run executes **233 requests and 566 assertions, 0 failures**.
+passes clean: a full newman run executes **233–234 requests and 566–567 assertions, 0 failures**.
 
 (More executed than defined, because the polling requests re-run themselves with
 `postman.setNextRequest` until the timer they are waiting on fires.)
