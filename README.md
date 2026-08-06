@@ -41,7 +41,9 @@ tests bypass it and still pass, because the constraint is the guard.
 
 ## Current status
 
-**All eight of Phase 1's capabilities are built**, and Payment is feature-complete:
+**All nine of Phase 1's capabilities are built, and Phase 2 has started** — Webhook is in
+([ADR-028](docs/decisions/ADR-028-sign-webhooks-with-a-secret-that-is-never-stored.md)); Risk,
+Settlement, Notification and Reporting are not. Payment is feature-complete:
 create, attach, confirm, provider callbacks, capture and cancel, with order expiry and
 stranded-payment sweeps behind them. **Domain events are now delivered**: the outbox has a
 relay, an in-process dispatcher and a `processed_events` inbox, and Order consumes
@@ -67,10 +69,12 @@ the caller's role instead of discarding it
 | **Identity & Access** | Built | Access tokens are not revocable before expiry, so a suspension bites within fifteen minutes rather than instantly ([ADR-024](docs/decisions/ADR-024-disabling-people-at-two-scopes.md)) |
 | **Customer** | Built | No list/search. PII is **plaintext** — stored in the encrypted *shape*, not encrypted ([ADR-006](docs/decisions/ADR-006-defer-customer-pii-encryption.md)) |
 | **Order** | Built | Every status is now reachable: `CANCELLED` by request, `EXPIRED` by the sweeper, `PAID` / `PARTIALLY_PAID` by consuming `payment.succeeded` |
-| **Payment** | Built | No refunds, no reconciliation, one shared provider callback secret |
+| **Payment** | Built | One shared provider callback secret. Refunds and reconciliation now exist as their own capabilities, below |
 | **Provider Simulator** | Built | No payouts (Settlement is Phase 2), no refund callbacks (no receiver yet), no percentage-based failure injection ([ADR-017](docs/decisions/ADR-017-simulate-providers-through-scheduled-signed-callbacks.md)) |
 | **Ledger** | Built | Double-entry posting, refund reversals, and `GET /api/v1/balances`. No holds, no `account_balances` projection, no platform fee — there is no fee schedule to apply ([ADR-018](docs/decisions/ADR-018-post-the-ledger-from-events-with-the-invariants-in-the-database.md)) |
-| **Refund** | Built | No provider-simulator refund callbacks yet, no ops retry route. A lost callback now times out after six hours rather than holding head-room forever, but nothing reconciles against the provider's own record ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)) |
+| **Refund** | Built | No provider-simulator refund callbacks yet, no ops retry route. A lost callback times out after six hours rather than holding head-room forever ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)) |
+| **Reconciliation** | Built | Reads the simulator's day report and repairs what drifted. Payments and refunds only — no settlement file, no ledger-level reconciliation ([ADR-026](docs/decisions/ADR-026-reconcile-against-the-providers-record-by-replaying-it.md)) |
+| **Webhook** | Built | Phase 2's first. Merchant-facing endpoints, a signing secret **derived rather than stored**, and a scheduled dispatcher with its own retry budget. No per-attempt history table, no merchant-visible delivery log ([ADR-028](docs/decisions/ADR-028-sign-webhooks-with-a-secret-that-is-never-stored.md)) |
 
 Platform pieces, honestly:
 
@@ -82,7 +86,8 @@ Platform pieces, honestly:
 | Double-entry ledger | Working for captures **and refund reversals**. Debits equal credits, entries are immutable, and both rules are enforced by PostgreSQL triggers rather than by application code. A correction is a new journal, never an edit |
 | Kafka | None, deliberately — the **consumer contract** is the one a broker needs (envelope in, inbox dedup, idempotent handler), so the transport can be swapped without touching a consumer ([ADR-016](docs/decisions/ADR-016-in-process-event-dispatch-before-kafka.md)) |
 | API keys | Working. `Authorization: ApiKey ak_…`, hashed secrets returned once, revocable, and subject to the same role and merchant-status rules as a human caller |
-| Redis, rate limiting, HMAC webhooks | None |
+| HMAC webhooks | Working. Merchant endpoints, `pmsec_` signing secrets derived per endpoint and never stored, an event-to-wire translator, and a scheduled dispatcher with SSRF guards and its own retry budget ([ADR-028](docs/decisions/ADR-028-sign-webhooks-with-a-secret-that-is-never-stored.md)) |
+| Redis, rate limiting | None |
 | Observability | `/actuator/health` and `/actuator/info` only |
 
 **A merchant now has a balance**, and until this release nothing in this codebase moved one:
@@ -472,22 +477,26 @@ conflict and it matters, surface the divergence rather than silently picking one
 
 ## Roadmap
 
-**Phase 1 is complete.** A payment can be raised, collected, recorded in a double-entry
-ledger and given back, with a fake provider driving the whole loop over real HTTP.
+**Phase 1 is complete, and Phase 2 has started.** A payment can be raised, collected,
+recorded in a double-entry ledger, given back, reconciled against the provider's own record,
+and announced to the merchant over a signed webhook — with a fake provider driving the whole
+loop over real HTTP.
 
-What comes next is not another capability but the operational half nobody has built:
+The operational half that was called out as missing here has since been built:
 
-- **Reconciliation.** A refund whose callback never arrives stays `PROCESSING` forever,
-  holding its amount against the captured total. Payment has a timeout sweeper (ADR-015);
-  Refund has no equivalent, and the simulator's reconciliation file (ADR-017) still has no
-  job reading it.
-- **Event-delivery operations.** An event that fails to deliver is retried forever with no
-  dead-letter and no alert — named in ADR-016 as the largest hole in the design and still
-  open.
+- ~~**Reconciliation.**~~ Closed. Refund got the timeout sweeper it lacked, so a refund
+  whose callback never arrives no longer holds its amount forever, and
+  [ADR-026](docs/decisions/ADR-026-reconcile-against-the-providers-record-by-replaying-it.md)
+  gave the simulator's day report a job that reads it and repairs what drifted.
+- ~~**Event-delivery operations.**~~ Closed by
+  [ADR-025](docs/decisions/ADR-025-give-up-on-an-outbox-event-rather-than-freezing-its-aggregate.md):
+  an event that exhausts its retry budget is given up on and dead-lettered rather than
+  retried forever behind the aggregate it would otherwise freeze.
 - **Refund callbacks from the simulator**, so the last hand-signed request in the test
   suite can go away.
 
-Then Phase 2, in SDD order: Risk, Settlement, Webhook, Notification, Reporting.
+Then the rest of Phase 2, in SDD order: Risk, Settlement, Notification, Reporting. **Webhook
+is already built** — it was Phase 2's first, not its third.
 
 The Ledger will still be the last thing extracted into a service (SDD §30.1). It is the
 financial source of truth — double-entry, immutable entries, corrections as reversal
