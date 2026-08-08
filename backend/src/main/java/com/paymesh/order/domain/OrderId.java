@@ -35,7 +35,7 @@ public record OrderId(String value) {
         try {
             UUID uuid = UUID.fromString(uuidPart);
 
-            if (!uuid.toString().equalsIgnoreCase(uuidPart)) {
+            if (!uuid.toString().equals(uuidPart)) {
                 throw new IllegalArgumentException("Order Identifier contains an invalid UUID");
             }
         } catch (IllegalArgumentException exception) {

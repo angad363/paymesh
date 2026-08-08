@@ -30,7 +30,7 @@
 -- is still a row no mapper can rehydrate. Constraints narrow the input space;
 -- they do not close it.
 --
--- APPLIED AGAINST DATA. All 62 pairs below were checked against a populated
+-- APPLIED AGAINST DATA. All 63 pairs below were checked against a populated
 -- V25 database before this was written: zero violating rows. This migration
 -- therefore needs no data repair step, and if it ever fails on someone else's
 -- database the failure is the point -- it found an identifier nobody could
@@ -41,8 +41,8 @@
 -- -----------------------------------------------------------------------------
 -- The shared predicate.
 --
--- ONE FUNCTION RATHER THAN THE REGEX WRITTEN 62 TIMES. Only the prefix varies
--- between these columns, so inlining the pattern would mean 62 chances to
+-- ONE FUNCTION RATHER THAN THE REGEX WRITTEN 63 TIMES. Only the prefix varies
+-- between these columns, so inlining the pattern would mean 63 chances to
 -- fat-finger a character class in a way no test would notice -- a subtly wrong
 -- regex still accepts every id the application mints, and only misbehaves on
 -- the malformed row this whole migration exists to reject.
@@ -53,12 +53,21 @@
 -- columns below are legitimately nullable (`orders.customer_id` on a guest
 -- checkout, for one) and a NULL is an absent identifier, not a malformed one.
 --
--- Lowercase hex only, and no version nibble pinned. `XxxId.from` parses with
--- `UUID.fromString` and then compares `uuid.toString()` back against the
--- input, so it accepts exactly the canonical lowercase 8-4-4-4-12 form and
--- nothing else -- not uppercase, not the braced or urn: spellings Java's
--- parser otherwise tolerates. It does not check the version, so neither does
--- this; pinning `4` here would reject a v7 id the application would accept.
+-- Lowercase hex only, and no version nibble pinned, to match `XxxId.from`
+-- exactly. It does not check the UUID version, so neither does this: pinning
+-- `4` would reject a v7 id the application would accept.
+--
+-- THE JAVA HALF DID NOT MATCH WHEN THIS WAS WRITTEN, AND WAS FIXED TO.
+-- Fifteen of the eighteen id types round-tripped with `equalsIgnoreCase`, so
+-- they accepted `mrc_550E8400-...` as well as `mrc_550e8400-...`; the other
+-- three (`ApiCredentialId`, `KycSubmissionId`, `PaymentMethodTokenId`) called
+-- `UUID.fromString` and discarded the result, which also let through padded
+-- shorthand like `apc_1-1-1-1-1` that the parser silently expands. This
+-- constraint was therefore STRICTER than the type it claims to mirror.
+--
+-- The constraint is the correct half. These columns are primary keys, and two
+-- accepted spellings of one UUID is two rows for one thing. All eighteen now
+-- round-trip with `equals`, so the two agree.
 -- -----------------------------------------------------------------------------
 CREATE FUNCTION is_prefixed_id(value text, prefix text)
     RETURNS boolean
@@ -180,13 +189,22 @@ ALTER TABLE provider_outbound_callbacks ADD CONSTRAINT ck_provider_outbound_call
 -- next person to read this file does not have to work out whether they were
 -- missed or excluded.
 --
---   outbox_events.aggregate_id     Polymorphic by `aggregate_type`: it holds an
---   ledger_transactions.reference_id   ord_, pi_ or ref_ depending on the row.
---                                  Both columns already document why they carry
---                                  no foreign key either. A CHECK could name the
---                                  union of prefixes, but it would have to be
---                                  edited every time a new aggregate emits an
---                                  event -- a constraint that silently rots.
+--   outbox_events.aggregate_id     Polymorphic by `aggregate_type`: ord_, pi_,
+--                                  ref_ AND cus_ (AttachPaymentMethodTokenService
+--                                  emits a CUSTOMER aggregate). Already documents
+--                                  why it carries no foreign key either.
+--
+--   ledger_transactions.reference_id   Polymorphic by `reference_type`, which
+--                                  LedgerTransaction defines as exactly two
+--                                  values -- PAYMENT_INTENT and REFUND -- so this
+--                                  holds pi_ or ref_ and never ord_.
+--
+--                                  For both: a CHECK could name the union, but it
+--                                  would need editing every time a new aggregate
+--                                  emits an event, which is a constraint that
+--                                  silently rots. Note the two lists differ from
+--                                  each other; an earlier draft of this comment
+--                                  gave them one shared list and got both wrong.
 --
 --   *_state_history.actor_id       Not an identifier. Its own comment says "a
 --   *_status_history.actor_id      merchant id, a provider name" -- whichever is

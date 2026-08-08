@@ -24,7 +24,7 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1324 tests, 0 failures.** Twenty-six Flyway migrations (V1–V26). Twenty-nine ADRs. The Postman
+**1330 tests, 0 failures.** Twenty-six Flyway migrations (V1–V26). Twenty-nine ADRs. The Postman
 collection runs **seventeen folders green** (a newman run executes 233–234 requests and 566–567
 assertions; the count varies because the polling requests re-run themselves) — the newest showing an
 order paid and a signed webhook delivery queued for it without anyone calling a webhook endpoint.
@@ -534,7 +534,7 @@ no financial effect.
 
 ```bash
 cd backend
-./mvnw test                     # 1324 tests; needs Docker, no local database
+./mvnw test                     # 1330 tests; needs Docker, no local database
 ./mvnw spring-boot:run          # port 8080, activates the dev profile via the pom
 
 # API contract, end to end, including cross-tenant isolation and idempotency
@@ -807,10 +807,10 @@ failing test._
     <br>~~`IdentityConfiguration`'s javadoc credits `MerchantConfiguration` for the `Clock`
     bean~~ and ~~`PLATFORM_ADMIN` is not grantable~~ are **closed by ADR-027**.
 
-19. ~~**No identifier column has a format CHECK.**~~ **CLOSED by V26 and ADR-029.** 62 constraints
+19. ~~**No identifier column has a format CHECK.**~~ **CLOSED by V26 and ADR-029.** 63 constraints
     across 20 identifier types, sharing one `IMMUTABLE is_prefixed_id(value, prefix)` function
-    rather than 62 inline regexes — only the prefix varies, so inlining the pattern would have been
-    62 chances to fat-finger a character class in a way nothing would catch. Applied against a
+    rather than 63 inline regexes — only the prefix varies, so inlining the pattern would have been
+    63 chances to fat-finger a character class in a way nothing would catch. Applied against a
     populated V25 database with zero violating rows. Five categories are deliberately excluded and
     the migration names each: polymorphic columns paired with a `*_type`, `actor_id` (not an
     identifier), the two bare internal UUIDs, provider-supplied ids, and merchant free text.
@@ -836,8 +836,20 @@ failing test._
     Fixed the same way as the other five: the query selects `payload::text`, the record carries the
     raw string, `toEvent(ObjectMapper)` parses inside the caller's try.
 
-    Second time this month an exhaustiveness claim has been wrong. Both times the missing instance
-    was found by removing an assumption, not by adding a test.
+    Third, **writing the constraint proved the domain type did not enforce the invariant it
+    advertised.** Fifteen of the eighteen `XxxId` types round-tripped the parsed UUID with
+    `equalsIgnoreCase`, so `mrc_550E8400-…` and `mrc_550e8400-…` were both legal; the other three
+    (`ApiCredentialId`, `KycSubmissionId`, `PaymentMethodTokenId`) called `UUID.fromString` and
+    discarded the result, which also admitted padded shorthand like `apc_1-1-1-1-1` that the parser
+    silently expands. The CHECK was therefore *stricter* than the type it was written to mirror, and
+    both the migration comment and the ADR asserted the opposite. **These columns are primary keys:
+    two accepted spellings of one UUID is two rows for one thing.** The constraint was the correct
+    half; all eighteen now round-trip with `equals`. Nothing else would have found this — every id
+    the application mints is canonical, so no test and no volume of traffic produces the divergent
+    case.
+
+    Third time this month an exhaustiveness or correctness claim has been wrong, and all three were
+    found by removing an assumption rather than by adding a test.
 
 18. **`SERVICE_ACCOUNT` is the last unreachable enum constant on the platform**, and unlike the
     ones ADR-021/024/027 closed it is unreachable *by decision* rather than by oversight.

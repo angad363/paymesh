@@ -67,8 +67,10 @@ public final class JpaOutboxReader implements OutboxReader {
     }
 
     /**
-     * Column-for-column, with no validation and <b>no parsing</b> of any kind -- that is the
-     * contract, and the second half of it is what this class originally broke.
+     * Column-for-column, with no validation and <b>no parsing of row content</b> -- that is the
+     * contract, and the second half of it is what this class originally broke. (The one conversion
+     * here, {@link #toInstant}, is a JDBC type dispatch rather than a read of what the row says;
+     * see its javadoc for why that distinction is load-bearing.)
      * <p>
      * The candidate query returns columns rather than entities specifically so nothing here
      * deserializes: {@code payload} arrives as the raw {@code ::text} of the JSONB column and stays
@@ -95,6 +97,14 @@ public final class JpaOutboxReader implements OutboxReader {
      * driver prefers -- {@link OffsetDateTime} on the PostgreSQL driver, {@link Timestamp} on
      * others -- and neither is an {@link Instant}, so the conversion is explicit rather than a cast
      * that works until the day it does not.
+     *
+     * <p><b>This throws, and it runs outside the relay's per-item try, which looks like exactly the
+     * mistake this class was just fixed for.</b> It is not, and the difference is worth stating: the
+     * JDBC type of a column is a property of the driver and the schema, identical for every row in
+     * the result set. A row cannot poison it. If this branch is ever reached it means a driver or
+     * dialect upgrade changed the mapping, in which case every row fails and the honest outcome is a
+     * loud failure of the whole pass rather than dead-lettering the entire backlog one row at a time
+     * for a defect that has nothing to do with the rows.
      */
     private static Instant toInstant(Object value) {
         return switch (value) {

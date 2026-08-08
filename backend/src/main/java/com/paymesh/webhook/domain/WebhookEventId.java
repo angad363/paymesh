@@ -51,7 +51,7 @@ public record WebhookEventId(String value) {
         try {
             UUID uuid = UUID.fromString(uuidPart);
 
-            if (!uuid.toString().equalsIgnoreCase(uuidPart)) {
+            if (!uuid.toString().equals(uuidPart)) {
                 throw new IllegalArgumentException(
                     "Webhook Event Identifier contains an invalid UUID"
                 );

@@ -29,9 +29,9 @@ it true.
 ## Decision
 
 **Every identifier column whose contents PayMesh mints gets a `CHECK` enforcing its ADR-003 format**
-— 62 constraints across 20 identifier types, in migration V26.
+— 63 constraints across 20 identifier types, in migration V26.
 
-The predicate lives in one `IMMUTABLE` function rather than 62 inline regexes:
+The predicate lives in one `IMMUTABLE` function rather than 63 inline regexes:
 
 ```sql
 CREATE FUNCTION is_prefixed_id(value text, prefix text) RETURNS boolean
@@ -41,18 +41,31 @@ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS $$
 $$;
 ```
 
-Only the prefix varies between these columns, so inlining the pattern would mean 62 chances to
+Only the prefix varies between these columns, so inlining the pattern would mean 63 chances to
 fat-finger a character class in a way nothing would catch: a subtly wrong regex still accepts every
 id the application mints and only misbehaves on the malformed row the constraint exists to reject.
 `IMMUTABLE` is required — PostgreSQL refuses a `CHECK` whose expression is not. `STRICT` means NULL
 in, NULL out, which a `CHECK` treats as satisfied; that is correct, because several of these columns
 are legitimately nullable and an absent identifier is not a malformed one.
 
-The pattern is lowercase-hex only and pins no version nibble, because that is exactly what
-`XxxId.from` accepts: it parses with `UUID.fromString` and then compares `uuid.toString()` back
-against the input, so it takes the canonical 8-4-4-4-12 form and rejects the uppercase, braced and
-`urn:` spellings Java's parser otherwise tolerates. Pinning `4` would reject a v7 id the application
-would accept.
+The pattern is lowercase-hex only and pins no version nibble. Not pinning the version is deliberate:
+`XxxId.from` does not check it either, and `4` would reject a v7 id the application would accept.
+
+**The lowercase half did not match Java when this was written, and Java was fixed to match it.**
+Fifteen of the eighteen id types round-tripped the parsed UUID with `equalsIgnoreCase`, so
+`mrc_550E8400-…` and `mrc_550e8400-…` were both legal identifiers. The other three —
+`ApiCredentialId`, `KycSubmissionId`, `PaymentMethodTokenId` — called `UUID.fromString` and threw
+the result away, which is a parse rather than a validation: it also admitted padded shorthand like
+`apc_1-1-1-1-1`, which the parser silently expands to a real UUID.
+
+So the constraint was *stricter* than the type it was supposed to mirror. **The constraint is the
+correct half.** These columns are primary keys, and two accepted spellings of one UUID is two rows
+for one thing, with nothing to stop it. All eighteen now round-trip with `equals`.
+
+This is worth naming as a pattern: writing the constraint is what surfaced that the invariant the
+domain type advertised was not the invariant it enforced. Nothing else would have — every id the
+application mints is canonical, so no test and no amount of production traffic would ever have
+produced the divergent case.
 
 ### What is deliberately not constrained
 
@@ -61,7 +74,8 @@ whether they were missed or excluded:
 
 | Column | Why not |
 |---|---|
-| `outbox_events.aggregate_id`, `ledger_transactions.reference_id` | Polymorphic by a paired `*_type` column. A CHECK could name the union of prefixes, but it would need editing every time a new aggregate emits an event — a constraint that silently rots. |
+| `outbox_events.aggregate_id` | Polymorphic by `aggregate_type`: `ord_`, `pi_`, `ref_` and `cus_`. A CHECK could name the union, but it would need editing every time a new aggregate emits an event — a constraint that silently rots. |
+| `ledger_transactions.reference_id` | Polymorphic by `reference_type`, which `LedgerTransaction` defines as exactly `PAYMENT_INTENT` and `REFUND`, so it holds `pi_` or `ref_` and never `ord_`. Same reasoning. |
 | `*_state_history.actor_id`, `*_status_history.actor_id` | Not an identifier. "A merchant id, a provider name", whichever is knowable, and NULL for a SYSTEM actor. |
 | `refresh_tokens.family_id`, `security_events.event_id` | Bare UUIDs, internal only, never exposed. V2 says ADR-003's prefix rule does not apply. |
 | `external_event_id`, `provider_reference`, `provider_token` | The provider's identifiers. We neither mint them nor get to say what they look like. |

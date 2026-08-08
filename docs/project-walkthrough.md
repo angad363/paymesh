@@ -22,7 +22,8 @@ payment method, confirms it, receives the "here's what happened" callback from a
 provider, and either collects the money or releases it. Along the way it refuses to
 double-charge, refuses to let one business see another's data, and writes an audit trail.
 
-**All eight Phase-1 capabilities are built.** The events they emit are actually delivered: an
+**All nine Phase-1 capabilities are built, and Phase 2 has started with Webhook.** The events they
+emit are actually delivered: an
 order whose payment succeeds reaches `PAID` on its own, because Order consumes the event rather
 than Payment reaching across and writing the column (§7). The Provider Simulator drives that loop
 end to end over real HTTP, the **Ledger** records the money — a merchant has a balance — and
@@ -1193,7 +1194,7 @@ cd backend
 ./mvnw spring-boot:run          # port 8080
 ```
 
-The documented count is **1324 tests, 0 failures**, across 26 Flyway migrations (V1–V26)
+The documented count is **1330 tests, 0 failures**, across 26 Flyway migrations (V1–V26)
 and 28 ADRs.
 
 The Postman collection is a second, independent check and worth running after any change to the
