@@ -12,9 +12,14 @@ import java.time.Instant;
  *
  * The plan called for velocity counters in Redis. That is a container, a Testcontainers
  * dependency, a fail-open policy and an entire outage mode on the money path, in exchange for a
- * number PostgreSQL already computes from rows it already has -- {@code payment_intents} is indexed
- * on the columns this counts. Adding a second datastore to avoid one indexed count is the trade
- * running the wrong way.
+ * number PostgreSQL already computes from rows it already has. Adding a second datastore to avoid one
+ * indexed count is the trade running the wrong way.
+ * <p>
+ * <b>The index did not exist when this was written and V27 adds it.</b> V8 indexed
+ * {@code (merchant_id, created_at)} and {@code (merchant_id, order_id)} but nothing on customer, so
+ * this count would have been a scan of the merchant's whole history -- taken while the confirm
+ * transaction holds the payment intent's row lock, which is the shape of an outage rather than a
+ * slow query. Claiming an index exists is not the same as checking.
  * <p>
  * <b>Add Redis when this query appears in slow logs.</b> That is a measurement, and it will arrive
  * long after the row counts here are interesting. Note that dropping Redis also removes SDD
@@ -28,7 +33,7 @@ public interface PaymentVelocityLookup {
      * How many intents this merchant has confirmed for this customer since {@code since}.
      *
      * @param customerId never null -- a guest checkout has no customer to count and the caller must
-     *                   not invent one. See {@code RiskFeatures.confirmsInWindow}.
+     *                   not invent one. See {@code RiskFeatures.intentsInWindow}.
      */
-    int confirmsSince(MerchantId merchantId, String customerId, Instant since);
+    int intentsCreatedSince(MerchantId merchantId, String customerId, Instant since);
 }

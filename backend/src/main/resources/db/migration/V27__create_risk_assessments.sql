@@ -139,3 +139,23 @@ CREATE INDEX idx_risk_assessments_merchant_recent
 -- evaluation -- so this is not unique.
 CREATE INDEX idx_risk_assessments_intent
     ON risk_assessments (merchant_id, payment_intent_id);
+
+
+-- -----------------------------------------------------------------------------
+-- AN INDEX ON SOMEONE ELSE'S TABLE, and it belongs to this migration because
+-- this capability is the only reason it exists.
+--
+-- Risk's velocity feature counts a customer's recent intents on the confirm
+-- path, INSIDE the transaction that holds the payment intent's row lock. V8
+-- indexed (merchant_id, created_at) and (merchant_id, order_id) but nothing on
+-- customer -- so that count would be a scan of the merchant's whole history
+-- while every other confirm for that intent waits behind it. On a demo dataset
+-- that is invisible; on a merchant with real volume it is a lock held for a
+-- table scan, which is the shape of an outage rather than a slow query.
+--
+-- Deliberately NOT partial and NOT covering. The predicate is a plain equality
+-- pair plus a range, which is exactly what a three-column btree serves, and a
+-- partial index would need a fixed cutoff the window does not have.
+-- -----------------------------------------------------------------------------
+CREATE INDEX idx_payment_intents_merchant_customer_created
+    ON payment_intents (merchant_id, customer_id, created_at);

@@ -85,7 +85,7 @@ class EvaluateRiskServiceTest {
 
         assertThat(assessment.outcome()).isEqualTo(RiskOutcome.ALLOW);
         assertThat(velocity.calls).as("no customer, so nothing to ask").isZero();
-        assertThat(assessment.features().confirmsInWindow()).isZero();
+        assertThat(assessment.features().intentsInWindow()).isZero();
         assertThat(assessment.features().isGuest()).isTrue();
     }
 
@@ -115,7 +115,7 @@ class EvaluateRiskServiceTest {
         assertThat(assessment.features().currency()).isEqualTo("INR");
         assertThat(assessment.features().customerId()).isEqualTo("cus_1");
         assertThat(assessment.features().device()).isEqualTo("device-1");
-        assertThat(assessment.features().confirmsInWindow()).isEqualTo(2);
+        assertThat(assessment.features().intentsInWindow()).isEqualTo(2);
         assertThat(assessment.decidedAt()).isEqualTo(NOW);
     }
 
@@ -219,7 +219,7 @@ class EvaluateRiskServiceTest {
         private Instant since;
 
         @Override
-        public int confirmsSince(MerchantId merchantId, String customerId, Instant since) {
+        public int intentsCreatedSince(MerchantId merchantId, String customerId, Instant since) {
             this.calls++;
             this.since = since;
             return count;

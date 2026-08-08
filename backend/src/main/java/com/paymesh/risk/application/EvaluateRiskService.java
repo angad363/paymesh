@@ -78,7 +78,7 @@ public final class EvaluateRiskService {
             command.currency(),
             command.customerId(),
             command.device(),
-            confirmsInWindow(command, now)
+            intentsInWindow(command, now)
         );
 
         RiskRuleset.Verdict verdict = RiskRuleset.evaluate(
@@ -95,12 +95,12 @@ public final class EvaluateRiskService {
      * there is nothing to count velocity against. Counting by device instead would look clever and
      * would be wrong -- a shared kiosk is one device and many people.
      */
-    private int confirmsInWindow(EvaluateRiskCommand command, Instant now) {
+    private int intentsInWindow(EvaluateRiskCommand command, Instant now) {
         if (command.customerId() == null) {
             return 0;
         }
 
-        return velocity.confirmsSince(
+        return velocity.intentsCreatedSince(
             command.merchantId(), command.customerId(), now.minus(velocityWindow)
         );
     }

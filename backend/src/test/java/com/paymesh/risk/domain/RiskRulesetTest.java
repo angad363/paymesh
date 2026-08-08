@@ -104,7 +104,7 @@ class RiskRulesetTest {
         assertThat(RiskOutcome.REVIEW.ordinal()).isGreaterThan(RiskOutcome.ALLOW.ordinal());
     }
 
-    private static RiskFeatures features(long amountMinor, int confirmsInWindow) {
-        return new RiskFeatures(amountMinor, "INR", "cus_x", "device-1", confirmsInWindow);
+    private static RiskFeatures features(long amountMinor, int intentsInWindow) {
+        return new RiskFeatures(amountMinor, "INR", "cus_x", "device-1", intentsInWindow);
     }
 }

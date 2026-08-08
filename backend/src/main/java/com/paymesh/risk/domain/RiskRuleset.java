@@ -81,10 +81,10 @@ public final class RiskRuleset {
         }
 
         // Guests are not counted, so this cannot fire on a guest checkout -- see RiskFeatures.
-        if (features.confirmsInWindow() >= VELOCITY_BLOCK_THRESHOLD) {
+        if (features.intentsInWindow() >= VELOCITY_BLOCK_THRESHOLD) {
             matched.add("VELOCITY_BLOCK");
             worst = RiskOutcome.BLOCK;
-        } else if (features.confirmsInWindow() >= VELOCITY_REVIEW_THRESHOLD) {
+        } else if (features.intentsInWindow() >= VELOCITY_REVIEW_THRESHOLD) {
             matched.add("VELOCITY_REVIEW");
             worst = worse(worst, RiskOutcome.REVIEW);
         }

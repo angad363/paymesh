@@ -20,7 +20,7 @@ package com.paymesh.risk.domain;
  *                         signal in its own right rather than missing data.
  * @param device           the opaque client hint the merchant sent on confirm, or null. PayMesh
  *                         does not interpret it; it is matched literally against the denylist.
- * @param confirmsInWindow how many intents this merchant has confirmed for this customer inside the
+ * @param intentsInWindow how many intents this merchant has confirmed for this customer inside the
  *                         velocity window, counted BEFORE this one. Zero for a guest checkout,
  *                         because there is no customer to count against -- not because the count
  *                         was zero, and the two must not be conflated when reading a stored row.
@@ -30,7 +30,7 @@ public record RiskFeatures(
     String currency,
     String customerId,
     String device,
-    int confirmsInWindow
+    int intentsInWindow
 ) {
 
     public RiskFeatures {
@@ -42,7 +42,7 @@ public record RiskFeatures(
             throw new IllegalArgumentException("Risk features currency cannot be blank");
         }
 
-        if (confirmsInWindow < 0) {
+        if (intentsInWindow < 0) {
             throw new IllegalArgumentException("Risk features confirm count cannot be negative");
         }
 
