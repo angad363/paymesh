@@ -24,7 +24,7 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1324 tests, 0 failures.** Twenty-five Flyway migrations (V1–V25). Twenty-eight ADRs. The Postman
+**1330 tests, 0 failures.** Twenty-six Flyway migrations (V1–V26). Twenty-nine ADRs. The Postman
 collection runs **seventeen folders green** (a newman run executes 233–234 requests and 566–567
 assertions; the count varies because the polling requests re-run themselves) — the newest showing an
 order paid and a signed webhook delivery queued for it without anyone calling a webhook endpoint.
@@ -534,7 +534,7 @@ no financial effect.
 
 ```bash
 cd backend
-./mvnw test                     # 1324 tests; needs Docker, no local database
+./mvnw test                     # 1330 tests; needs Docker, no local database
 ./mvnw spring-boot:run          # port 8080, activates the dev profile via the pom
 
 # API contract, end to end, including cross-tenant isolation and idempotency
@@ -643,9 +643,12 @@ failing test._
    first row ended the pass. The webhook dispatcher was a sixth near-miss: it returned ids rather
    than aggregates and its comment claimed immunity on that basis, but `WebhookDeliveryId.from`
    validates, so the throwing call had simply moved from the mapper to the adapter — still outside
-   the boundary. Only the outbox relay was already right, and deliberately: `UnpublishedEvent` is
-   a raw record whose `toEvent()` is documented as "the only place this row is allowed to throw".
-   That was the prior art the other five should have copied.
+   the boundary. ~~Only the outbox relay was already right, and deliberately.~~ **That claim was
+   wrong too, and V26 is what proved it — see open item 19.** The relay was scrupulous about
+   *identifiers* and never noticed that its candidate query returned entities, so Hibernate
+   deserialized the JSONB `payload` into a `Map` while materializing each one — inside the
+   repository call, outside the per-item try. It was the sixth instance, not the prior art.
+   Fixed in the same change that closed item 19.
 
    **And it said reaching the bug "needs database state the current CHECKs forbid, so this is a
    latent trap rather than a live bug". It does not.** `merchants.merchant_id`, `orders.order_id`,
@@ -804,14 +807,49 @@ failing test._
     <br>~~`IdentityConfiguration`'s javadoc credits `MerchantConfiguration` for the `Clock`
     bean~~ and ~~`PLATFORM_ADMIN` is not grantable~~ are **closed by ADR-027**.
 
-19. **No identifier column has a format CHECK.** `merchant_id`, `order_id`,
-    `payment_intent_id`, `refund_id`, `customer_id` and the rest are `VARCHAR(40)` carrying a
-    primary key or a foreign key and nothing else, while every `XxxId.from` refuses anything that
-    is not `prefix_uuid`. The database will therefore accept an identifier the application cannot
-    read back. This is what closing open item 2 turned up: the sweeps now survive such a row, but
-    every other read path still throws on one. `CHECK (order_id ~ '^ord_[0-9a-f-]{36}$')` per table
-    is the obvious answer, it is a migration touching most of them, and it is worth doing as its
-    own change rather than quietly inside a capability PR.
+19. ~~**No identifier column has a format CHECK.**~~ **CLOSED by V26 and ADR-029.** 63 constraints
+    across 20 identifier types, sharing one `IMMUTABLE is_prefixed_id(value, prefix)` function
+    rather than 63 inline regexes — only the prefix varies, so inlining the pattern would have been
+    63 chances to fat-finger a character class in a way nothing would catch. Applied against a
+    populated V25 database with zero violating rows. Five categories are deliberately excluded and
+    the migration names each: polymorphic columns paired with a `*_type`, `actor_id` (not an
+    identifier), the two bare internal UUIDs, provider-supplied ids, and merchant free text.
+
+    **Two things it turned up that were worth more than the constraint.**
+
+    First, **the constraint closed the door our own regression tests came through.** Open item 2's
+    tests planted a malformed `merchants.merchant_id`; V26 makes that insert impossible. They were
+    rewritten around `metadata`, which is JSONB with no shape constraint and maps to a `Map`, so a
+    JSON array there is still a row no mapper can rehydrate — same test, same blast radius (12 of 14
+    when the fix is reverted). **That is the point, not a snag:** constraining identifiers narrows
+    what can be unreadable, it does not close the set, and the per-item boundary stays load-bearing.
+    We deliberately did *not* add a `jsonb_typeof = 'object'` CHECK to close that door too; chasing
+    every unmappable shape with a constraint is the wrong end of the problem.
+
+    Second, **it exposed a sixth instance of open item 2, in the component this document had just
+    finished calling the prior art.** Removing the malformed-id door from `EventDeliveryIntegrationTest`
+    left one other way to poison an outbox row — the payload — and the relay did not survive it.
+    `findUnpublished` returned entities, so Hibernate deserialized the JSONB payload while
+    materializing each one, inside the repository call and outside the per-item try.
+    `UnpublishedEvent` was careful about identifiers and never noticed the payload arriving already
+    parsed, while its javadoc claimed `toEvent()` was "the only place this row is allowed to throw".
+    Fixed the same way as the other five: the query selects `payload::text`, the record carries the
+    raw string, `toEvent(ObjectMapper)` parses inside the caller's try.
+
+    Third, **writing the constraint proved the domain type did not enforce the invariant it
+    advertised.** Fifteen of the eighteen `XxxId` types round-tripped the parsed UUID with
+    `equalsIgnoreCase`, so `mrc_550E8400-…` and `mrc_550e8400-…` were both legal; the other three
+    (`ApiCredentialId`, `KycSubmissionId`, `PaymentMethodTokenId`) called `UUID.fromString` and
+    discarded the result, which also admitted padded shorthand like `apc_1-1-1-1-1` that the parser
+    silently expands. The CHECK was therefore *stricter* than the type it was written to mirror, and
+    both the migration comment and the ADR asserted the opposite. **These columns are primary keys:
+    two accepted spellings of one UUID is two rows for one thing.** The constraint was the correct
+    half; all eighteen now round-trip with `equals`. Nothing else would have found this — every id
+    the application mints is canonical, so no test and no volume of traffic produces the divergent
+    case.
+
+    Third time this month an exhaustiveness or correctness claim has been wrong, and all three were
+    found by removing an assumption rather than by adding a test.
 
 18. **`SERVICE_ACCOUNT` is the last unreachable enum constant on the platform**, and unlike the
     ones ADR-021/024/027 closed it is unreachable *by decision* rather than by oversight.

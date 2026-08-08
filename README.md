@@ -6,8 +6,8 @@ balances, settlements and webhooks. It exists to model the parts of a payment pl
 that are genuinely hard (retries, duplicate delivery, tenant isolation, state machines,
 auditability) rather than the parts that are CRUD.
 
-It is a single Spring Boot application, Java 21, PostgreSQL, Flyway. **All eight of Phase 1's
-capabilities are built.**
+It is a single Spring Boot application, Java 21, PostgreSQL, Flyway. **All nine of Phase 1's
+capabilities are built, and Phase 2 has started.**
 
 ## What this is not
 
@@ -55,7 +55,7 @@ balance, which was not true of this codebase before
 **Refund** closes the loop in the other direction: money goes back out, the Ledger posts a
 reversal, and the payment reaches `REFUNDED`
 ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)).
-**1324 tests, 0 failures. Twenty-five Flyway migrations (V1–V25). Twenty-eight ADRs.**
+**1330 tests, 0 failures. Twenty-six Flyway migrations (V1–V26). Twenty-nine ADRs.**
 
 **A merchant can now be stopped.** Three lifecycle enums had exactly one reachable value each —
 no merchant could be suspended, no user disabled, no customer blocked, and nothing anywhere read
@@ -363,7 +363,7 @@ wrong.
 
 ## Testing
 
-**1324 tests, 0 failures.** They need Docker and never touch a developer database:
+**1330 tests, 0 failures.** They need Docker and never touch a developer database:
 integration tests run against a throwaway PostgreSQL container
 ([ADR-005](docs/decisions/ADR-005-use-testcontainers-for-integration-tests.md)), so
 Flyway migrates an empty database on every run and the migrations are re-proved rather

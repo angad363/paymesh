@@ -8,6 +8,7 @@ import com.paymesh.shared.outbox.application.PublishOutboxEventsService.RelayRes
 import com.paymesh.shared.outbox.domain.EventId;
 import com.paymesh.shared.tenant.MerchantId;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.ObjectMapper;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -32,6 +33,9 @@ class PublishOutboxEventsServiceTest {
     private static final Instant NOW = Instant.parse("2026-08-02T12:00:00Z");
     private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
     private static final MerchantId MERCHANT = MerchantId.generate();
+
+    /** A real mapper, not a stub: the payload parse is now part of what these tests exercise. */
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     private final InMemoryOutbox outbox = new InMemoryOutbox();
     private final ImmediateTransactions transactions = new ImmediateTransactions();
@@ -147,7 +151,7 @@ class PublishOutboxEventsServiceTest {
         RecordingHandler handler = new RecordingHandler("order.payment", "payment.succeeded");
         outbox.append(new UnpublishedEvent(
             "", MERCHANT.value(), "PAYMENT_INTENT", "pi_corrupt", "payment.succeeded", 1,
-            Map.of(), NOW.minusSeconds(60), 0
+            "{}", NOW.minusSeconds(60), 0
         ));
         UnpublishedEvent healthy = row("payment.succeeded", "pi_healthy", NOW.minusSeconds(10));
         outbox.append(healthy);
@@ -355,7 +359,7 @@ class PublishOutboxEventsServiceTest {
     void givesUpOnARowThatCanNeverBeMapped() {
         UnpublishedEvent corrupt = new UnpublishedEvent(
             EventId.generate().value(), "not-a-merchant-id", "PAYMENT_INTENT", "pi_corrupt",
-            "payment.succeeded", 1, Map.of(), NOW.minusSeconds(60), 0
+            "payment.succeeded", 1, "{}", NOW.minusSeconds(60), 0
         );
         outbox.append(corrupt);
 
@@ -407,6 +411,7 @@ class PublishOutboxEventsServiceTest {
             outbox,
             new EventDispatcher(handlers, inbox, transactions, CLOCK),
             transactions,
+            JSON,
             CLOCK,
             batchSize,
             maxAttempts
@@ -437,7 +442,7 @@ class PublishOutboxEventsServiceTest {
             aggregateId,
             eventType,
             1,
-            marker == null ? Map.of() : Map.of("marker", marker),
+            marker == null ? "{}" : "{\"marker\":\"" + marker + "\"}",
             occurredAt,
             0
         );

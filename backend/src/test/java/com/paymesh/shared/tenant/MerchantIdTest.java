@@ -96,4 +96,30 @@ public class MerchantIdTest {
             () -> MerchantId.from(null)
         );
     }
+
+    /**
+     * ONE UUID MUST HAVE ONE SPELLING, because this value is a primary key.
+     *
+     * <p>{@code UUID.fromString} is lenient -- it parses uppercase hex quite happily and returns
+     * the canonical lowercase form. The round-trip check used {@code equalsIgnoreCase}, so
+     * {@code mrc_550E8400-...} and {@code mrc_550e8400-...} were both accepted: two different
+     * strings, one UUID, and therefore two rows for one merchant with nothing to stop it.
+     *
+     * <p>Found by V26 (ADR-029), which constrains these columns to canonical lowercase and was
+     * therefore <b>stricter than the type it was supposed to mirror</b> -- the migration and the
+     * ADR both asserted this case was already rejected, and it was not.
+     */
+    @Test
+    void rejectsAnUppercaseUuidBecauseItIsASecondSpellingOfOneIdentifier() {
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> MerchantId.from("mrc_550E8400-E29B-41D4-A716-446655440000")
+        );
+
+        // The same value in canonical form is the one true spelling, and it still works.
+        assertEquals(
+            "mrc_550e8400-e29b-41d4-a716-446655440000",
+            MerchantId.from("mrc_550e8400-e29b-41d4-a716-446655440000").value()
+        );
+    }
 }

@@ -45,7 +45,7 @@ public record SimulatedRefundId(String value) {
         try {
             UUID uuid = UUID.fromString(uuidPart);
 
-            if (!uuid.toString().equalsIgnoreCase(uuidPart)) {
+            if (!uuid.toString().equals(uuidPart)) {
                 throw new IllegalArgumentException(
                     "Simulated Refund Identifier contains an invalid UUID"
                 );

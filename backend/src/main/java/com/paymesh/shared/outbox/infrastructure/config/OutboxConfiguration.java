@@ -18,6 +18,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.ObjectMapper;
 
 import java.time.Clock;
 import java.util.List;
@@ -82,11 +83,12 @@ public class OutboxConfiguration {
         OutboxReader outboxReader,
         EventDispatcher eventDispatcher,
         TransactionTemplate transactionTemplate,
+        ObjectMapper objectMapper,
         Clock clock,
         OutboxRelayProperties properties
     ) {
         return new PublishOutboxEventsService(
-            outboxReader, eventDispatcher, transactionTemplate, clock,
+            outboxReader, eventDispatcher, transactionTemplate, objectMapper, clock,
             properties.batchSize(), properties.maxAttempts()
         );
     }

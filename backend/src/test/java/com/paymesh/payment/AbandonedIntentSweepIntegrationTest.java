@@ -10,6 +10,7 @@ import com.paymesh.payment.application.CancelAbandonedPaymentIntentsService;
 import com.paymesh.payment.application.CreatePaymentIntentCommand;
 import com.paymesh.payment.application.CreatePaymentIntentService;
 import com.paymesh.payment.domain.PaymentIntent;
+import com.paymesh.payment.domain.PaymentIntentId;
 import com.paymesh.payment.domain.PaymentIntentStatus;
 import com.paymesh.shared.tenant.MerchantId;
 import org.junit.jupiter.api.Test;
@@ -161,12 +162,19 @@ class AbandonedIntentSweepIntegrationTest {
      * {@code uq_payment_intents_live_per_order}. Dead, every abandoned checkout keeps its order's
      * only live slot -- and a permanently held order then also blocks the expiry sweep behind it.
      *
-     * <p>It is reachable because {@code merchants.merchant_id} has no format CHECK while
-     * {@code MerchantId.from} refuses anything that is not {@code prefix_uuid}.
+     * <p>The bad row used to be a malformed {@code merchants.merchant_id}. V26 (open item 19) gave
+     * that column a format CHECK, so PostgreSQL refuses that insert now -- the constraint closed
+     * the door, which is the constraint working. It did not close the bug: {@code metadata} is
+     * JSONB with no shape constraint and maps to a {@code Map}, so a JSON array there is still a
+     * row no mapper can rehydrate. Constraining identifiers narrows what can be unreadable; it does
+     * not make mapping infallible.
      *
-     * <p><b>Sabotage that must turn this red:</b> make
-     * {@code findAbandonedBeforeConfirmation} return mapped aggregates again, or move the
-     * {@code MerchantId.from} / {@code PaymentIntentId.from} calls out of the service's try.
+     * <p><b>Sabotage that must turn this red:</b> make {@code findAbandonedBeforeConfirmation} map
+     * its rows through {@code PaymentIntentJpaMapper} again.
+     * <p>
+     * No longer a sabotage: moving the {@code MerchantId.from} / {@code PaymentIntentId.from} calls
+     * back out of the try. Since V26 those ids cannot be malformed, so that edit is undetectable
+     * here -- still wrong, but this test is not what catches it.
      */
     @Test
     void cancelsTheGoodCheckoutsEvenWhenACandidateRowCannotBeMapped() {
@@ -188,42 +196,30 @@ class AbandonedIntentSweepIntegrationTest {
     }
 
     /**
-     * A row no mapper can rehydrate, inserted the only way one can exist: straight through JDBC,
-     * with a merchant id the application would never mint. Backdated furthest, so it sorts to the
-     * head of the candidate batch -- which is what made the original bug total rather than partial.
+     * A row no mapper can rehydrate, inserted the only way one can exist: straight through JDBC.
+     * <p>
+     * Every identifier on it is well-formed -- V26 requires that now. The mapper chokes on
+     * {@code metadata}, which the entity reads as a {@code Map} and which this sets to a JSON
+     * ARRAY. The column is plain JSONB with no shape constraint, so PostgreSQL stores it happily
+     * and Hibernate cannot hand it back.
+     * <p>
+     * Backdated furthest, so it sorts to the head of the candidate batch -- which is what made the
+     * original bug total rather than partial.
      */
     private void unmappableAbandonedIntent() {
-        // Unique, because merchant_id is the primary key and another test in another class plants
-        // one of these too. Malformed either way: MerchantId.from wants "mrc_" + a bare UUID.
-        // "bad-" + UUID is exactly 40 characters, which is the column width.
-        String malformedMerchantId = "bad-" + UUID.randomUUID();
-        String orderId = OrderId.generate().value();
+        MerchantAndOrder fixture = merchantWithOrder();
         OffsetDateTime longAgo =
             OffsetDateTime.ofInstant(Instant.now().minusSeconds(172_800), ZoneOffset.UTC);
-
-        jdbc.update("""
-            insert into merchants
-                (merchant_id, business_name, email, country, default_currency, status,
-                 created_at, updated_at)
-            values (?, 'Corrupt Co', ?, 'IN', 'INR', 'ACTIVE', ?, ?)
-            """, malformedMerchantId, UUID.randomUUID() + "@paymesh.test", longAgo, longAgo);
-
-        jdbc.update("""
-            insert into orders
-                (order_id, merchant_id, amount_minor, amount_paid_minor, currency, status,
-                 metadata, version, created_at, updated_at)
-            values (?, ?, ?, 0, 'INR', 'PENDING', '{}'::jsonb, 0, ?, ?)
-            """, orderId, malformedMerchantId, ORDER_AMOUNT_MINOR, longAgo, longAgo);
 
         jdbc.update("""
             insert into payment_intents
                 (payment_intent_id, merchant_id, order_id, amount_minor, currency, capture_method,
                  status, captured_amount_minor, refunded_amount_minor, metadata, version,
                  created_at, updated_at)
-            values (?, ?, ?, ?, 'INR', 'AUTOMATIC', 'REQUIRES_PAYMENT_METHOD', 0, 0, '{}'::jsonb, 0,
+            values (?, ?, ?, ?, 'INR', 'AUTOMATIC', 'REQUIRES_PAYMENT_METHOD', 0, 0, '[]'::jsonb, 0,
                     ?, ?)
-            """, "pi_" + UUID.randomUUID(), malformedMerchantId, orderId, ORDER_AMOUNT_MINOR,
-            longAgo, longAgo);
+            """, PaymentIntentId.generate().value(), fixture.merchantId().value(),
+            fixture.orderId(), ORDER_AMOUNT_MINOR, longAgo, longAgo);
     }
 
     /** Backdated past the configured age, which is the only way to reach the cutoff in a test. */

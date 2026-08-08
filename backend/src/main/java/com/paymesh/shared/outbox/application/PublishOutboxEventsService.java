@@ -4,6 +4,7 @@ import com.paymesh.shared.outbox.domain.OutboxEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.ObjectMapper;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -70,6 +71,7 @@ public final class PublishOutboxEventsService {
     private final OutboxReader reader;
     private final EventDispatcher dispatcher;
     private final TransactionTemplate transactions;
+    private final ObjectMapper json;
     private final Clock clock;
     private final int batchSize;
     private final int maxAttempts;
@@ -78,6 +80,7 @@ public final class PublishOutboxEventsService {
         OutboxReader reader,
         EventDispatcher dispatcher,
         TransactionTemplate transactions,
+        ObjectMapper json,
         Clock clock,
         int batchSize,
         int maxAttempts
@@ -95,6 +98,7 @@ public final class PublishOutboxEventsService {
         this.reader = reader;
         this.dispatcher = dispatcher;
         this.transactions = transactions;
+        this.json = json;
         this.clock = clock;
         this.batchSize = batchSize;
         this.maxAttempts = maxAttempts;
@@ -124,8 +128,10 @@ public final class PublishOutboxEventsService {
             }
 
             try {
-                // INSIDE THE TRY. A row that cannot form a legal envelope fails here, alone.
-                OutboxEvent event = row.toEvent();
+                // INSIDE THE TRY. A row that cannot form a legal envelope fails here, alone -- and
+                // that now includes a payload the mapper cannot read, which used to throw one layer
+                // out in the repository and take the whole pass with it.
+                OutboxEvent event = row.toEvent(json);
 
                 dispatcher.dispatch(event);
 
