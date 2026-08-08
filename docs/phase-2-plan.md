@@ -53,12 +53,12 @@ nothing and is the thing an integrator actually notices; it goes first.
 |---|---|---|---|---|---|
 | 0 ✅ | `fix/platform-admin-and-known-defects` | `PLATFORM_ADMIN` becomes grantable — **merged, PR #54**. The open-item-17 defect list was split out and is still open | — | V23 | ADR-027 |
 | 1 ✅ | `feature/webhook` | Endpoints, HMAC-signed delivery, backoff, replay — **built** | — | V24–V25 | ADR-028 |
-| 2 | `feature/risk` | Evaluation on confirm, review queue, denylist, Redis velocity | — | V26–V27 | ADR-029 |
-| 3 | `feature/ledger-available-balance` | `MERCHANT_AVAILABLE`, holding period, pending→available release | — | V28–V29 | ADR-030 |
-| 4 | `feature/settlement` | Batches, items, payouts, retries, statements | PR3 | V30–V32 | ADR-031 |
-| 5 | `feature/notification` | Templates, preferences, simulated sends, attempt history | — | V33 | ADR-032 |
-| 6 | `feature/reporting` | Projections, summaries, async CSV export | PR4 (content) | V34–V35 | ADR-033 |
-| 7 | `feature/audit` | Append-only log of privileged and financial-operational actions | PR2, PR4 (subjects) | V36 | ADR-034 |
+| 2 | `feature/risk` | Evaluation on confirm, decisions, denylist | — | V27–V28 | ADR-030 |
+| 3 | `feature/ledger-available-balance` | `MERCHANT_AVAILABLE`, holding period, pending→available release | — | V29–V30 | ADR-031 |
+| 4 | `feature/settlement` | Batches, items, payouts, retries, statements | PR3 | V31–V33 | ADR-032 |
+| 5 | `feature/notification` | Templates, preferences, simulated sends, attempt history | — | V34 | ADR-033 |
+| 6 | `feature/reporting` | Projections, summaries, async CSV export | PR4 (content) | V35–V36 | ADR-034 |
+| 7 | `feature/audit` | Append-only log of privileged and financial-operational actions | PR2, PR4 (subjects) | V37 | ADR-035 |
 
 Migration and ADR numbers are pre-assigned here so that work in parallel
 worktrees cannot collide on them. This is the practice that worked in Phase 1 and
@@ -172,7 +172,34 @@ payment. Delivery failure is delivery's problem.
 
 ### PR 2 — Risk
 
-**Branch:** `feature/risk` · **Migrations:** V26 (rules, decisions), V27 (reviews, denylist) · **ADR-029**
+**Branch:** `feature/risk` · **Migrations:** V27 (decisions), V28 (denylist) · **ADR-030**
+
+> **Renumbered 6 August 2026.** This PR was reserved V26–V27 and ADR-029; open item 19's
+> identifier constraints took both. Everything from PR 2 down shifted by one. The reservation
+> scheme worked exactly as intended — the collision was visible before either branch existed —
+> but the lesson is that unplanned work must claim its numbers here rather than in its own head.
+
+> **Scope cut from the original plan, deliberately.** Three things below were planned and are
+> not being built:
+>
+> - **No stored rule expressions.** A versioned expression language means writing or embedding an
+>   evaluator, and every rule PayMesh actually needs today is a boolean over a feature snapshot.
+>   Rules are code with an explicit version constant; the decision row stores the version and the
+>   snapshot, which is what SDD §14.6's reproducibility requirement actually asks for. **Add a
+>   stored expression when a non-engineer needs to change a rule without a deploy** — that is the
+>   only thing the evaluator buys, and nobody is asking for it yet.
+> - **No Redis.** Velocity is `count(*)` over `payment_intents` in a window, on an index that
+>   already exists. Redis would add a container, a Testcontainers dependency, a fail-open policy
+>   and a whole outage mode to the money path in exchange for a counter PostgreSQL already
+>   computes. **Add it when the query shows up in slow logs**, which is a measurement rather than
+>   a guess — and note that dropping it also deletes SDD §14.6's fail-open requirement rather
+>   than implementing it, because there is no second system to be down.
+> - **No `risk_reviews` queue.** Nothing reads it. A `REVIEW` decision is recorded in
+>   `risk_decisions` and is queryable by decision type. **Add the table when an analyst surface
+>   exists to work it**, since the queue's whole shape depends on how it gets worked.
+>
+> What remains is the capability: evaluate on confirm, return a decision, record immutable
+> evidence, and let an operator deny a known-bad entity.
 
 SDD §14. `POST /internal/v1/risk/evaluations` returns `ALLOW`, `REQUIRE_ACTION`,
 `REVIEW` or `BLOCK`, called synchronously from Payment's confirm — the one place
