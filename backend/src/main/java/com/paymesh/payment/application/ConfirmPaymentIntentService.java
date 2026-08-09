@@ -72,6 +72,30 @@ public final class ConfirmPaymentIntentService {
 
         Instant now = Instant.now(clock);
 
+        // RISK RUNS BEFORE THE TRANSACTION OPENS, AND THAT PLACEMENT IS THE WHOLE DESIGN.
+        //
+        // It was inside it first, which cost the evidence: a BLOCK throws, and the assessment
+        // rolled back with the confirm it refused. The obvious patch was REQUIRES_NEW on the
+        // assessment write -- and that is WORSE on this path, because Spring suspends the outer
+        // transaction without releasing its connection, so every confirm would hold two pool
+        // connections at once while a row lock is live. Nothing configures Hikari here, so the pool
+        // is the default ten: roughly five concurrent confirms and every thread is waiting for a
+        // second connection that only another waiting thread can release. That is a wedged pool for
+        // the whole application, not a slow payment.
+        //
+        // Outside the transaction, one connection at a time, and the assessment commits on its own
+        // because nothing is enclosing it. Nothing is lost by reading the intent unlocked here:
+        // every feature Risk looks at -- amount, currency, customer -- is fixed at creation and no
+        // transition can change it, so there is no state for a race to invalidate. The denylist
+        // could change in the microseconds between here and the lock, and an entry added in that
+        // window applying to the NEXT attempt rather than this one is correct behaviour anyway.
+        //
+        // SDD 14.2: Risk returns a decision, Payment acts on it. The acting is here and only here.
+        requireAcceptableRisk(
+            getPaymentIntentService.getById(command.merchantId(), command.paymentIntentId()),
+            command.device()
+        );
+
         // ONE TRANSACTION, AND THE READS ARE INSIDE IT (ADR-010, ADR-013). Four writes -- the
         // attempt, the intent, its timeline row and the event -- plus two decisions that must be
         // made against state that is still true when the writes land. A confirm that read the
@@ -87,17 +111,6 @@ public final class ConfirmPaymentIntentService {
             );
 
             requireStillPayable(command.merchantId(), intent.orderId());
-
-            // RISK RUNS HERE: after the lock, after payability, before the status moves.
-            //
-            // After the lock, so the evaluation and the confirm are one decision -- there is no
-            // window where a payment was refused but nothing recorded it, or recorded as allowed
-            // and then never confirmed. Before the status moves, because a blocked payment must
-            // leave the intent exactly as it found it (see PaymentBlockedByRiskException).
-            //
-            // SDD 14.2: Risk returns a decision, Payment acts on it. The acting is here and only
-            // here -- Risk writes nothing to any payment table.
-            requireAcceptableRisk(intent, command.device());
 
             PaymentIntentStatus from = intent.status();
             PaymentIntent confirmed = intent.confirm(now);

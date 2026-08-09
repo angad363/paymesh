@@ -1051,6 +1051,13 @@ class PaymentIntentIntegrationTest {
         }
 
         @Override
+        public long countForCustomerSince(
+            MerchantId merchantId, String customerId, Instant createdAfter, PaymentIntentId excluding
+        ) {
+            return delegate.countForCustomerSince(merchantId, customerId, createdAfter, excluding);
+        }
+
+        @Override
         public List<AbandonedIntent> findAbandonedBeforeConfirmation(Instant untouchedBefore, int limit) {
             return delegate.findAbandonedBeforeConfirmation(untouchedBefore, limit);
         }

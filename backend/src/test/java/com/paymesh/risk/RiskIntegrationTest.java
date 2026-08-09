@@ -182,6 +182,74 @@ class RiskIntegrationTest {
         assertThat(statusOf(intent)).isEqualTo("PROCESSING");
     }
 
+    // --- velocity, against real rows ---------------------------------------------------------
+
+    /**
+     * THE INTENT BEING JUDGED MUST NOT COUNT ITSELF, and nothing but a real query can show that.
+     *
+     * <p>The velocity count reads {@code payment_intents} for this customer inside the window --
+     * and the intent being confirmed was created inside that same window moments earlier. The first
+     * version of the query had no exclusion, so every payment scored one higher than it should and
+     * every threshold fired a confirm early.
+     *
+     * <p><b>The unit tests could not see this.</b> {@code EvaluateRiskServiceTest} stubs
+     * {@code PaymentVelocityLookup} with a hand-set number, so the real predicate is never executed
+     * there. An off-by-one in a velocity feature is exactly the kind of defect a stub hides.
+     *
+     * <p>A single fresh customer with one intent must therefore score ZERO, not one.
+     */
+    @Test
+    void doesNotCountTheIntentItIsCurrentlyJudging() {
+        MerchantId merchantId = existingMerchant();
+        PaymentIntent intent = confirmableIntent(merchantId, existingCustomer(merchantId));
+
+        confirmPaymentIntentService.confirm(confirm(merchantId, intent, null));
+
+        assertThat(featureOf(intent, "intentsInWindow"))
+            .as("one intent exists for this customer and it is the one being judged")
+            .isEqualTo(0);
+    }
+
+    /**
+     * And the count is real: a customer with prior intents inside the window scores them.
+     * <p>
+     * Each intent needs its own order — {@code uq_payment_intents_live_per_order} allows only one
+     * live intent per order, which is the constraint that makes this test have to build three.
+     */
+    @Test
+    void countsThisCustomersEarlierIntentsInTheWindow() {
+        MerchantId merchantId = existingMerchant();
+        String customerId = existingCustomer(merchantId);
+
+        confirmableIntent(merchantId, customerId);
+        confirmableIntent(merchantId, customerId);
+        PaymentIntent third = confirmableIntent(merchantId, customerId);
+
+        confirmPaymentIntentService.confirm(confirm(merchantId, third, null));
+
+        assertThat(featureOf(third, "intentsInWindow"))
+            .as("two earlier intents, and not the third one being judged")
+            .isEqualTo(2);
+    }
+
+    /** One merchant's traffic must not raise another merchant's velocity for the same customer id. */
+    @Test
+    void countsVelocityPerMerchant() {
+        MerchantId busy = existingMerchant();
+        MerchantId quiet = existingMerchant();
+        String sharedCustomerId = existingCustomer(busy);
+
+        confirmableIntent(busy, sharedCustomerId);
+        confirmableIntent(busy, sharedCustomerId);
+
+        String quietCustomer = existingCustomer(quiet);
+        PaymentIntent theirs = confirmableIntent(quiet, quietCustomer);
+
+        confirmPaymentIntentService.confirm(confirm(quiet, theirs, null));
+
+        assertThat(featureOf(theirs, "intentsInWindow")).isZero();
+    }
+
     // --- what only the database can prove --------------------------------------------------
 
     /**
@@ -273,6 +341,14 @@ class RiskIntegrationTest {
             """,
             "rsk_" + UUID.randomUUID(), merchantId.value(), "pi_" + UUID.randomUUID(),
             matchedRules, features, Timestamp.from(CREATED_AT));
+    }
+
+    /** One field out of the stored feature snapshot, read as the database actually holds it. */
+    private Integer featureOf(PaymentIntent intent, String key) {
+        return jdbc.queryForObject(
+            "select (features ->> ?)::int from risk_assessments where payment_intent_id = ?",
+            Integer.class, key, intent.paymentIntentId().value()
+        );
     }
 
     private Map<String, Object> assessmentFor(PaymentIntent intent) {

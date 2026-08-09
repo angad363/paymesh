@@ -24,7 +24,7 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1355 tests, 0 failures.** Twenty-eight Flyway migrations (V1–V28). Thirty ADRs. The Postman
+**1358 tests, 0 failures.** Twenty-eight Flyway migrations (V1–V28). Thirty ADRs. The Postman
 collection runs **seventeen folders green** (a newman run executes 233–234 requests and 566–567
 assertions; the count varies because the polling requests re-run themselves) — the newest showing an
 order paid and a signed webhook delivery queued for it without anyone calling a webhook endpoint.
@@ -537,7 +537,7 @@ no financial effect.
 
 ```bash
 cd backend
-./mvnw test                     # 1355 tests; needs Docker, no local database
+./mvnw test                     # 1358 tests; needs Docker, no local database
 ./mvnw spring-boot:run          # port 8080, activates the dev profile via the pom
 
 # API contract, end to end, including cross-tenant isolation and idempotency

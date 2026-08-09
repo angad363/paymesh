@@ -30,10 +30,23 @@ import java.time.Instant;
 public interface PaymentVelocityLookup {
 
     /**
-     * How many intents this merchant has confirmed for this customer since {@code since}.
+     * How many intents this merchant has OPENED for this customer since {@code since}.
+     * <p>
+     * Created, not confirmed -- there is no status predicate, so an abandoned or cancelled intent
+     * counts too. That is a defensible velocity signal (opening ten checkouts in an hour is the
+     * pattern, whether or not they were all confirmed) and the name says so. An earlier draft of
+     * this javadoc said "confirmed", which the query never did.
      *
      * @param customerId never null -- a guest checkout has no customer to count and the caller must
      *                   not invent one. See {@code RiskFeatures.intentsInWindow}.
      */
-    int intentsCreatedSince(MerchantId merchantId, String customerId, Instant since);
+    /**
+     * @param excludingIntentId the intent being evaluated. EXCLUDED, because it was created inside
+     *     this same window and counting the subject of the question makes every threshold fire one
+     *     confirm early -- the classic off-by-one in a velocity feature, and invisible unless the
+     *     query is exercised against real rows.
+     */
+    int intentsCreatedSince(
+        MerchantId merchantId, String customerId, Instant since, String excludingIntentId
+    );
 }

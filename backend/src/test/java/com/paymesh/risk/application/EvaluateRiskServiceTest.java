@@ -219,7 +219,9 @@ class EvaluateRiskServiceTest {
         private Instant since;
 
         @Override
-        public int intentsCreatedSince(MerchantId merchantId, String customerId, Instant since) {
+        public int intentsCreatedSince(
+            MerchantId merchantId, String customerId, Instant since, String excludingIntentId
+        ) {
             this.calls++;
             this.since = since;
             return count;

@@ -121,6 +121,15 @@ public final class JpaPaymentIntentRepository implements PaymentIntentRepository
     }
 
     @Override
+    public long countForCustomerSince(
+        MerchantId merchantId, String customerId, Instant createdAfter, PaymentIntentId excluding
+    ) {
+        return paymentIntents.countForCustomerSince(
+            merchantId.value(), customerId, createdAfter, excluding.value()
+        );
+    }
+
+    @Override
     public List<AbandonedIntent> findAbandonedBeforeConfirmation(Instant untouchedBefore, int limit) {
         return paymentIntents.findAbandonedBeforeConfirmation(untouchedBefore, Limit.of(limit))
             .stream()

@@ -20,10 +20,14 @@ package com.paymesh.risk.domain;
  *                         signal in its own right rather than missing data.
  * @param device           the opaque client hint the merchant sent on confirm, or null. PayMesh
  *                         does not interpret it; it is matched literally against the denylist.
- * @param intentsInWindow how many intents this merchant has confirmed for this customer inside the
- *                         velocity window, counted BEFORE this one. Zero for a guest checkout,
- *                         because there is no customer to count against -- not because the count
- *                         was zero, and the two must not be conflated when reading a stored row.
+ * @param intentsInWindow how many OTHER intents this merchant has opened for this customer inside
+ *                         the velocity window. The intent being judged is excluded, because it was
+ *                         created inside that same window and counting the subject of the question
+ *                         fires every threshold one confirm early. Opened rather than confirmed:
+ *                         there is no status predicate, and an abandoned checkout is still part of
+ *                         the pattern. Zero for a guest checkout because there is no customer to
+ *                         count against -- not because the count came back zero, and the two must
+ *                         not be conflated when reading a stored row.
  */
 public record RiskFeatures(
     long amountMinor,

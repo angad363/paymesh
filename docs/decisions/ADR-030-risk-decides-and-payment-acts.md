@@ -20,8 +20,9 @@ table, has no opinion about status, and emits no event. That separation is the l
 Risk service that could fail a payment would be a second author of Payment's state machine, and two
 authors of one state machine is how a status becomes unexplainable.
 
-Evaluation happens inside `ConfirmPaymentIntentService`'s transaction, after the intent's row lock
-and before the status moves.
+Evaluation happens in `ConfirmPaymentIntentService`, **immediately before it opens its
+transaction** — see the consequences below for why that placement, which looks like the weaker
+one, is the correct one.
 
 ### Three things from the plan were not built
 
@@ -36,11 +37,10 @@ PayMesh has no step-up for Risk to ask for. This codebase has spent three ADRs (
 making unreachable enum constants reachable; minting a new one would be going backwards.
 
 **Dropping Redis also removes SDD §14.6's fail-open requirement rather than skipping it.** With no
-second system there is nothing to be down. The evaluation either succeeds inside the confirm
-transaction or the confirm fails as a unit — which is fail *closed*, and correct here precisely
-because the "outage" case would mean the database is not answering, in which case there is no
-confirm to protect either. If Risk ever becomes a network call, that reasoning inverts and this is
-the line to revisit.
+second system there is nothing to be down. The evaluation either succeeds or the confirm fails
+before it starts — fail *closed*, and correct here precisely because the "outage" case would mean
+the database is not answering, in which case there is no confirm to protect either. If Risk ever
+becomes a network call, that reasoning inverts and this is the line to revisit.
 
 ### Reproducibility without a rules table
 
@@ -57,19 +57,41 @@ an operator who has never heard of the version constant.
 
 ## Consequences
 
-### The integration test found a defect the unit tests structurally could not
+### Two defects the unit tests structurally could not find
 
-`EvaluateRiskService` wrote the assessment inside the confirm's transaction, and a `BLOCK` makes
-that transaction throw — so the evidence rolled back with the confirm it refused. The merchant got
+**The velocity count included the intent it was judging.** That intent is created inside the same
+window moments before the confirm, so a plain count always returned the subject of the question:
+every payment scored one higher than it should, and every threshold fired a confirm early.
+`EvaluateRiskServiceTest` stubs the lookup with a hand-set number, so the real predicate never ran
+there. It took an integration test asserting that a fresh customer's first confirm scores **zero**.
+
+**And the assessment did not survive a block.**
+
+It wrote the assessment inside the confirm's transaction, and a `BLOCK` makes that transaction
+throw — so the evidence rolled back with the confirm it refused. The merchant got
 a 422 naming an assessment id, and the row that id pointed at did not exist.
 
 No unit test could see this: they have no real transaction to roll back. It took a
 `@SpringBootTest` against real PostgreSQL asserting that the row survives.
 
-Fixed with `REQUIRES_NEW` on the repository save, the same shape the idempotency record uses for
-the same reason — commit the record before the thing it is about is allowed to fail. **This means
-an assessment records that an evaluation happened, not that the payment proceeded.** That is the
-correct reading, and it is why the row carries no payment status.
+The first fix was `REQUIRES_NEW` on the repository save. It worked, and it was the wrong answer:
+Spring suspends the enclosing transaction **without releasing its connection**, so every confirm
+would have held two pool connections at once while a row lock was live. Nothing configures Hikari
+here, so the pool is the default ten — roughly five concurrent confirms and every thread waits for
+a second connection only another waiting thread can release. A wedged pool for the whole
+application, not a slow payment.
+
+The right fix was to stop nesting. Risk is evaluated **before** `ConfirmPaymentIntentService` opens
+its transaction, so the assessment is enclosed by nothing and commits on its own. One connection at
+a time, and the evidence survives because there is no outer transaction to roll it back.
+
+Nothing is lost by reading the intent unlocked for the evaluation: every feature Risk looks at —
+amount, currency, customer — is fixed at creation and no transition can change it. The denylist can
+change in the microseconds before the lock, and an entry added in that window applying to the *next*
+attempt rather than this one is correct behaviour anyway.
+
+**This means an assessment records that an evaluation happened, not that the payment proceeded.**
+That is the correct reading, and it is why the row carries no payment status.
 
 ### A blocked payment is refused, not failed
 
@@ -100,6 +122,18 @@ with a candidate list. It resists a table dump and an operator's idle browsing, 
 threat at this size. Encryption with a managed key is the answer to the other one, and ADR-006
 still owns that question.
 
+### The boundary test had a hole exactly where the new capability went
+
+`PaymentModuleVelocityLookup`'s first draft declared its own `JpaRepository` over Payment's
+`PaymentIntentJpaEntity` — reaching past Payment's application layer into its table. Every other
+cross-module adapter here routes through the owning module's application service, and
+`ModuleBoundaryTest`'s own javadoc names this exact shortcut as the thing it refuses.
+
+It could not refuse it: `CAPABILITIES` listed eight modules and `risk` was not among them. **A new
+capability is precisely when that list is stale, and precisely when nobody thinks to check it.**
+The count now lives on `GetPaymentIntentService`, where it belongs, and `risk` is in the list — so
+the next module to try this gets caught.
+
 ### One index on someone else's table
 
 V27 adds `idx_payment_intents_merchant_customer_created`. V8 indexed `(merchant_id, created_at)`
@@ -111,8 +145,9 @@ is not checking.
 
 ### Known limits
 
-- Velocity counts intents **created** in the window, not confirms. Near-identical as a signal, and
-  named for what it counts rather than what it approximates.
+- Velocity counts intents **created** in the window, not confirms — an abandoned checkout is still
+  part of the pattern. Named for what it counts rather than what it approximates, and the intent
+  being judged is excluded from its own count (see below).
 - There is no `GET /risk/assessments` route yet. The data is queryable and the read port exists;
   the surface can come with the analyst work that needs it.
 - `REVIEW` and `ALLOW` behave identically today. The difference is the recorded evidence, which is

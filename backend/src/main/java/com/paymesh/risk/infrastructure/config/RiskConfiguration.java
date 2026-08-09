@@ -5,7 +5,7 @@ import com.paymesh.risk.application.EvaluateRiskService;
 import com.paymesh.risk.application.PaymentVelocityLookup;
 import com.paymesh.risk.application.RiskAssessmentRepository;
 import com.paymesh.risk.infrastructure.payment.PaymentModuleVelocityLookup;
-import com.paymesh.risk.infrastructure.payment.SpringDataPaymentIntentCounter;
+import com.paymesh.payment.application.GetPaymentIntentService;
 import com.paymesh.risk.infrastructure.persistence.jpa.JpaDenylistRepository;
 import com.paymesh.risk.infrastructure.persistence.jpa.JpaRiskAssessmentRepository;
 import com.paymesh.risk.infrastructure.persistence.jpa.SpringDataDenylistRepository;
@@ -39,8 +39,8 @@ public class RiskConfiguration {
     }
 
     @Bean
-    PaymentVelocityLookup paymentVelocityLookup(SpringDataPaymentIntentCounter intents) {
-        return new PaymentModuleVelocityLookup(intents);
+    PaymentVelocityLookup paymentVelocityLookup(GetPaymentIntentService paymentIntents) {
+        return new PaymentModuleVelocityLookup(paymentIntents);
     }
 
     @Bean

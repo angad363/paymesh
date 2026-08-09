@@ -101,7 +101,10 @@ public final class EvaluateRiskService {
         }
 
         return velocity.intentsCreatedSince(
-            command.merchantId(), command.customerId(), now.minus(velocityWindow)
+            command.merchantId(),
+            command.customerId(),
+            now.minus(velocityWindow),
+            command.paymentIntentId()
         );
     }
 

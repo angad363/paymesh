@@ -123,6 +123,19 @@ class InMemoryPaymentIntentRepository implements PaymentIntentRepository {
             .toList();
     }
 
+    /** Mirrors the real query, exclusion included -- that exclusion is the point of the method. */
+    @Override
+    public long countForCustomerSince(
+        MerchantId merchantId, String customerId, Instant createdAfter, PaymentIntentId excluding
+    ) {
+        return intents.stream()
+            .filter(intent -> intent.merchantId().equals(merchantId))
+            .filter(intent -> customerId.equals(intent.customerId()))
+            .filter(intent -> !intent.createdAt().isBefore(createdAfter))
+            .filter(intent -> !intent.paymentIntentId().equals(excluding))
+            .count();
+    }
+
     /**
      * The same shape as the real query: only the two states that precede a provider being told
      * anything, only rows untouched since the cutoff, oldest first. PROCESSING is deliberately
