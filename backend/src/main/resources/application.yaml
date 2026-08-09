@@ -280,6 +280,23 @@ paymesh:
     # reconciliation pass at second zero would fetch a day nothing has happened in yet.
     initial-delay: 5m
 
+  # --- Risk (ADR-030, SDD 14) --------------------------------------------------
+  # Evaluated synchronously on confirm. There is no enabled flag: an evaluation
+  # that can be switched off is a money-path guard nobody can rely on, and the
+  # cost of leaving it on is two indexed queries inside a transaction that
+  # already makes several.
+  risk:
+    # How far back the velocity feature counts a customer's intents.
+    #
+    # THE ONLY TUNABLE HERE, and the thresholds deliberately are not. A threshold
+    # change alters what the rules DO, and RiskRuleset.VERSION must be bumped
+    # with it or every stored assessment claims a version whose behaviour it
+    # cannot reproduce (SDD 14.6). An operator editing a YAML file has no reason
+    # to know that constant exists. The window is safe to expose because it is an
+    # INPUT recorded in every feature snapshot, so a change to it is visible in
+    # the affected rows rather than invisible in all of them.
+    velocity-window: 1h
+
   # --- Order expiry sweep (ADR-014) -------------------------------------------
   # orders.expires_at is a deadline the merchant sets and, until this sweep existed,
   # nothing ever acted on: the status stayed PENDING forever. This is the job that

@@ -6,6 +6,7 @@ import com.paymesh.payment.application.PaymentAmountMismatchException;
 import com.paymesh.payment.application.PaymentAttemptAlreadyStartedException;
 import com.paymesh.payment.application.PaymentIntentNotFoundException;
 import com.paymesh.payment.domain.CaptureAmountExceedsAuthorizedException;
+import com.paymesh.payment.application.PaymentBlockedByRiskException;
 import com.paymesh.payment.domain.PaymentIntentNotCancellableException;
 import com.paymesh.payment.domain.PaymentIntentNotCapturableException;
 import com.paymesh.payment.domain.PaymentIntentNotConfirmableException;
@@ -101,6 +102,31 @@ public final class PaymentExceptionHandler {
     @ResponseStatus(HttpStatus.CONFLICT)
     ApiErrorResponse handlePaymentIntentNotConfirmable(PaymentIntentNotConfirmableException exception) {
         return ApiErrorResponse.of("PAYMENT_INTENT_NOT_CONFIRMABLE", exception.getMessage());
+    }
+
+    /**
+     * Risk refused this confirm (ADR-030).
+     *
+     * <p>422 rather than 409: nothing is in conflict and nothing about the request is malformed --
+     * the request is well-formed and understood, and PayMesh declines to act on it. That is
+     * precisely what 422 is for, and it is the same reading {@code rest-api-conventions.md} gives.
+     *
+     * <p><b>The body names the assessment and not the rule.</b> An error that says WHICH rule
+     * refused a payment is a free oracle: retry, vary one input, watch the message change, and the
+     * ruleset is mapped. The {@code rsk_} id lets support answer "why was this refused?" from the
+     * database, where the reasons belong. Same instinct as {@code ORDER_NOT_PAYABLE} collapsing
+     * three causes into one code.
+     *
+     * <p>The intent is untouched and still confirmable -- see the exception's own javadoc for why a
+     * denylist hit does not burn it.
+     */
+    @ExceptionHandler(PaymentBlockedByRiskException.class)
+    @ResponseStatus(HttpStatus.UNPROCESSABLE_ENTITY)
+    ApiErrorResponse handlePaymentBlockedByRisk(PaymentBlockedByRiskException exception) {
+        return ApiErrorResponse.of(
+            "PAYMENT_BLOCKED_BY_RISK",
+            "This payment was refused by risk evaluation " + exception.assessmentId()
+        );
     }
 
     /**

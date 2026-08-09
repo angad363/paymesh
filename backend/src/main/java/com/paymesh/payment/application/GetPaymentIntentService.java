@@ -4,6 +4,8 @@ import com.paymesh.payment.domain.PaymentIntent;
 import com.paymesh.payment.domain.PaymentIntentId;
 import com.paymesh.shared.tenant.MerchantId;
 
+import java.time.Instant;
+
 import java.util.Optional;
 import java.util.function.BiFunction;
 
@@ -34,6 +36,21 @@ public final class GetPaymentIntentService {
      * <p>
      * MUST be called inside a transaction.
      */
+    /**
+     * The velocity question, answered by Payment because these are Payment's rows.
+     * <p>
+     * Exists so Risk does not have to reach into {@code PaymentIntentJpaEntity} itself.
+     * {@code ModuleBoundaryTest} forbids that shortcut for every other capability and this is the
+     * capability that tried it -- the first draft of {@code PaymentModuleVelocityLookup} declared
+     * its own {@code JpaRepository} over Payment's entity, which is precisely what the boundary
+     * test's own javadoc names as the thing it refuses.
+     */
+    public long countForCustomerSince(
+        MerchantId merchantId, String customerId, Instant createdAfter, PaymentIntentId excluding
+    ) {
+        return paymentIntents.countForCustomerSince(merchantId, customerId, createdAfter, excluding);
+    }
+
     public PaymentIntent getByIdForUpdate(MerchantId merchantId, PaymentIntentId paymentIntentId) {
         return require(merchantId, paymentIntentId, paymentIntents::findByPaymentIntentIdForUpdate);
     }

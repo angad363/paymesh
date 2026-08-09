@@ -26,6 +26,7 @@ public final class ConfirmPaymentIntentService {
     private final PaymentStateHistoryRepository history;
     private final GetPaymentIntentService getPaymentIntentService;
     private final OrderLookup orders;
+    private final RiskCheck risk;
     private final OutboxWriter outbox;
     private final TransactionTemplate transactions;
     private final Clock clock;
@@ -36,6 +37,7 @@ public final class ConfirmPaymentIntentService {
         PaymentStateHistoryRepository history,
         GetPaymentIntentService getPaymentIntentService,
         OrderLookup orders,
+        RiskCheck risk,
         OutboxWriter outbox,
         TransactionTemplate transactions,
         Clock clock
@@ -45,6 +47,7 @@ public final class ConfirmPaymentIntentService {
         this.history = history;
         this.getPaymentIntentService = getPaymentIntentService;
         this.orders = orders;
+        this.risk = risk;
         this.outbox = outbox;
         this.transactions = transactions;
         this.clock = clock;
@@ -58,8 +61,9 @@ public final class ConfirmPaymentIntentService {
      * endpoint answers 202 and why PROCESSING has no local cancel. That is not a gap in the design.
      * It is what an asynchronous payment looks like with the provider not built.
      * <p>
-     * There is no risk decision either (SDD 12.2, 14). Confirm proceeds unconditionally, and the
-     * seam is the point between loading the intent and opening the attempt. Nothing is built for it.
+     * <b>There IS a risk decision now</b> (SDD §12.2, §14, ADR-030), and it sits in the seam this
+     * javadoc used to describe as empty: between loading the intent and opening the attempt. It is
+     * the only thing here that can refuse a confirm for a reason the state machine does not own.
      */
     public PaymentIntent confirm(ConfirmPaymentIntentCommand command) {
         if (command == null) {
@@ -67,6 +71,30 @@ public final class ConfirmPaymentIntentService {
         }
 
         Instant now = Instant.now(clock);
+
+        // RISK RUNS BEFORE THE TRANSACTION OPENS, AND THAT PLACEMENT IS THE WHOLE DESIGN.
+        //
+        // It was inside it first, which cost the evidence: a BLOCK throws, and the assessment
+        // rolled back with the confirm it refused. The obvious patch was REQUIRES_NEW on the
+        // assessment write -- and that is WORSE on this path, because Spring suspends the outer
+        // transaction without releasing its connection, so every confirm would hold two pool
+        // connections at once while a row lock is live. Nothing configures Hikari here, so the pool
+        // is the default ten: roughly five concurrent confirms and every thread is waiting for a
+        // second connection that only another waiting thread can release. That is a wedged pool for
+        // the whole application, not a slow payment.
+        //
+        // Outside the transaction, one connection at a time, and the assessment commits on its own
+        // because nothing is enclosing it. Nothing is lost by reading the intent unlocked here:
+        // every feature Risk looks at -- amount, currency, customer -- is fixed at creation and no
+        // transition can change it, so there is no state for a race to invalidate. The denylist
+        // could change in the microseconds between here and the lock, and an entry added in that
+        // window applying to the NEXT attempt rather than this one is correct behaviour anyway.
+        //
+        // SDD 14.2: Risk returns a decision, Payment acts on it. The acting is here and only here.
+        requireAcceptableRisk(
+            getPaymentIntentService.getById(command.merchantId(), command.paymentIntentId()),
+            command.device()
+        );
 
         // ONE TRANSACTION, AND THE READS ARE INSIDE IT (ADR-010, ADR-013). Four writes -- the
         // attempt, the intent, its timeline row and the event -- plus two decisions that must be
@@ -145,6 +173,34 @@ public final class ConfirmPaymentIntentService {
      * would reopen the enumeration oracle that {@link OrderNotPayableException} was written to
      * close.
      */
+    /**
+     * Asks Risk, and refuses the confirm if Risk says no.
+     * <p>
+     * The evaluation is recorded whatever it says, so an allowed payment leaves evidence too --
+     * "we looked and here is the record" is worth as much to a support conversation as the refusal.
+     * <p>
+     * <b>A failure here fails the confirm rather than defaulting to allow.</b> That is the fail
+     * CLOSED choice and it is deliberate: this evaluation is two indexed queries against the same
+     * database inside the same transaction, so if it cannot run then the transaction is already
+     * lost and confirming anyway would only mean confirming into a database that is not answering.
+     * A fail-open default would matter if Risk were a network call to somewhere else, and if it
+     * ever becomes one, this line is the one to revisit.
+     */
+    private void requireAcceptableRisk(PaymentIntent intent, String device) {
+        RiskCheck.Decision decision = risk.evaluate(
+            intent.merchantId(),
+            intent.paymentIntentId().value(),
+            intent.amountMinor(),
+            intent.currency(),
+            intent.customerId(),
+            device
+        );
+
+        if (!decision.permitted()) {
+            throw new PaymentBlockedByRiskException(decision.assessmentId());
+        }
+    }
+
     private void requireStillPayable(MerchantId merchantId, String orderId) {
         orders.find(merchantId, orderId)
             .filter(OrderLookup.PayableOrder::payable)

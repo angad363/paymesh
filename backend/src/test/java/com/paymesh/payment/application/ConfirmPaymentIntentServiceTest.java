@@ -33,12 +33,22 @@ class ConfirmPaymentIntentServiceTest {
     private final Fakes.RecordingOutbox outbox = new Fakes.RecordingOutbox(transactions);
     private final Fakes.KnownOrders orders = new Fakes.KnownOrders();
     private final GetPaymentIntentService intents = new GetPaymentIntentService(repository);
+
+    /**
+     * Risk allows everything here. These tests are about the confirm state machine, and a risk
+     * decision that varied would make every one of them depend on the ruleset -- the block path has
+     * its own test rather than being smeared across this class.
+     */
+    private final RiskCheck risk =
+        (merchantId, intentId, amount, currency, customerId, device) ->
+            new RiskCheck.Decision(true, "rsk_00000000-0000-4000-8000-000000000000");
     private final ConfirmPaymentIntentService service = new ConfirmPaymentIntentService(
         repository,
         attempts,
         history,
         intents,
         orders,
+        risk,
         outbox,
         transactions,
         Clock.fixed(NOW, ZoneOffset.UTC)

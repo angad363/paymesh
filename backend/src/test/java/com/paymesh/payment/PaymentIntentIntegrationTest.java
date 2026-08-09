@@ -25,6 +25,7 @@ import com.paymesh.payment.application.PaymentAttemptRepository;
 import com.paymesh.payment.application.PaymentIntentCursor;
 import com.paymesh.payment.application.PaymentIntentRepository;
 import com.paymesh.payment.application.PaymentStateHistoryRepository;
+import com.paymesh.payment.application.RiskCheck;
 import com.paymesh.payment.domain.PaymentAttemptId;
 import com.paymesh.payment.domain.PaymentIntent;
 import com.paymesh.payment.domain.PaymentIntentId;
@@ -126,6 +127,9 @@ class PaymentIntentIntegrationTest {
 
     @Autowired
     private OutboxWriter outbox;
+
+    @Autowired
+    private RiskCheck riskCheck;
 
     @Autowired
     private TransactionTemplate transactionTemplate;
@@ -579,6 +583,7 @@ class PaymentIntentIntegrationTest {
             history,
             getPaymentIntentService,
             orderLookup,
+            riskCheck,
             event -> {
                 throw new IllegalStateException("outbox is down");
             },
@@ -1043,6 +1048,13 @@ class PaymentIntentIntegrationTest {
         @Override
         public List<String> findStrandedInProcessing(Instant confirmedBefore, int limit) {
             return delegate.findStrandedInProcessing(confirmedBefore, limit);
+        }
+
+        @Override
+        public long countForCustomerSince(
+            MerchantId merchantId, String customerId, Instant createdAfter, PaymentIntentId excluding
+        ) {
+            return delegate.countForCustomerSince(merchantId, customerId, createdAfter, excluding);
         }
 
         @Override

@@ -503,7 +503,7 @@ class ModuleBoundaryTest {
     private static final List<String> CAPABILITIES =
         List.of(
             "merchant", "identity", "customer", "order", "payment", "ledger", "refund",
-            "reconciliation"
+            "reconciliation", "risk"
         );
 
     private static void assertOnlyTheseImport(

@@ -210,4 +210,28 @@ public interface SpringDataPaymentIntentRepository extends JpaRepository<Payment
         @Param("untouchedBefore") Instant untouchedBefore,
         Limit limit
     );
+
+    /**
+     * Risk's velocity count (ADR-030).
+     * <p>
+     * EXCLUDES THE INTENT BEING JUDGED. It was created inside this same window, so a plain count
+     * always returns the subject of the question and every threshold fires one confirm early -- the
+     * classic off-by-one in a velocity feature, and one no unit test can see because the stub for
+     * this port returns a hand-set number.
+     * <p>
+     * Reads off {@code idx_payment_intents_merchant_customer_created} (V27).
+     */
+    @Query("""
+        select count(p) from PaymentIntentJpaEntity p
+        where p.merchantId = :merchantId
+          and p.customerId = :customerId
+          and p.createdAt >= :createdAfter
+          and p.paymentIntentId <> :excluding
+        """)
+    long countForCustomerSince(
+        @Param("merchantId") String merchantId,
+        @Param("customerId") String customerId,
+        @Param("createdAfter") Instant createdAfter,
+        @Param("excluding") String excluding
+    );
 }

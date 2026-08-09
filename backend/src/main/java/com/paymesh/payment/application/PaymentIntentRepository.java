@@ -128,4 +128,20 @@ public interface PaymentIntentRepository {
      * {@link AbandonedIntent}.
      */
     List<AbandonedIntent> findAbandonedBeforeConfirmation(Instant untouchedBefore, int limit);
+
+    /**
+     * How many intents this merchant has opened for this customer since {@code createdAfter},
+     * <b>excluding one</b>.
+     * <p>
+     * The exclusion is the whole reason this takes an id. Risk asks this while confirming an intent
+     * that was itself created inside the same window, so a plain count would always include the one
+     * being judged -- every payment would score one higher than it should and every threshold would
+     * fire a confirm early. Counting the subject of the question is the classic off-by-one in a
+     * velocity feature, and it is invisible unless the query is exercised against real rows.
+     * <p>
+     * Served by {@code idx_payment_intents_merchant_customer_created} (V27).
+     */
+    long countForCustomerSince(
+        MerchantId merchantId, String customerId, Instant createdAfter, PaymentIntentId excluding
+    );
 }
