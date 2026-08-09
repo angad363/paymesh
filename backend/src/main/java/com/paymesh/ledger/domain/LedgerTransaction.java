@@ -52,6 +52,9 @@ public record LedgerTransaction(
     /** What a {@link #REFUND_REVERSAL} journal points back at. */
     public static final String REFERENCE_REFUND = "REFUND";
 
+    /** Funds clearing the holding period and becoming settleable. SDD 15.1, ADR-031. */
+    public static final String FUNDS_RELEASED = "FUNDS_RELEASED";
+
     public LedgerTransaction {
         if (ledgerTransactionId == null) {
             throw new IllegalArgumentException("Ledger transaction identifier is required");
@@ -144,6 +147,71 @@ public record LedgerTransaction(
      */
     public static String paymentCapturedIdempotencyKey(String paymentIntentId) {
         return "payment-captured:" + paymentIntentId;
+    }
+
+    /**
+     * A payment's funds clearing the holding period.
+     *
+     * <pre>
+     *   DEBIT   merchant:mrc_x:pending:INR      -- no longer conditional
+     *   CREDIT  merchant:mrc_x:available:INR    -- and now settleable
+     * </pre>
+     *
+     * <h2>BOTH SIDES ARE THE SAME MERCHANT'S LIABILITY, WHICH IS WHY THIS BALANCES TO NOTHING</h2>
+     *
+     * PayMesh owes exactly as much after this as before. No money is created, no obligation is
+     * discharged: a claim stops being conditional. That is the whole reason a release is a
+     * transaction rather than a status flag on a payment -- the two liabilities are separate
+     * accounts, so the move between them is visible, dated and reversible like any other journal.
+     *
+     * @param amountMinor what is left pending for this payment, not what was captured. A refund
+     *     before release has already debited pending, so releasing the captured figure would push
+     *     pending negative and available too high. The caller computes the remainder; this records
+     *     it.
+     */
+    public static LedgerTransaction fundsReleased(
+        MerchantId merchantId,
+        String paymentIntentId,
+        LedgerAccountId merchantPendingAccountId,
+        LedgerAccountId merchantAvailableAccountId,
+        long amountMinor,
+        String currency,
+        Instant occurredAt,
+        Instant createdAt
+    ) {
+        return new LedgerTransaction(
+            LedgerTransactionId.generate(),
+            merchantId,
+            FUNDS_RELEASED,
+            REFERENCE_PAYMENT_INTENT,
+            paymentIntentId,
+            currency,
+            fundsReleasedIdempotencyKey(paymentIntentId),
+            List.of(
+                LedgerEntry.debit(merchantPendingAccountId, amountMinor),
+                LedgerEntry.credit(merchantAvailableAccountId, amountMinor)
+            ),
+            occurredAt,
+            createdAt
+        );
+    }
+
+    /**
+     * {@code funds-released:pi_<uuid>}, and this key IS the release job's state.
+     *
+     * <p>The phase-2 plan called for a table tracking which payments had been released. There is
+     * none: {@code uq_ledger_transactions_idempotency} (V15) already makes this key unique, so
+     * "has this payment been released?" is answered by the ledger that did the releasing. A
+     * separate table would be a second copy of that fact, and the failure mode of a second copy is
+     * that it disagrees with the first -- the same argument {@code BalanceRepository} makes for
+     * summing entries rather than projecting them.
+     *
+     * <p>Keyed on the PAYMENT rather than on the job run, so two overlapping runs cannot release
+     * one payment twice: the second insert loses to the unique index and is a no-op, exactly as a
+     * redelivered capture is.
+     */
+    public static String fundsReleasedIdempotencyKey(String paymentIntentId) {
+        return "funds-released:" + paymentIntentId;
     }
 
     /**

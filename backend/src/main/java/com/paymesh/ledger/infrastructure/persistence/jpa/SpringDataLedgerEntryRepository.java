@@ -28,24 +28,41 @@ public interface SpringDataLedgerEntryRepository extends JpaRepository<LedgerEnt
      * {@link com.paymesh.ledger.domain.Direction#signedAgainst} exists: the domain states the rule
      * once, and a test compares this query's answer against it.
      *
-     * <h2>Why the join filters on account_type as well as merchant</h2>
+     * <h2>THE DAY THE PREVIOUS VERSION OF THIS JAVADOC WARNED ABOUT HAS ARRIVED</h2>
      *
-     * Belt and braces. Today a merchant only owns pending accounts, so the type filter changes no
-     * result. The day {@code MERCHANT_AVAILABLE} exists, a query that had only filtered by merchant
-     * would silently start adding two different balances together and reporting the total as
-     * "pending".
+     * It said: "Today a merchant only owns pending accounts, so the type filter changes no result.
+     * The day {@code MERCHANT_AVAILABLE} exists, a query that had only filtered by merchant would
+     * silently start adding two different balances together and reporting the total as pending."
+     * That day is V29. The type filter is now doing real work rather than standing by.
+     * <p>
+     * <b>Both figures come out of one pass</b>, split by a CASE on account type rather than by two
+     * queries merged in Java. One scan, one group, and -- more to the point -- one place where the
+     * sign convention is written. Two queries would be two chances to get {@code credits - debits}
+     * backwards, and getting it backwards is not a crash: it reports every merchant as owing
+     * PayMesh exactly what PayMesh owes them, with every entry correct and no constraint violated.
+     * <p>
+     * A merchant with entries in only one of the two accounts still gets one row per currency, with
+     * the other figure summing to zero over an empty set of matching entries. That zero is honest:
+     * the account exists as a concept now, and nothing is in it.
      */
     @Query("""
         select new com.paymesh.ledger.application.MerchantBalance(
             e.currency,
-            sum(case when e.direction = 'CREDIT' then e.amountMinor else -e.amountMinor end)
+            sum(case when a.accountType = 'MERCHANT_PENDING'
+                     then (case when e.direction = 'CREDIT'
+                                then e.amountMinor else -e.amountMinor end)
+                     else 0L end),
+            sum(case when a.accountType = 'MERCHANT_AVAILABLE'
+                     then (case when e.direction = 'CREDIT'
+                                then e.amountMinor else -e.amountMinor end)
+                     else 0L end)
         )
         from LedgerEntryJpaEntity e, LedgerAccountJpaEntity a
         where a.ledgerAccountId = e.ledgerAccountId
           and a.merchantId = :merchantId
-          and a.accountType = 'MERCHANT_PENDING'
+          and a.accountType in ('MERCHANT_PENDING', 'MERCHANT_AVAILABLE')
         group by e.currency
         order by e.currency
         """)
-    List<MerchantBalance> pendingBalancesByMerchant(@Param("merchantId") String merchantId);
+    List<MerchantBalance> balancesByMerchant(@Param("merchantId") String merchantId);
 }

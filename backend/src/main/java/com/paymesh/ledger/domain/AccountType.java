@@ -1,7 +1,7 @@
 package com.paymesh.ledger.domain;
 
 /**
- * The two accounts a captured payment touches, out of SDD 15.1's nine.
+ * The three accounts PayMesh posts to today, out of SDD 15.1's nine.
  *
  * <h2>EACH CARRIES ITS OWN NORMAL BALANCE, AND THAT IS THE POINT OF THE ENUM</h2>
  *
@@ -11,10 +11,9 @@ package com.paymesh.ledger.domain;
  * merchant as owing PayMesh the exact amount PayMesh owes them, with every individual entry
  * correct and no constraint violated. Here that row cannot be written.
  *
- * <h2>Why only two</h2>
+ * <h2>Why only three</h2>
  *
- * The others each need a producer that does not exist: {@code MERCHANT_AVAILABLE} needs a
- * settlement schedule to move money out of pending, {@code MERCHANT_RESERVED} needs holds,
+ * The others each need a producer that does not exist: {@code MERCHANT_RESERVED} needs holds,
  * {@code BANK_CASH} and {@code SETTLEMENT_IN_TRANSIT} need Settlement (Phase 2),
  * {@code PLATFORM_FEE_REVENUE} needs a fee schedule this codebase does not have, and
  * {@code REFUND_RECEIVABLE} needs Refund. Adding a constant here without the posting that credits
@@ -39,7 +38,24 @@ public enum AccountType {
      * settlement schedule every balance stays pending forever, and calling it available would claim
      * a merchant could withdraw it.
      */
-    MERCHANT_PENDING(Direction.CREDIT);
+    MERCHANT_PENDING(Direction.CREDIT),
+
+    /**
+     * What PayMesh owes a merchant and has cleared for payout. Also a LIABILITY, and also
+     * CREDIT-normal: it is the same money as {@link #MERCHANT_PENDING}, owed to the same person.
+     *
+     * <h2>THE DIFFERENCE IS PERMISSION, NOT ACCOUNTING</h2>
+     *
+     * A release moves value between two liabilities of one merchant, so it nets to zero against
+     * PayMesh's own position -- which is exactly why it is a balanced transaction rather than an
+     * adjustment. Nothing is created; a claim simply stops being conditional.
+     *
+     * <p>This constant was named in this class's own javadoc as deliberately absent, because it
+     * "needs a settlement schedule to move money out of pending". V29 and
+     * {@code ReleaseAvailableFundsService} are that schedule, which is what makes adding it now
+     * different from adding it then: there is a producer.
+     */
+    MERCHANT_AVAILABLE(Direction.CREDIT);
 
     private final Direction normalBalance;
 
@@ -54,6 +70,6 @@ public enum AccountType {
 
     /** True when accounts of this type belong to a merchant rather than the platform. */
     public boolean isMerchantOwned() {
-        return this == MERCHANT_PENDING;
+        return this == MERCHANT_PENDING || this == MERCHANT_AVAILABLE;
     }
 }

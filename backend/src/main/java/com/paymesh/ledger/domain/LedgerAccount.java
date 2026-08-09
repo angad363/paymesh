@@ -105,6 +105,35 @@ public record LedgerAccount(
         );
     }
 
+    /**
+     * The other half of a merchant's position: what has cleared the holding period.
+     * <p>
+     * Reference is {@code merchant:<id>:available:<CCY>}, deliberately parallel to the pending
+     * account's so the pair reads as one merchant's two buckets rather than as two unrelated
+     * accounts. Same currency scoping, same uniqueness, same normal balance -- the ONLY difference
+     * between these two accounts is whether the money in them can be paid out.
+     */
+    public static LedgerAccount merchantAvailable(
+        MerchantId merchantId,
+        String currency,
+        Instant createdAt
+    ) {
+        if (merchantId == null) {
+            throw new IllegalArgumentException("A merchant available account requires a merchant");
+        }
+
+        String normalised = requireCurrency(currency);
+
+        return new LedgerAccount(
+            LedgerAccountId.generate(),
+            "merchant:" + merchantId.value() + ":available:" + normalised,
+            merchantId,
+            AccountType.MERCHANT_AVAILABLE,
+            normalised,
+            createdAt
+        );
+    }
+
     /** The direction that increases this account. Delegates to the type; see {@link AccountType}. */
     public Direction normalBalance() {
         return accountType.normalBalance();

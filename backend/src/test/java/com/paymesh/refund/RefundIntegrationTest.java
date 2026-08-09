@@ -149,7 +149,7 @@ class RefundIntegrationTest {
         Fixture fixture = collected();
 
         assertThat(pendingBalance(fixture.merchantId()))
-            .containsExactly(new MerchantBalance("INR", CAPTURED));
+            .containsExactly(new MerchantBalance("INR", CAPTURED, 0L));
 
         Refund refund = refund(fixture, CAPTURED);
         settle(refund, RefundOutcome.SUCCEEDED);
@@ -157,7 +157,7 @@ class RefundIntegrationTest {
 
         assertThat(pendingBalance(fixture.merchantId()))
             .as("the reversal took the balance back to nothing")
-            .containsExactly(new MerchantBalance("INR", 0L));
+            .containsExactly(new MerchantBalance("INR", 0L, 0L));
 
         PaymentIntent intent = paymentIntents.getById(fixture.merchantId(), fixture.intentId());
 
@@ -195,7 +195,7 @@ class RefundIntegrationTest {
         assertThat(intent.status()).isEqualTo(PaymentIntentStatus.PARTIALLY_REFUNDED);
         assertThat(intent.refundedAmountMinor()).isEqualTo(30000);
         assertThat(pendingBalance(fixture.merchantId()))
-            .containsExactly(new MerchantBalance("INR", CAPTURED - 30000));
+            .containsExactly(new MerchantBalance("INR", CAPTURED - 30000, 0L));
     }
 
     /** Two partial refunds add up to the whole, and the payment lands on REFUNDED. */
@@ -211,7 +211,7 @@ class RefundIntegrationTest {
         assertThat(paymentIntents.getById(fixture.merchantId(), fixture.intentId()).status())
             .isEqualTo(PaymentIntentStatus.REFUNDED);
         assertThat(pendingBalance(fixture.merchantId()))
-            .containsExactly(new MerchantBalance("INR", 0L));
+            .containsExactly(new MerchantBalance("INR", 0L, 0L));
     }
 
     /** A failed refund moves no money: no reversal, no change to the payment. */
@@ -224,7 +224,7 @@ class RefundIntegrationTest {
 
         assertThat(journalTypes(fixture.merchantId())).containsExactly("PAYMENT_CAPTURED");
         assertThat(pendingBalance(fixture.merchantId()))
-            .containsExactly(new MerchantBalance("INR", CAPTURED));
+            .containsExactly(new MerchantBalance("INR", CAPTURED, 0L));
         assertThat(paymentIntents.getById(fixture.merchantId(), fixture.intentId()).status())
             .isEqualTo(PaymentIntentStatus.SUCCEEDED);
     }

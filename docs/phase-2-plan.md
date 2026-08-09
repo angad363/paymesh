@@ -231,7 +231,7 @@ It returns a decision; Payment acts on it.
 
 ### PR 3 — The Ledger grows an available balance
 
-**Branch:** `feature/ledger-available-balance` · **Migrations:** V28 (account type, config), V29 (release job state) · **ADR-030**
+**Branch:** `feature/ledger-available-balance` · **Migration:** V29 · **ADR-031**
 
 This is Settlement's prerequisite, split out so that PR4 is a normal-sized PR and
 so that this one ships value on its own: a merchant can see what is actually
