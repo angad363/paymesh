@@ -280,6 +280,28 @@ paymesh:
     # reconciliation pass at second zero would fetch a day nothing has happened in yet.
     initial-delay: 5m
 
+  # --- Settlement config + the release job (ADR-031, SDD 15.1/17.4) -----------
+  settlement:
+    # Applied to a merchant who has never set a holding period. A VALUE, not a
+    # row written on their behalf: persisting a default would make "never
+    # configured" indistinguishable from "configured to exactly the default", so
+    # changing this later would silently skip everyone who had been defaulted.
+    default-holding-period: 7d
+
+  ledger:
+    release:
+      # OFF under dev, same reason as every other sweep: the suite runs on this
+      # profile and a timer moving a merchant's balance between a test's setup
+      # and its assertion is a flake nobody can reproduce.
+      # ReleaseAvailableFundsService is a plain bean, so tests drive release()
+      # directly and never wait for a tick.
+      enabled: true
+      interval: 1h
+      initial-delay: 5m
+      # Each capture is released in its own transaction, so this bounds work per
+      # pass rather than lock duration.
+      batch-size: 100
+
   # --- Risk (ADR-030, SDD 14) --------------------------------------------------
   # Evaluated synchronously on confirm. There is no enabled flag: an evaluation
   # that can be switched off is a money-path guard nobody can rely on, and the

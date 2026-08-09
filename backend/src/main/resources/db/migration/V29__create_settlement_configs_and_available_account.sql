@@ -34,6 +34,16 @@
 -- "MERCHANT_AVAILABLE needs a settlement schedule to move money out of
 -- pending". This migration is that schedule arriving.
 -- -----------------------------------------------------------------------------
+-- TWO constraints name the account types, not one, and missing the second is
+-- how this migration failed the first time it ran: ck_ledger_accounts_owner
+-- says which types carry a merchant, and ck_ledger_accounts_type says which
+-- types exist at all. A new type has to be admitted by both.
+ALTER TABLE ledger_accounts DROP CONSTRAINT ck_ledger_accounts_type;
+
+ALTER TABLE ledger_accounts ADD CONSTRAINT ck_ledger_accounts_type CHECK (
+    account_type IN ('MERCHANT_PENDING', 'MERCHANT_AVAILABLE', 'PROVIDER_CLEARING')
+);
+
 ALTER TABLE ledger_accounts DROP CONSTRAINT ck_ledger_accounts_owner;
 
 ALTER TABLE ledger_accounts ADD CONSTRAINT ck_ledger_accounts_owner CHECK (

@@ -15,7 +15,12 @@ public final class JpaBalanceRepository implements BalanceRepository {
     }
 
     @Override
-    public List<MerchantBalance> pendingBalances(MerchantId merchantId) {
+    public List<MerchantBalance> byMerchant(MerchantId merchantId) {
         return entries.balancesByMerchant(merchantId.value());
+    }
+
+    @Override
+    public long pendingRemainingForPayment(String paymentIntentId) {
+        return entries.pendingRemainingForPayment(paymentIntentId);
     }
 }

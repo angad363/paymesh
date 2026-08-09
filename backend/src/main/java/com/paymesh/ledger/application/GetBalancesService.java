@@ -23,6 +23,6 @@ public final class GetBalancesService {
     }
 
     public List<MerchantBalance> forMerchant(MerchantId merchantId) {
-        return balances.pendingBalances(merchantId);
+        return balances.byMerchant(merchantId);
     }
 }

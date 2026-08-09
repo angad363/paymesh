@@ -173,6 +173,30 @@ class ModuleBoundaryTest {
     }
 
     /**
+     * The Ledger may ask Settlement for a POLICY, through exactly one adapter.
+     *
+     * <p>This is the arrow that points OUT of the Ledger, and it is a different thing from the one
+     * {@link #noCapabilityImportsTheLedger} seals. Nothing here lets an outside caller move money:
+     * the release job still posts its own journal, from inside the Ledger, in response to time
+     * passing. What crosses is a duration.
+     *
+     * <p>Allowlisted to one file so it stays that way. A second class reaching into Settlement
+     * would be the beginning of the Ledger reading somebody else's state to decide a posting, which
+     * is the property ADR-018 §6 protects.
+     */
+    @Test
+    void ledgerReachesSettlementOnlyThroughItsSingleAdapter() throws IOException {
+        assertOnlyTheseImport(
+            "com/paymesh/ledger",
+            "com.paymesh.settlement.",
+            List.of(
+                "ledger/infrastructure/settlement/SettlementModuleHoldingPeriod.java",
+                "ledger/infrastructure/config/LedgerConfiguration.java"
+            )
+        );
+    }
+
+    /**
      * AND THE ARROW DOES NOT POINT BACK EITHER, which is the direction that would break silently.
      * <p>
      * Nothing in PayMesh may reach into the Ledger to read a balance or post an entry. A capability
@@ -503,7 +527,7 @@ class ModuleBoundaryTest {
     private static final List<String> CAPABILITIES =
         List.of(
             "merchant", "identity", "customer", "order", "payment", "ledger", "refund",
-            "reconciliation", "risk"
+            "reconciliation", "risk", "settlement"
         );
 
     private static void assertOnlyTheseImport(
