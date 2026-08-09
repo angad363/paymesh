@@ -65,4 +65,34 @@ public interface SpringDataLedgerEntryRepository extends JpaRepository<LedgerEnt
         order by e.currency
         """)
     List<MerchantBalance> balancesByMerchant(@Param("merchantId") String merchantId);
+
+    /**
+     * How much of one payment is still sitting in the merchant's PENDING account.
+     *
+     * <h2>THIS ONE QUERY IS WHY THE REFUND REVERSAL POINTS AT THE PAYMENT</h2>
+     *
+     * Every journal that touches a payment's pending position references that payment: the capture
+     * credits it, a refund reversal debits it (since V29), and a release debits it. Summing the
+     * pending-account lines of all of them, signed, gives exactly "what is left to release" with no
+     * special cases -- a partial refund is already subtracted, two partial refunds are both
+     * subtracted, and a payment already released sums to zero because its own release is in the sum.
+     * <p>
+     * That last property is what makes the release job idempotent in arithmetic as well as by
+     * unique key: re-running it on a released payment computes zero and posts nothing.
+     * <p>
+     * Signed the liability way -- credits minus debits -- for the reason the balance query above
+     * gives at length. Getting it backwards would report a payment as owing money the instant it
+     * was captured.
+     */
+    @Query("""
+        select coalesce(sum(case when e.direction = 'CREDIT'
+                                 then e.amountMinor else -e.amountMinor end), 0L)
+        from LedgerEntryJpaEntity e, LedgerAccountJpaEntity a, LedgerTransactionJpaEntity t
+        where a.ledgerAccountId = e.ledgerAccountId
+          and t.ledgerTransactionId = e.ledgerTransactionId
+          and a.accountType = 'MERCHANT_PENDING'
+          and t.referenceType = 'PAYMENT_INTENT'
+          and t.referenceId = :paymentIntentId
+        """)
+    long pendingRemainingForPayment(@Param("paymentIntentId") String paymentIntentId);
 }
