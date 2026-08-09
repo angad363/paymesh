@@ -13,6 +13,9 @@ import com.paymesh.payment.application.CreatePaymentIntentService;
 import com.paymesh.payment.application.GetPaymentIntentService;
 import com.paymesh.payment.application.ListPaymentIntentsService;
 import com.paymesh.payment.application.OrderLookup;
+import com.paymesh.payment.application.RiskCheck;
+import com.paymesh.payment.infrastructure.risk.RiskModuleCheck;
+import com.paymesh.risk.application.EvaluateRiskService;
 import com.paymesh.payment.application.PaymentAttemptRepository;
 import com.paymesh.payment.application.PaymentIntentRepository;
 import com.paymesh.payment.application.PaymentStateHistoryRepository;
@@ -139,6 +142,15 @@ public class PaymentConfiguration {
         );
     }
 
+    /**
+     * Payment's view of Risk. The adapter lives here, in the consumer's infrastructure, so
+     * Payment's application layer never names a Risk type -- same rule as {@code OrderLookup}.
+     */
+    @Bean
+    RiskCheck riskCheck(EvaluateRiskService evaluateRiskService) {
+        return new RiskModuleCheck(evaluateRiskService);
+    }
+
     @Bean
     ConfirmPaymentIntentService confirmPaymentIntentService(
         PaymentIntentRepository paymentIntentRepository,
@@ -146,6 +158,7 @@ public class PaymentConfiguration {
         PaymentStateHistoryRepository paymentStateHistoryRepository,
         GetPaymentIntentService getPaymentIntentService,
         OrderLookup orderLookup,
+        RiskCheck riskCheck,
         OutboxWriter outboxWriter,
         TransactionTemplate transactionTemplate,
         Clock clock
@@ -156,6 +169,7 @@ public class PaymentConfiguration {
             paymentStateHistoryRepository,
             getPaymentIntentService,
             orderLookup,
+            riskCheck,
             outboxWriter,
             transactionTemplate,
             clock

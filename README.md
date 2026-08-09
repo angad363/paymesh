@@ -41,9 +41,10 @@ tests bypass it and still pass, because the constraint is the guard.
 
 ## Current status
 
-**All nine of Phase 1's capabilities are built, and Phase 2 has started** — Webhook is in
-([ADR-028](docs/decisions/ADR-028-sign-webhooks-with-a-secret-that-is-never-stored.md)); Risk,
-Settlement, Notification and Reporting are not. Payment is feature-complete:
+**All nine of Phase 1's capabilities are built, and Phase 2 is two in** — Webhook
+([ADR-028](docs/decisions/ADR-028-sign-webhooks-with-a-secret-that-is-never-stored.md)) and **Risk**
+([ADR-030](docs/decisions/ADR-030-risk-decides-and-payment-acts.md)); Settlement, Notification and
+Reporting are not. Payment is feature-complete:
 create, attach, confirm, provider callbacks, capture and cancel, with order expiry and
 stranded-payment sweeps behind them. **Domain events are now delivered**: the outbox has a
 relay, an in-process dispatcher and a `processed_events` inbox, and Order consumes
@@ -55,7 +56,7 @@ balance, which was not true of this codebase before
 **Refund** closes the loop in the other direction: money goes back out, the Ledger posts a
 reversal, and the payment reaches `REFUNDED`
 ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)).
-**1330 tests, 0 failures. Twenty-six Flyway migrations (V1–V26). Twenty-nine ADRs.**
+**1355 tests, 0 failures. Twenty-eight Flyway migrations (V1–V28). Thirty ADRs.**
 
 **A merchant can now be stopped.** Three lifecycle enums had exactly one reachable value each —
 no merchant could be suspended, no user disabled, no customer blocked, and nothing anywhere read
@@ -74,6 +75,7 @@ the caller's role instead of discarding it
 | **Ledger** | Built | Double-entry posting, refund reversals, and `GET /api/v1/balances`. No holds, no `account_balances` projection, no platform fee — there is no fee schedule to apply ([ADR-018](docs/decisions/ADR-018-post-the-ledger-from-events-with-the-invariants-in-the-database.md)) |
 | **Refund** | Built | No provider-simulator refund callbacks yet, no ops retry route. A lost callback times out after six hours rather than holding head-room forever ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)) |
 | **Reconciliation** | Built | Reads the simulator's day report and repairs what drifted. Payments and refunds only — no settlement file, no ledger-level reconciliation ([ADR-026](docs/decisions/ADR-026-reconcile-against-the-providers-record-by-replaying-it.md)) |
+| **Risk** | Built | Evaluated on every confirm: denylist, velocity and amount, with an immutable assessment recording the inputs and the ruleset version. Rules are code, not a table. No analyst queue, no `REQUIRE_ACTION` step-up, no read API yet ([ADR-030](docs/decisions/ADR-030-risk-decides-and-payment-acts.md)) |
 | **Webhook** | Built | Phase 2's first. Merchant-facing endpoints, a signing secret **derived rather than stored**, and a scheduled dispatcher with its own retry budget. No per-attempt history table, no merchant-visible delivery log ([ADR-028](docs/decisions/ADR-028-sign-webhooks-with-a-secret-that-is-never-stored.md)) |
 
 Platform pieces, honestly:
@@ -363,7 +365,7 @@ wrong.
 
 ## Testing
 
-**1330 tests, 0 failures.** They need Docker and never touch a developer database:
+**1355 tests, 0 failures.** They need Docker and never touch a developer database:
 integration tests run against a throwaway PostgreSQL container
 ([ADR-005](docs/decisions/ADR-005-use-testcontainers-for-integration-tests.md)), so
 Flyway migrates an empty database on every run and the migrations are re-proved rather
@@ -495,8 +497,8 @@ The operational half that was called out as missing here has since been built:
 - **Refund callbacks from the simulator**, so the last hand-signed request in the test
   suite can go away.
 
-Then the rest of Phase 2, in SDD order: Risk, Settlement, Notification, Reporting. **Webhook
-is already built** — it was Phase 2's first, not its third.
+Then the rest of Phase 2, in SDD order: Settlement, Notification, Reporting. **Webhook and Risk
+are already built** — Webhook was Phase 2's first, not its third.
 
 The Ledger will still be the last thing extracted into a service (SDD §30.1). It is the
 financial source of truth — double-entry, immutable entries, corrections as reversal
