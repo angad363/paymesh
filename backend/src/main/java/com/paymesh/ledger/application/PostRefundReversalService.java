@@ -98,8 +98,27 @@ public final class PostRefundReversalService {
             LedgerAccount.providerClearing(currency, now)
         );
 
-        LedgerAccount merchantPending = accounts.open(
-            LedgerAccount.merchantPending(merchantId, currency, now)
+        // WHICH OF THE MERCHANT'S TWO LIABILITIES THIS COMES OUT OF (ADR-031).
+        //
+        // Before the funds are released they sit in pending, and that is where the money goes back
+        // from. After release they are in available -- pending holds nothing for this payment any
+        // more -- so debiting pending would drive it negative while leaving available claiming
+        // money the merchant no longer has. Available is the figure Settlement pays against, so
+        // that error is one that gets paid out.
+        //
+        // The discriminator is the release journal itself: releasing moves ALL of a payment's
+        // remaining pending, so "released" and "nothing of it is pending" are the same fact, and
+        // the ledger already records it under a unique key.
+        boolean released = transactions
+            .findByIdempotencyKey(LedgerTransaction.fundsReleasedIdempotencyKey(paymentIntentId))
+            .isPresent();
+
+        LedgerAccount merchantSide = accounts.open(released
+            // AND IT MAY GO NEGATIVE. A merchant refunding after being paid out owes PayMesh the
+            // money, and a payment platform has to be able to say so. Clamping at zero would be a
+            // second copy of the truth that disagrees with the entries.
+            ? LedgerAccount.merchantAvailable(merchantId, currency, now)
+            : LedgerAccount.merchantPending(merchantId, currency, now)
         );
 
         // Not caught, for the same reason the capture posting is not: a concurrent duplicate rolls
@@ -109,7 +128,7 @@ public final class PostRefundReversalService {
             merchantId,
             refundId,
             paymentIntentId,
-            merchantPending.ledgerAccountId(),
+            merchantSide.ledgerAccountId(),
             providerClearing.ledgerAccountId(),
             amountMinor,
             currency,

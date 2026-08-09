@@ -188,6 +188,50 @@ class AvailableFundsReleaseIntegrationTest {
         )).as("reading a default must not persist one").isZero();
     }
 
+    /**
+     * A REFUND AFTER RELEASE COMES OUT OF AVAILABLE, NOT PENDING.
+     *
+     * <p>Once released, nothing of this payment is pending. Debiting pending would drive it
+     * negative while leaving available still claiming money the merchant no longer has -- and
+     * available is the figure Settlement pays against, so that error is one that gets paid out.
+     */
+    @Test
+    void refundsAgainstAlreadyReleasedFundsDebitAvailable() {
+        MerchantId merchantId = existingMerchant();
+        settlementConfigs.set(merchantId, Duration.ZERO);
+
+        String paymentIntentId = capture(merchantId, CAPTURED);
+
+        release.release();
+
+        refund(merchantId, paymentIntentId, 4_000L);
+
+        assertThat(balanceOf(merchantId))
+            .as("pending is untouched; the refund came out of the released side")
+            .isEqualTo(new MerchantBalance("INR", 0L, 6_000L));
+    }
+
+    /**
+     * And it may go negative. A merchant refunding more than is left available owes PayMesh the
+     * difference, which is a real state rather than a number to clamp at zero.
+     */
+    @Test
+    void letsAvailableGoNegativeWhenARefundExceedsIt() {
+        MerchantId merchantId = existingMerchant();
+        settlementConfigs.set(merchantId, Duration.ZERO);
+
+        String paymentIntentId = capture(merchantId, CAPTURED);
+
+        release.release();
+
+        refund(merchantId, paymentIntentId, CAPTURED);
+        refund(merchantId, paymentIntentId, 2_500L);
+
+        assertThat(balanceOf(merchantId).availableMinor())
+            .as("PayMesh is owed 2500 by this merchant, and the ledger says so")
+            .isEqualTo(-2_500L);
+    }
+
     private String capture(MerchantId merchantId, long amountMinor) {
         return capture(merchantId, amountMinor, CREATED_AT);
     }
