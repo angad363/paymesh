@@ -128,3 +128,17 @@ inside the Ledger, in response to time passing. What crosses is a duration.
 - The release job releases per payment, so a merchant with a very large backlog drains at
   `batch-size` per interval rather than all at once. That is deliberate — each release is its own
   transaction, and one bad payment costs one payment.
+- **A capture fully refunded before it cleared stays a candidate forever.** It never earns a release
+  journal, so the anti-join never filters it out, and the job counts it `held` on every pass. Its
+  cost is a slot in the oldest-first batch: accumulate `batch-size` of them and releases stop. The
+  fix is the same partial index as above, extended to exclude captures with nothing pending.
+- **Release and a refund reversal of the same payment can interleave, and the loser is `available`.**
+  Neither takes a lock: under `READ COMMITTED` a reversal that reads "not yet released" can commit
+  its debit against pending *after* the job has read the pending remainder, so the job releases the
+  gross. The total the merchant is owed stays right — pending goes negative by exactly what
+  available is too high by — but `available` is the figure Settlement pays against, so the error is
+  one that gets paid out. The window is one short transaction against an hourly job. The fix is
+  ADR-019 §4.1's: both paths take a row lock on the payment's capture journal first. It is not taken
+  here because a lock whose only proof is an argument, with no test that fails when it is removed,
+  is the false coverage this repo deletes on sight — it belongs in its own change with a
+  hand-driven two-session reproduction, as the last-admin guard got.
