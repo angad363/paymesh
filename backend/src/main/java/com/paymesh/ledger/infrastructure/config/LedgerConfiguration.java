@@ -14,6 +14,11 @@ import com.paymesh.ledger.infrastructure.persistence.jpa.JpaLedgerTransactionRep
 import com.paymesh.ledger.infrastructure.persistence.jpa.SpringDataLedgerAccountRepository;
 import com.paymesh.ledger.infrastructure.persistence.jpa.SpringDataLedgerEntryRepository;
 import com.paymesh.ledger.infrastructure.persistence.jpa.SpringDataLedgerTransactionRepository;
+import com.paymesh.ledger.application.HoldingPeriodPolicy;
+import com.paymesh.ledger.application.ReleaseAvailableFundsService;
+import com.paymesh.ledger.infrastructure.settlement.SettlementModuleHoldingPeriod;
+import com.paymesh.settlement.application.GetSettlementConfigService;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -28,6 +33,7 @@ import java.time.Clock;
  * as ordinary Java, with a fixed {@link Clock} and hand-written repository doubles, and no Spring
  * context at all.
  */
+@org.springframework.boot.context.properties.EnableConfigurationProperties(LedgerReleaseProperties.class)
 @Configuration
 public class LedgerConfiguration {
 
@@ -107,5 +113,26 @@ public class LedgerConfiguration {
         PostRefundReversalService postRefundReversalService
     ) {
         return new RefundSucceededLedgerHandler(postRefundReversalService);
+    }
+
+    @Bean
+    HoldingPeriodPolicy holdingPeriodPolicy(GetSettlementConfigService settlementConfigs) {
+        return new SettlementModuleHoldingPeriod(settlementConfigs);
+    }
+
+    @Bean
+    ReleaseAvailableFundsService releaseAvailableFundsService(
+        LedgerTransactionRepository ledgerTransactions,
+        LedgerAccountRepository ledgerAccounts,
+        BalanceRepository balances,
+        HoldingPeriodPolicy holdingPeriodPolicy,
+        TransactionTemplate transactionTemplate,
+        Clock clock,
+        LedgerReleaseProperties properties
+    ) {
+        return new ReleaseAvailableFundsService(
+            ledgerTransactions, ledgerAccounts, balances, holdingPeriodPolicy,
+            transactionTemplate, clock, properties.batchSize()
+        );
     }
 }

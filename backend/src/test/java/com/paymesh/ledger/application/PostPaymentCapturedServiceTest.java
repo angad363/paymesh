@@ -183,6 +183,12 @@ class PostPaymentCapturedServiceTest {
 
     private static final class FakeTransactions implements LedgerTransactionRepository {
 
+        @Override
+        public java.util.List<ReleasableCapture> findUnreleasedCaptures(int limit) {
+            return java.util.List.of();
+        }
+
+
         private final Map<String, LedgerTransaction> posted = new HashMap<>();
         private boolean failNextPostAsDuplicate;
 

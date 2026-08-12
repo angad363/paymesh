@@ -24,13 +24,15 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1358 tests, 0 failures.** Twenty-eight Flyway migrations (V1–V28). Thirty ADRs. The Postman
+**1367 tests, 0 failures.** Twenty-nine Flyway migrations (V1–V29). Thirty-one ADRs. The Postman
 collection runs **seventeen folders green** (a newman run executes 233–234 requests and 566–567
 assertions; the count varies because the polling requests re-run themselves) — the newest showing an
 order paid and a signed webhook delivery queued for it without anyone calling a webhook endpoint.
 
 **Phase 2 has started.** See `docs/phase-2-plan.md` for the eight-PR plan and "What comes next"
-below for where it stands. **PR 2, Risk (ADR-030), is built** — evaluated on confirm, with an
+below for where it stands. **PR 3, the settleable balance (ADR-031), is built** — `MERCHANT_AVAILABLE`,
+a per-merchant holding period, and a release job that carries no state because the ledger is its own
+record of what has been released. Settlement's prerequisite is met. **PR 2, Risk (ADR-030), is built** — evaluated on confirm, with an
 immutable assessment carrying the inputs and the ruleset version, and no rules table, no Redis and
 no review queue (each cut is recorded in the plan with what would make it worth adding).
 **PR 0 (ADR-027) is merged** as PR #54. **PR 1, Webhook (ADR-028), is
@@ -537,7 +539,7 @@ no financial effect.
 
 ```bash
 cd backend
-./mvnw test                     # 1358 tests; needs Docker, no local database
+./mvnw test                     # 1367 tests; needs Docker, no local database
 ./mvnw spring-boot:run          # port 8080, activates the dev profile via the pom
 
 # API contract, end to end, including cross-tenant isolation and idempotency

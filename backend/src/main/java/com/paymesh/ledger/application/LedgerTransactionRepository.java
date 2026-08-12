@@ -17,4 +17,17 @@ public interface LedgerTransactionRepository {
     LedgerTransaction post(LedgerTransaction transaction);
 
     Optional<LedgerTransaction> findByIdempotencyKey(String idempotencyKey);
+
+    /**
+     * Captures with no {@code funds-released} journal yet, oldest first, bounded.
+     * <p>
+     * RAW COLUMNS, not aggregates: the release pass parses them inside its per-item try, so one
+     * unreadable row costs one payment rather than the run (open item 2).
+     * <p>
+     * The anti-join means already-released captures are filtered rather than returned, but they are
+     * still visited as the table grows. That is the known ceiling here; a partial index on
+     * unreleased captures is the upgrade when it starts to matter, and it is a measurement rather
+     * than a guess.
+     */
+    java.util.List<ReleasableCapture> findUnreleasedCaptures(int limit);
 }

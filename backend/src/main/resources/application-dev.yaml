@@ -119,6 +119,16 @@ paymesh:
       # a timer POSTing at merchants would mutate the delivery rows a test is asserting on.
       # DeliverWebhooksService is a plain bean, so tests call dispatch() directly.
       enabled: false
+  # OFF, and this one is not optional. Every @SpringBootTest runs under this
+  # profile and the release job MOVES A MERCHANT'S BALANCE between two accounts
+  # -- a tick landing between a test's setup and its assertion rewrites the very
+  # figure under assertion, and the ledger tests assert exact balances.
+  # ReleaseAvailableFundsService is a plain bean, so tests call release()
+  # directly and never wait for a timer.
+  ledger:
+    release:
+      enabled: false
+
   orders:
     expiry-sweep:
       enabled: false

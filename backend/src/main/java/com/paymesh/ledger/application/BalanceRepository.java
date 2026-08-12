@@ -28,5 +28,14 @@ public interface BalanceRepository {
      * ponytail: SUM per read; add {@code account_balances} when a balance read measures slow, and
      * rebuild it from this query.
      */
-    List<MerchantBalance> pendingBalances(MerchantId merchantId);
+    List<MerchantBalance> byMerchant(MerchantId merchantId);
+
+    /**
+     * What is left of one payment in the merchant's pending account, signed the liability way.
+     * <p>
+     * Zero for a payment already released -- its own release journal is part of the sum -- which is
+     * what makes {@code ReleaseAvailableFundsService} idempotent in arithmetic and not only by
+     * unique key.
+     */
+    long pendingRemainingForPayment(String paymentIntentId);
 }

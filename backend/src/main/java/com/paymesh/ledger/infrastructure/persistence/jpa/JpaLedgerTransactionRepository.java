@@ -1,11 +1,14 @@
 package com.paymesh.ledger.infrastructure.persistence.jpa;
 
 import com.paymesh.ledger.application.LedgerTransactionAlreadyPostedException;
+import org.springframework.data.domain.Limit;
 import com.paymesh.ledger.application.LedgerTransactionRepository;
+import com.paymesh.ledger.application.ReleasableCapture;
 import com.paymesh.ledger.domain.LedgerEntry;
 import com.paymesh.ledger.domain.LedgerTransaction;
 import org.springframework.dao.DataIntegrityViolationException;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
@@ -77,5 +80,15 @@ public final class JpaLedgerTransactionRepository implements LedgerTransactionRe
 
             return LedgerJpaMapper.toDomain(header, lines);
         });
+    }
+
+    @Override
+    public List<ReleasableCapture> findUnreleasedCaptures(int limit) {
+        return transactions.findUnreleasedCaptures(Limit.of(limit)).stream()
+            // RAW, unparsed -- the release pass builds its MerchantId inside its own try.
+            .map(row -> new ReleasableCapture(
+                (String) row[0], (String) row[1], (String) row[2], (Instant) row[3]
+            ))
+            .toList();
     }
 }

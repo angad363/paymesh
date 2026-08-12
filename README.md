@@ -41,10 +41,11 @@ tests bypass it and still pass, because the constraint is the guard.
 
 ## Current status
 
-**All nine of Phase 1's capabilities are built, and Phase 2 is two in** — Webhook
-([ADR-028](docs/decisions/ADR-028-sign-webhooks-with-a-secret-that-is-never-stored.md)) and **Risk**
-([ADR-030](docs/decisions/ADR-030-risk-decides-and-payment-acts.md)); Settlement, Notification and
-Reporting are not. Payment is feature-complete:
+**All nine of Phase 1's capabilities are built, and Phase 2 is three in** — Webhook
+([ADR-028](docs/decisions/ADR-028-sign-webhooks-with-a-secret-that-is-never-stored.md)), **Risk**
+([ADR-030](docs/decisions/ADR-030-risk-decides-and-payment-acts.md)) and **the settleable balance**
+([ADR-031](docs/decisions/ADR-031-release-funds-from-the-ledger-itself.md)) that Settlement needs.
+Settlement itself, Notification and Reporting are not. Payment is feature-complete:
 create, attach, confirm, provider callbacks, capture and cancel, with order expiry and
 stranded-payment sweeps behind them. **Domain events are now delivered**: the outbox has a
 relay, an in-process dispatcher and a `processed_events` inbox, and Order consumes
@@ -56,7 +57,7 @@ balance, which was not true of this codebase before
 **Refund** closes the loop in the other direction: money goes back out, the Ledger posts a
 reversal, and the payment reaches `REFUNDED`
 ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)).
-**1358 tests, 0 failures. Twenty-eight Flyway migrations (V1–V28). Thirty ADRs.**
+**1367 tests, 0 failures. Twenty-nine Flyway migrations (V1–V29). Thirty-one ADRs.**
 
 **A merchant can now be stopped.** Three lifecycle enums had exactly one reachable value each —
 no merchant could be suspended, no user disabled, no customer blocked, and nothing anywhere read
@@ -72,7 +73,7 @@ the caller's role instead of discarding it
 | **Order** | Built | Every status is now reachable: `CANCELLED` by request, `EXPIRED` by the sweeper, `PAID` / `PARTIALLY_PAID` by consuming `payment.succeeded` |
 | **Payment** | Built | One shared provider callback secret. Refunds and reconciliation now exist as their own capabilities, below |
 | **Provider Simulator** | Built | No payouts (Settlement is Phase 2), no refund callbacks (no receiver yet), no percentage-based failure injection ([ADR-017](docs/decisions/ADR-017-simulate-providers-through-scheduled-signed-callbacks.md)) |
-| **Ledger** | Built | Double-entry posting, refund reversals, and `GET /api/v1/balances`. No holds, no `account_balances` projection, no platform fee — there is no fee schedule to apply ([ADR-018](docs/decisions/ADR-018-post-the-ledger-from-events-with-the-invariants-in-the-database.md)) |
+| **Ledger** | Built | Double-entry posting, refund reversals, a pending→available release once a holding period passes, and `GET /api/v1/balances`. No holds, no `account_balances` projection, no platform fee ([ADR-018](docs/decisions/ADR-018-post-the-ledger-from-events-with-the-invariants-in-the-database.md), [ADR-031](docs/decisions/ADR-031-release-funds-from-the-ledger-itself.md)) |
 | **Refund** | Built | No provider-simulator refund callbacks yet, no ops retry route. A lost callback times out after six hours rather than holding head-room forever ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)) |
 | **Reconciliation** | Built | Reads the simulator's day report and repairs what drifted. Payments and refunds only — no settlement file, no ledger-level reconciliation ([ADR-026](docs/decisions/ADR-026-reconcile-against-the-providers-record-by-replaying-it.md)) |
 | **Risk** | Built | Evaluated on every confirm: denylist, velocity and amount, with an immutable assessment recording the inputs and the ruleset version. Rules are code, not a table. No analyst queue, no `REQUIRE_ACTION` step-up, no read API yet ([ADR-030](docs/decisions/ADR-030-risk-decides-and-payment-acts.md)) |
@@ -365,7 +366,7 @@ wrong.
 
 ## Testing
 
-**1358 tests, 0 failures.** They need Docker and never touch a developer database:
+**1367 tests, 0 failures.** They need Docker and never touch a developer database:
 integration tests run against a throwaway PostgreSQL container
 ([ADR-005](docs/decisions/ADR-005-use-testcontainers-for-integration-tests.md)), so
 Flyway migrates an empty database on every run and the migrations are re-proved rather

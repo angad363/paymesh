@@ -126,7 +126,7 @@ class LedgerIntegrationTest {
         drain();
 
         assertThat(pendingBalance(fixture.merchantId()))
-            .containsExactly(new MerchantBalance("INR", ORDER_AMOUNT_MINOR));
+            .containsExactly(new MerchantBalance("INR", ORDER_AMOUNT_MINOR, 0L));
     }
 
     /**
@@ -151,7 +151,7 @@ class LedgerIntegrationTest {
 
         assertThat(orderStatus(fixture)).isEqualTo(OrderStatus.PAID);
         assertThat(pendingBalance(fixture.merchantId()))
-            .containsExactly(new MerchantBalance("INR", ORDER_AMOUNT_MINOR));
+            .containsExactly(new MerchantBalance("INR", ORDER_AMOUNT_MINOR, 0L));
     }
 
     /**
@@ -167,7 +167,7 @@ class LedgerIntegrationTest {
         drain();
 
         assertThat(pendingBalance(fixture.merchantId()))
-            .containsExactly(new MerchantBalance("INR", 3000L));
+            .containsExactly(new MerchantBalance("INR", 3000L, 0L));
     }
 
     /** Two payments accumulate; a balance is a sum over entries, not a last-write-wins column. */
@@ -180,7 +180,7 @@ class LedgerIntegrationTest {
         drain();
 
         assertThat(pendingBalance(merchantId))
-            .containsExactly(new MerchantBalance("INR", ORDER_AMOUNT_MINOR + 2500L));
+            .containsExactly(new MerchantBalance("INR", ORDER_AMOUNT_MINOR + 2500L, 0L));
     }
 
     /** One merchant cannot see another's money. The balance query is scoped, not filtered. */
@@ -217,7 +217,7 @@ class LedgerIntegrationTest {
 
         assertThat(journalCount(fixture.merchantId())).isEqualTo(1);
         assertThat(pendingBalance(fixture.merchantId()))
-            .containsExactly(new MerchantBalance("INR", ORDER_AMOUNT_MINOR));
+            .containsExactly(new MerchantBalance("INR", ORDER_AMOUNT_MINOR, 0L));
     }
 
     // --- WHAT THE DATABASE REFUSES ----------------------------------------------------------------

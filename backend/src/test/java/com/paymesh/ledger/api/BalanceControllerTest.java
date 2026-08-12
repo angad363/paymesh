@@ -114,17 +114,23 @@ class BalanceControllerTest {
     }
 
     /**
-     * SDD 15.3's available/reserved/in-settlement figures are OMITTED, not returned as zero. A zero
-     * {@code availableMinor} would claim this merchant has nothing they can withdraw; the truth is
-     * that "available" is not a concept this ledger has yet.
+     * {@code availableMinor} IS NOW REAL, AND A ZERO HERE IS AN ANSWER RATHER THAN A PLACEHOLDER.
+     *
+     * <p>This test used to assert the field was absent, because a zero would have claimed the
+     * merchant had nothing to withdraw when the truth was that "available" was not a concept this
+     * ledger had. ADR-031 gave it one: the money is genuinely pending until the holding period
+     * passes, so zero is what this merchant actually has available.
+     *
+     * <p>The other two stay omitted for the original reason -- {@code reserved} needs balance holds
+     * and {@code inSettlement} needs Settlement, and neither exists to produce a figure.
      */
     @Test
-    void omitsTheBalancesSettlementHasNotMadeRealYet() throws Exception {
+    void reportsAvailableAndStillOmitsTheBalancesNothingProducesYet() throws Exception {
         MerchantId merchantId = registerMerchant();
         collect(merchantId, 99900, "INR");
 
         mockMvc.perform(get("/api/v1/balances").with(callerFor(merchantId)))
-            .andExpect(jsonPath("$.balances[0].availableMinor").doesNotExist())
+            .andExpect(jsonPath("$.balances[0].availableMinor").value(0))
             .andExpect(jsonPath("$.balances[0].reservedMinor").doesNotExist())
             .andExpect(jsonPath("$.balances[0].inSettlementMinor").doesNotExist());
     }
