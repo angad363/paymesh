@@ -53,12 +53,12 @@ nothing and is the thing an integrator actually notices; it goes first.
 |---|---|---|---|---|---|
 | 0 ✅ | `fix/platform-admin-and-known-defects` | `PLATFORM_ADMIN` becomes grantable — **merged, PR #54**. The open-item-17 defect list was split out and is still open | — | V23 | ADR-027 |
 | 1 ✅ | `feature/webhook` | Endpoints, HMAC-signed delivery, backoff, replay — **built** | — | V24–V25 | ADR-028 |
-| 2 | `feature/risk` | Evaluation on confirm, decisions, denylist | — | V27–V28 | ADR-030 |
-| 3 | `feature/ledger-available-balance` | `MERCHANT_AVAILABLE`, holding period, pending→available release | — | V29–V30 | ADR-031 |
-| 4 | `feature/settlement` | Batches, items, payouts, retries, statements | PR3 | V31–V33 | ADR-032 |
-| 5 | `feature/notification` | Templates, preferences, simulated sends, attempt history | — | V34 | ADR-033 |
-| 6 | `feature/reporting` | Projections, summaries, async CSV export | PR4 (content) | V35–V36 | ADR-034 |
-| 7 | `feature/audit` | Append-only log of privileged and financial-operational actions | PR2, PR4 (subjects) | V37 | ADR-035 |
+| 2 ✅ | `feature/risk` | Evaluation on confirm, decisions, denylist — **merged, PR #59** | — | V27–V28 | ADR-030 |
+| 3 ✅ | `feature/ledger-available-balance` | `MERCHANT_AVAILABLE`, holding period, pending→available release — **merged, PR #60** | — | V29 | ADR-031 |
+| 4 | `feature/settlement` | Batches, items, payouts, retries, statements | PR3 | V30–V32 | ADR-032 |
+| 5 | `feature/notification` | Templates, preferences, simulated sends, attempt history | — | V33 | ADR-033 |
+| 6 | `feature/reporting` | Projections, summaries, async CSV export | PR4 (content) | V34–V35 | ADR-034 |
+| 7 | `feature/audit` | Append-only log of privileged and financial-operational actions | PR2, PR4 (subjects) | V36 | ADR-035 |
 
 Migration and ADR numbers are pre-assigned here so that work in parallel
 worktrees cannot collide on them. This is the practice that worked in Phase 1 and
@@ -261,7 +261,7 @@ learns which account to reverse against.
 
 ### PR 4 — Settlement
 
-**Branch:** `feature/settlement` · **Migrations:** V30 (batches, items), V31 (payouts, attempts), V32 (constraints) · **ADR-031** · **Depends on PR3**
+**Branch:** `feature/settlement` · **Migrations:** V30 (batches, items), V31 (payouts, attempts), V32 (constraints) · **ADR-032** · **Depends on PR3**
 
 SDD §17, the rest of it. `settlement_batches` (period, gross, fees,
 adjustments, net, status — immutable once closed), `settlement_items` (batch +
@@ -290,7 +290,7 @@ terminal state, an alert — not infinite retry.
 
 ### PR 5 — Notification
 
-**Branch:** `feature/notification` · **Migration:** V33 · **ADR-032**
+**Branch:** `feature/notification` · **Migration:** V33 · **ADR-033**
 
 SDD §19.1, and the smallest capability in Phase 2. `notification_templates`,
 `notifications`, `delivery_attempts`. An `EventHandler` per subscribed event
@@ -306,7 +306,7 @@ any transaction.
 
 ### PR 6 — Reporting
 
-**Branch:** `feature/reporting` · **Migrations:** V34 (projections), V35 (exports) · **ADR-033**
+**Branch:** `feature/reporting` · **Migrations:** V34 (projections), V35 (exports) · **ADR-034**
 
 SDD §19.2. Merchant-scoped denormalized projections built from domain events,
 in PostgreSQL — **not OpenSearch**, which §19.2 permits only if search
@@ -327,7 +327,7 @@ admits it.
 
 ### PR 7 — Audit
 
-**Branch:** `feature/audit` · **Migration:** V36 · **ADR-034**
+**Branch:** `feature/audit` · **Migration:** V36 · **ADR-035**
 
 SDD §19.3. `audit_events` (event id, actor type and id, merchant id, action,
 resource, reason, before/after hashes, hashed IP, timestamp) and `audit_exports`.

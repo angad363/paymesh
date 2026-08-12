@@ -57,7 +57,7 @@ balance, which was not true of this codebase before
 **Refund** closes the loop in the other direction: money goes back out, the Ledger posts a
 reversal, and the payment reaches `REFUNDED`
 ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)).
-**1367 tests, 0 failures. Twenty-nine Flyway migrations (V1–V29). Thirty-one ADRs.**
+**1374 tests, 0 failures. Twenty-nine Flyway migrations (V1–V29). Thirty-one ADRs.**
 
 **A merchant can now be stopped.** Three lifecycle enums had exactly one reachable value each —
 no merchant could be suspended, no user disabled, no customer blocked, and nothing anywhere read
@@ -78,6 +78,7 @@ the caller's role instead of discarding it
 | **Reconciliation** | Built | Reads the simulator's day report and repairs what drifted. Payments and refunds only — no settlement file, no ledger-level reconciliation ([ADR-026](docs/decisions/ADR-026-reconcile-against-the-providers-record-by-replaying-it.md)) |
 | **Risk** | Built | Evaluated on every confirm: denylist, velocity and amount, with an immutable assessment recording the inputs and the ruleset version. Rules are code, not a table. No analyst queue, no `REQUIRE_ACTION` step-up, no read API yet ([ADR-030](docs/decisions/ADR-030-risk-decides-and-payment-acts.md)) |
 | **Webhook** | Built | Phase 2's first. Merchant-facing endpoints, a signing secret **derived rather than stored**, and a scheduled dispatcher with its own retry budget. No per-attempt history table, no merchant-visible delivery log ([ADR-028](docs/decisions/ADR-028-sign-webhooks-with-a-secret-that-is-never-stored.md)) |
+| **Settlement** | Partial | Only the holding period: `GET`/`PUT /api/v1/settlement-config`, and the release job the Ledger runs against it. No batches, no items, no payouts — that is the next PR ([ADR-031](docs/decisions/ADR-031-release-funds-from-the-ledger-itself.md)) |
 
 Platform pieces, honestly:
 
@@ -86,7 +87,7 @@ Platform pieces, honestly:
 | PostgreSQL + Flyway | Working; Hibernate runs `ddl-auto=validate`, Flyway owns the schema |
 | Idempotency | Working, on four registered routes |
 | Outbox + relay + inbox | Working. Events are written in-transaction, polled by a scheduled relay, dispatched in-process, and deduplicated per consumer in `processed_events`. **Two** consumers now read one event — Order and the Ledger — each with its own inbox row |
-| Double-entry ledger | Working for captures **and refund reversals**. Debits equal credits, entries are immutable, and both rules are enforced by PostgreSQL triggers rather than by application code. A correction is a new journal, never an edit |
+| Double-entry ledger | Working for captures, refund reversals **and releases** — a scheduled job moves a payment's remaining pending balance to `MERCHANT_AVAILABLE` once the merchant's holding period passes, and carries no state of its own because the ledger already records what it released ([ADR-031](docs/decisions/ADR-031-release-funds-from-the-ledger-itself.md)). Debits equal credits, entries are immutable, and both rules are enforced by PostgreSQL triggers rather than by application code. A correction is a new journal, never an edit |
 | Kafka | None, deliberately — the **consumer contract** is the one a broker needs (envelope in, inbox dedup, idempotent handler), so the transport can be swapped without touching a consumer ([ADR-016](docs/decisions/ADR-016-in-process-event-dispatch-before-kafka.md)) |
 | API keys | Working. `Authorization: ApiKey ak_…`, hashed secrets returned once, revocable, and subject to the same role and merchant-status rules as a human caller |
 | HMAC webhooks | Working. Merchant endpoints, `pmsec_` signing secrets derived per endpoint and never stored, an event-to-wire translator, and a scheduled dispatcher with SSRF guards and its own retry budget ([ADR-028](docs/decisions/ADR-028-sign-webhooks-with-a-secret-that-is-never-stored.md)) |
@@ -366,7 +367,7 @@ wrong.
 
 ## Testing
 
-**1367 tests, 0 failures.** They need Docker and never touch a developer database:
+**1374 tests, 0 failures.** They need Docker and never touch a developer database:
 integration tests run against a throwaway PostgreSQL container
 ([ADR-005](docs/decisions/ADR-005-use-testcontainers-for-integration-tests.md)), so
 Flyway migrates an empty database on every run and the migrations are re-proved rather

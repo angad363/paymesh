@@ -1,10 +1,10 @@
 # PayMesh — Project Status and Roadmap
 
-_Last updated: 5 August 2026, end of the session that built the Webhook capability. Update this
+_Last updated: 12 August 2026, after PR #60 merged. Update this
 file at the end of a working session, not during one._
 
-**Reading this to resume? Go to "What comes next" → "PICK UP HERE".** Phase 2's PR 0 is merged and
-PR 1 (Webhook) is built on `feature/webhook`.
+**Reading this to resume? Go to "What comes next" → "PICK UP HERE".** Phase 2's PRs 0–3 are
+merged (#54, #55, #59, #60) and `main` is the current state. Settlement (PR 4) is next.
 
 This is the pick-up-here document. It records what exists, what has actually been
 verified, what is deliberately unfinished, and what comes next. For *why* a design
@@ -24,21 +24,22 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1367 tests, 0 failures.** Twenty-nine Flyway migrations (V1–V29). Thirty-one ADRs. The Postman
+**1374 tests, 0 failures.** Twenty-nine Flyway migrations (V1–V29). Thirty-one ADRs. The Postman
 collection runs **seventeen folders green** (a newman run executes 233–234 requests and 566–567
 assertions; the count varies because the polling requests re-run themselves) — the newest showing an
 order paid and a signed webhook delivery queued for it without anyone calling a webhook endpoint.
 
-**Phase 2 has started.** See `docs/phase-2-plan.md` for the eight-PR plan and "What comes next"
-below for where it stands. **PR 3, the settleable balance (ADR-031), is built** — `MERCHANT_AVAILABLE`,
-a per-merchant holding period, and a release job that carries no state because the ledger is its own
-record of what has been released. Settlement's prerequisite is met. **PR 2, Risk (ADR-030), is built** — evaluated on confirm, with an
-immutable assessment carrying the inputs and the ruleset version, and no rules table, no Redis and
-no review queue (each cut is recorded in the plan with what would make it worth adding).
-**PR 0 (ADR-027) is merged** as PR #54. **PR 1, Webhook (ADR-028), is
-built** on `feature/webhook` and is the first Phase-2 capability: merchant-facing endpoints, a
-signing secret that is derived rather than stored, an internal-to-external translator, and a
-scheduled dispatcher with its own retry budget.
+**Phase 2 is half built.** See `docs/phase-2-plan.md` for the eight-PR plan and "What comes next"
+below for where it stands. Four of the eight are **merged into `main`**:
+
+| PR | What it delivered | Merged |
+|---|---|---|
+| 0 | `PLATFORM_ADMIN` grantable (ADR-027) | #54 |
+| 1 | **Webhook** (ADR-028) — merchant-facing endpoints, a signing secret that is derived rather than stored, an internal-to-external translator, and a scheduled dispatcher with its own retry budget | #55 |
+| 2 | **Risk** (ADR-030) — evaluated on confirm, with an immutable assessment carrying the inputs and the ruleset version, and no rules table, no Redis and no review queue | #59 |
+| 3 | **The settleable balance** (ADR-031) — `MERCHANT_AVAILABLE`, a per-merchant holding period, and a release job that carries no state because the ledger is its own record of what has been released | #60 |
+
+**Settlement's prerequisite is met**, so PR 4 (Settlement itself) is what comes next.
 
 **Phase 1 is complete, including its operational half.** The last PR closed the three things that
 were still only described: the outbox relay now gives up on an event rather than freezing its
@@ -107,11 +108,12 @@ The SDD describes ~15 services across 31 sections. This is what the code actuall
 | API Gateway / Edge | §7 | Partial. API keys exist (ADR-022) and HMAC guards both callback routes; rate limiting is absent. |
 | Provider Simulator | §13.1–§13.2, §13.5–§13.6 | Built, and §13.1's reconciliation export is now **read** (ADR-026). **§13.3's payouts and §13.4's `provider_payouts` are not** — Settlement is Phase 2 and has no consumer. Percentage-based injection is deliberately absent (ADR-017 §5). |
 | Reconciliation | §21.4 | Built (ADR-026). Fetches the provider's daily record over HTTP and replays every terminal row through the ordinary callback path, so ADR-015's and ADR-023's timeout *guesses* are revisable by the provider's own word. No settlement reconciliation and no fee reconciliation — neither exists to reconcile. |
-| Risk & Fraud | §14 | Not started. |
-| Ledger | §15.1–§15.2, §15.6 | Core built (ADR-018): double-entry accounts, journals, immutable entries, and a merchant balance. **§15.3's internal posting API is deliberately absent** — the only writer is an event consumer, so every posting traces to a committed state change. **§15.5's `balance_holds` and `account_balances` are not built**: nothing reserves funds until Settlement, and a SUM over entries cannot drift the way a projection can. No fee split (§15.2) — there is no fee schedule. No reversal path yet; Refund brings it. |
+| Risk & Fraud | §14 | Built (ADR-030). Evaluated synchronously on confirm; an immutable assessment records the inputs and the ruleset version. Rules are code, not a table. No analyst queue, no `REQUIRE_ACTION` step-up, no read API. |
+| Ledger | §15.1–§15.2, §15.6 | Core built (ADR-018): double-entry accounts, journals, immutable entries, and a merchant balance. **`MERCHANT_AVAILABLE` now exists and a release job moves cleared funds into it** (ADR-031), so the balance reports pending *and* available. **§15.3's internal posting API is deliberately absent** — the only writer is an event consumer, so every posting traces to a committed state change. **§15.5's `balance_holds` and `account_balances` are not built**: nothing reserves funds until Settlement, and a SUM over entries cannot drift the way a projection can. No fee split (§15.2) — there is no fee schedule. Reversals: Refund (ADR-019). |
 | Refund | §16.1–§16.3, §16.5–§16.6 | Built (ADR-019). Create, read, list, cancel, and a Refund-owned callback route. **§16.4's `refund_reservations` and `refund_attempts` are not built** — the first is a second copy of what `refunds.status` says, the second is for a conversation a refund does not have. §16.3's ops retry route is absent. §16.6's third line — reconciling a lost callback — is the known gap. |
 | Webhook | §18.1–§18.4 | Built (ADR-028). Endpoints, subscriptions, a derived signing secret, an internal-to-external translator, a scheduled dispatcher with backoff, and replay. **§18.4's `webhook_delivery_attempts` is deliberately not built** — the counters on the delivery row answer what a merchant debugging a failure asks, and a row per attempt is a log wearing a table's clothes. No merchant-facing event catalogue endpoint; the four published types are named in the 422 you get for asking for a fifth. |
-| Settlement, Notification/Reporting/Audit, AI Ops | §17, §19–§20 | Not started. |
+| Settlement | §17 | Not started, **except §17.4's holding period** (ADR-031): `settlement_configs` carries that one column and `GET`/`PUT /api/v1/settlement-config` read and set it. The schedule, minimum payout, currency and payout account are PR 4's — no batches, no items, no payouts. |
+| Notification/Reporting/Audit, AI Ops | §19–§20 | Not started. |
 | End-to-end workflows | §21 | The create-order → collect → refund path exists, and **§21.4 reconciliation is now built** (ADR-026). |
 | Security & privacy | §25 | Partial: authn, tenant isolation, secret guards. No encryption at rest, no key management, no audit trail beyond `security_events`. |
 | Observability | §26 | `/actuator/health` and `/actuator/info`, the former now carrying the outbox backlog alert (ADR-025). No OpenTelemetry, metrics, tracing or structured correlation ids. |
@@ -269,10 +271,16 @@ Properties worth not breaking:
 
 | Endpoint | Auth | Notes |
 |---|---|---|
-| `GET /api/v1/balances` | Bearer | One row per currency the merchant has been paid in; empty list, never 404 |
+| `GET /api/v1/balances` | Bearer | One row per currency the merchant has been paid in; `pendingMinor` and `availableMinor`; empty list, never 404 |
+| `GET /api/v1/settlement-config` | Bearer | The merchant's holding period, with `isDefault` saying whether it was chosen or inherited |
+| `PUT /api/v1/settlement-config` | Bearer | Sets it. The merchant is the key, so a second PUT replaces rather than duplicates — idempotent without the filter |
 
-There is **no write endpoint**, deliberately (ADR-018 §3). The only writer is a consumer of
-`payment.succeeded`, which means **every posting traces back to a committed payment**. SDD §15.3's
+The last two live in `com.paymesh.settlement`, which is otherwise empty until PR 4; the Ledger reads
+the period through a `HoldingPeriodPolicy` port with one allowlisted adapter (ADR-031).
+
+There is **no write endpoint on the ledger itself**, deliberately (ADR-018 §3). The only writers are
+a consumer of `payment.succeeded`, a consumer of `refund.succeeded`, and the release job — so
+**every posting traces back to a committed state change or to time passing**. SDD §15.3's
 `POST /internal/v1/ledger/transactions` would be a second way into the financial source of truth
 with no originating event to reconcile against.
 
@@ -293,11 +301,22 @@ Properties worth not breaking:
   read. Not a catch around a failed insert: this runs inside the dispatcher's transaction, and in
   PostgreSQL *any* error aborts the enclosing transaction, so the recovery read would be the first
   casualty.
-- **Two account types out of SDD §15.1's nine.** Each of the others needs a producer that does not
-  exist — a settlement schedule, holds, a fee schedule. An account that reads zero forever implies
-  a capability that is missing.
+- **Three account types out of SDD §15.1's nine**, `MERCHANT_AVAILABLE` being the newest. Each of
+  the others still needs a producer that does not exist — settlement in transit, holds, a fee
+  schedule. An account that reads zero forever implies a capability that is missing.
 - **No platform fee.** There is no fee schedule anywhere in this codebase, and a made-up rate would
   sit in rows nothing can ever edit.
+- **The release job carries no state, and that is deliberate** (ADR-031). "Has this payment been
+  released?" is `uq_ledger_transactions_idempotency` on `funds-released:pi_x`; "how much is left?"
+  is the signed sum of pending-account lines across every journal referencing that payment. A
+  released payment sums to zero because its own release is in the sum, so re-running the job posts
+  nothing. A state table would be a second copy of both.
+- **A refund reversal references the PAYMENT, not the refund**, which is what makes that sum work —
+  a partial refund is already subtracted, so a release moves the net. Rows written before V29 point
+  at the refund and are **not** backfilled: the immutability trigger refuses it, and rewriting
+  history is the thing this ledger exists to prevent. **A refund after release debits `available`
+  and may drive it negative**, because a merchant refunding after being paid out owes PayMesh the
+  difference.
 
 ### Refund — `com.paymesh.refund`
 
@@ -539,7 +558,7 @@ no financial effect.
 
 ```bash
 cd backend
-./mvnw test                     # 1367 tests; needs Docker, no local database
+./mvnw test                     # 1374 tests; needs Docker, no local database
 ./mvnw spring-boot:run          # port 8080, activates the dev profile via the pom
 
 # API contract, end to end, including cross-tenant isolation and idempotency
@@ -605,6 +624,9 @@ The collection is not decorative: dropping the tenant predicate in
 | 026 | Read the provider's own daily record, and repair what a lost callback left wrong |
 | 027 | Make `PLATFORM_ADMIN` grantable by giving a platform role no merchant at all |
 | 028 | Sign webhooks with a secret that is derived and never stored |
+| 029 | Constrain identifier formats in the database, so a row the application cannot read back cannot be written |
+| 030 | Risk decides and Payment acts — rules as code, evaluated synchronously on confirm |
+| 031 | Release funds from the ledger itself: a holding period, a pending→available journal, and no state table for the job |
 
 Note that the SDD's Appendix D has its own ADR list with the same numbers and
 different decisions. When citing one, say which source you mean.
@@ -856,6 +878,23 @@ failing test._
     Third time this month an exhaustiveness or correctness claim has been wrong, and all three were
     found by removing an assumption rather than by adding a test.
 
+20. **Two limits the release job ships with, both recorded in ADR-031 rather than fixed** (found by
+    reviewing #60, not by a failing test).
+
+    **A capture fully refunded before it cleared never leaves the candidate set.** It earns no
+    release journal, so the anti-join never filters it out and the job counts it `held` on every
+    pass. The cost is a slot in the oldest-first batch: accumulate `batch-size` of them and
+    releases stop.
+
+    **Release and a refund reversal of the same payment can interleave, and `available` takes the
+    error.** Neither path takes a lock, so under `READ COMMITTED` a reversal that reads "not yet
+    released" can commit its debit against pending *after* the job has read the pending remainder,
+    and the job then releases the gross. The total owed stays right — pending goes negative by
+    exactly what available is too high by — but available is what Settlement pays against. The fix
+    is ADR-019 §4.1's row lock; it is not taken yet because a lock whose only proof is an argument
+    is the false coverage this repo deletes, and **PR 4 must not start paying out against
+    `available` without closing it.**
+
 18. **`SERVICE_ACCOUNT` is the last unreachable enum constant on the platform**, and unlike the
     ones ADR-021/024/027 closed it is unreachable *by decision* rather than by oversight.
     `ck_user_roles_scope` keeps it merchant-scoped; nothing mints one. Recorded so the next audit
@@ -895,13 +934,16 @@ Ledger's `MERCHANT_AVAILABLE` account, which `AccountType`'s own javadoc names a
 | PR | Delivers | Depends on | Migrations | ADR |
 |---|---|---|---|---|
 | 0 ✅ | `PLATFORM_ADMIN` grantable — **merged, PR #54** | — | V23 | ADR-027 |
-| 1 ✅ | Webhook — **built, `feature/webhook`** | — | V24–V25 | ADR-028 |
-| 2 | Risk | — | V26–V27 | ADR-029 |
-| 3 | Ledger available balance | — | V28–V29 | ADR-030 |
-| 4 | Settlement | PR3 | V30–V32 | ADR-031 |
-| 5 | Notification | — | V33 | ADR-032 |
-| 6 | Reporting | PR4 (content) | V34–V35 | ADR-033 |
-| 7 | Audit | PR2, PR4 (subjects) | V36 | ADR-034 |
+| 1 ✅ | Webhook — **merged, PR #55** | — | V24–V25 | ADR-028 |
+| 2 ✅ | Risk — **merged, PR #59** | — | V27–V28 | ADR-030 |
+| 3 ✅ | Ledger available balance — **merged, PR #60** | — | V29 | ADR-031 |
+| 4 | Settlement | PR3 | V30–V32 | ADR-032 |
+| 5 | Notification | — | V33 | ADR-033 |
+| 6 | Reporting | PR4 (content) | V34–V35 | ADR-034 |
+| 7 | Audit | PR2, PR4 (subjects) | V36 | ADR-035 |
+
+The numbers moved once: open item 19 took V26 and ADR-029 mid-plan, so everything after it shifted
+by one. `docs/phase-2-plan.md` carries the same table and the two agree.
 
 ### PR #54 is merged. What it settled, and the one thing it deliberately left uncovered
 
@@ -1017,24 +1059,35 @@ the documents again.
   loses an endpoint id has no way to enumerate.
 - **The DNS-rebinding race in the SSRF guard is open and documented** (ADR-028 §7).
 
-### PICK UP HERE — after Webhook
+### PICK UP HERE — after PR #60
 
-- **Merge `feature/webhook`.** It is green and verified live but has not been reviewed. Nothing
-  merges on the author's report — the reviewer should re-run the suite and, where a test protects
-  an invariant, break the implementation to confirm the test catches it. The places most worth
-  attacking: the derivation's frozen vectors, the two-`v1=` rotation header, the SSRF guard's
-  address ranges, and the claim that create and rotate must stay off the idempotency filter.
-- **Open item 2 is closed** (see above). What it turned up is now open item 19: no identifier
-  column has a format CHECK, so the database accepts ids the application cannot read back. The
-  sweeps survive one now; nothing else does. A migration adding the CHECKs is the fix and is worth
-  its own PR.
+`main` is at PR #60. Phase 2's PRs 0–3 are merged, 1374 tests are green, and the next thing to
+build is **PR 4, Settlement** (`docs/phase-2-plan.md`): migrations **V30–V32**, **ADR-032**,
+branch `feature/settlement`.
+
+- **Read open item 20 before writing any of it.** Settlement pays against `available`, and the two
+  limits recorded there are both about `available` being wrong: a payment released while a refund
+  of it is in flight leaves available too high, and the release job can starve. Neither matters
+  while nothing pays out. PR 4 is the thing that makes them matter, so the lock belongs in it or
+  immediately before it.
+- **The holding period is already there and is Settlement's only settled column.**
+  `settlement_configs` carries `holding_period_seconds` and nothing else; the schedule, minimum
+  payout, currency and payout account are PR 4's to add as an ordinary `ALTER` (ADR-031). The
+  merchant-facing routes exist at `/api/v1/settlement-config`.
+- **`AccountType` needs `SETTLEMENT_IN_TRANSIT` and `BANK_CASH`**, and V29 is the worked example of
+  how: **two** CHECKs name the account types, `ck_ledger_accounts_type` and
+  `ck_ledger_accounts_owner`, and missing the second is how V29 failed the first time it ran. Only
+  a test that actually opens the account catches it.
+- **The Provider Simulator has no payouts** (SDD §13.3–§13.4). Settlement is the first consumer
+  that would want them, so PR 4 either simulates a payout provider or stops at
+  `SETTLEMENT_IN_TRANSIT` and says so.
 - **The rest of open item 17 is still not worked through** — the `FailureAnalyzer`,
   `ModuleBoundaryTest` allowlisting by filename rather than path, the idempotency filter's
   hard-coded replay `Content-Type`, the `@Email` inconsistency. All cosmetic or test-only; none is
   on the money path.
-- **Then PR 2, Risk** (`docs/phase-2-plan.md`). Migrations V26–V27, ADR-029 are reserved for it. It
-  is the one Phase-2 capability that touches existing code — Payment's confirm calls it
-  synchronously — so it is worth designing before building.
+- **Postman still has no settlement folder.** The release job cannot be walked over HTTP under
+  `dev` — the timer is off and the default holding period is seven days — so the collection was
+  left alone for #60. PR 4 is the point where a folder starts paying for itself.
 
 **The judgement call to revisit when a second provider arrives.** Reconciliation reads this
 provider's `TIMED_OUT` as "nothing was collected", which is true of the simulator's file because
