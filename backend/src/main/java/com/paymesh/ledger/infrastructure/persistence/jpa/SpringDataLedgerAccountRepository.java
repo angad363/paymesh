@@ -14,6 +14,22 @@ public interface SpringDataLedgerAccountRepository
     Optional<LedgerAccountJpaEntity> findByAccountReference(String accountReference);
 
     /**
+     * The merchants holding an account of one type. Settlement's candidate list.
+     * <p>
+     * Distinct ids rather than entities: nothing wants the account rows, and a merchant holds one
+     * account of a type per currency, so the entity version would return duplicates the caller then
+     * has to fold.
+     */
+    @Query("""
+        select distinct a.merchantId
+        from LedgerAccountJpaEntity a
+        where a.accountType = :accountType
+          and a.merchantId is not null
+        order by a.merchantId
+        """)
+    java.util.List<String> merchantsWithAccountType(@Param("accountType") String accountType);
+
+    /**
      * Insert the account unless its reference is already taken.
      *
      * <h2>A NATIVE {@code ON CONFLICT DO NOTHING}, AND IT HAS TO BE</h2>

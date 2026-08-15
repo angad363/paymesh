@@ -55,16 +55,56 @@ public interface SpringDataLedgerEntryRepository extends JpaRepository<LedgerEnt
             sum(case when a.accountType = 'MERCHANT_AVAILABLE'
                      then (case when e.direction = 'CREDIT'
                                 then e.amountMinor else -e.amountMinor end)
+                     else 0L end),
+            sum(case when a.accountType = 'SETTLEMENT_IN_TRANSIT'
+                     then (case when e.direction = 'CREDIT'
+                                then e.amountMinor else -e.amountMinor end)
                      else 0L end)
         )
         from LedgerEntryJpaEntity e, LedgerAccountJpaEntity a
         where a.ledgerAccountId = e.ledgerAccountId
           and a.merchantId = :merchantId
-          and a.accountType in ('MERCHANT_PENDING', 'MERCHANT_AVAILABLE')
+          and a.accountType in (
+              'MERCHANT_PENDING', 'MERCHANT_AVAILABLE', 'SETTLEMENT_IN_TRANSIT'
+          )
         group by e.currency
         order by e.currency
         """)
     List<MerchantBalance> balancesByMerchant(@Param("merchantId") String merchantId);
+
+    /**
+     * What each of a merchant's payments has contributed to its available account, per currency.
+     *
+     * <h2>THE QUERY SETTLEMENT CUTS A BATCH FROM</h2>
+     *
+     * Settlement needs two things that look different and are the same sum: how much a merchant can
+     * be paid, and which payments that money came from. Rolling up the balance would answer the
+     * first and lose the second, and SDD 17.1 wants a statement a merchant can reconcile against
+     * their own orders.
+     * <p>
+     * A payment's contribution is its release credit minus every refund debited against available
+     * afterwards, so a payment refunded past its own release contributes a NEGATIVE figure. That is
+     * not an anomaly to filter out: dropping it would cut a batch for more than the merchant has.
+     * <p>
+     * <b>Journals referencing a batch are excluded on purpose.</b> The batch's own debit and a
+     * returned payout's credit both live in this account and reference a {@code SETTLEMENT_BATCH},
+     * not a payment. Settlement subtracts what it has already batched from these figures itself --
+     * it owns {@code settlement_items} and the ledger does not -- and the arithmetic works out
+     * because the V32 trigger makes a batch's debit equal the sum of its items.
+     */
+    @Query("""
+        select e.currency, t.referenceId,
+               sum(case when e.direction = 'CREDIT' then e.amountMinor else -e.amountMinor end)
+        from LedgerEntryJpaEntity e, LedgerAccountJpaEntity a, LedgerTransactionJpaEntity t
+        where a.ledgerAccountId = e.ledgerAccountId
+          and t.ledgerTransactionId = e.ledgerTransactionId
+          and a.merchantId = :merchantId
+          and a.accountType = 'MERCHANT_AVAILABLE'
+          and t.referenceType = 'PAYMENT_INTENT'
+        group by e.currency, t.referenceId
+        order by e.currency, t.referenceId
+        """)
+    List<Object[]> availableContributionsByMerchant(@Param("merchantId") String merchantId);
 
     /**
      * How much of one payment is still sitting in the merchant's PENDING account.

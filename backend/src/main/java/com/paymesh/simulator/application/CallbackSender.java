@@ -22,6 +22,8 @@ public interface CallbackSender {
     /**
      * @param body the exact stored bytes. The implementation signs THESE and sends THESE; it must
      *             never re-serialize, because the signature covers what is on the wire
+     * @param target which of PayMesh's routes this is aimed at. A KIND, not a URL: the URL is
+     *               configuration, and the application layer does not hold one
      */
-    CallbackDelivery send(String body);
+    CallbackDelivery send(String body, com.paymesh.simulator.domain.CallbackTarget target);
 }

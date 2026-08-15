@@ -16,8 +16,14 @@ import com.paymesh.simulator.domain.CallbackBody;
  * string verbatim. Nothing re-serializes it later, which is the whole reason the signature can be
  * trusted to cover the bytes on the wire.
  */
-@FunctionalInterface
 public interface CallbackBodyWriter {
 
     String write(CallbackBody body);
+
+    /**
+     * The same guarantee for a payout callback: serialized ONCE, here, and the stored string is
+     * what the dispatcher signs and posts. Two methods rather than one generic write, so the two
+     * shapes stay named types rather than an Object the writer has to guess at.
+     */
+    String writePayout(com.paymesh.simulator.domain.PayoutCallbackBody body);
 }

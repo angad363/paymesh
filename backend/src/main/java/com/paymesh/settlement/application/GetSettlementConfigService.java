@@ -41,16 +41,51 @@ public final class GetSettlementConfigService {
         return configs.find(merchantId).orElseGet(() -> {
             Instant now = Instant.now(clock);
 
-            return new SettlementConfig(merchantId, defaultHoldingPeriod, now, now);
+            // NO DESTINATION AND THE SMALLEST MINIMUM. A default payout destination cannot exist --
+            // there is no bank account to guess -- so an unconfigured merchant is simply never
+            // batched, which is the safe direction to fail in.
+            return new SettlementConfig(merchantId, defaultHoldingPeriod, null, 1L, now, now);
         });
     }
 
-    /** Upsert. The merchant is the key, so there is no create-versus-update for a caller to get wrong. */
+    /**
+     * Upsert. The merchant is the key, so there is no create-versus-update for a caller to get
+     * wrong, and PUT semantics: every setting is replaced rather than merged.
+     */
+    /**
+     * Set only the holding period, leaving the payout destination and minimum at their current
+     * values (or the defaults for a merchant with no row). The release path cares about the holding
+     * period alone, so this is what it calls; the full setter is the API's.
+     */
     public SettlementConfig set(MerchantId merchantId, Duration holdingPeriod) {
+        return configs.find(merchantId)
+            .map(existing -> configs.save(existing.with(
+                holdingPeriod, existing.payoutDestination(), existing.minimumPayoutMinor(),
+                Instant.now(clock)
+            )))
+            .orElseGet(() -> {
+                Instant now = Instant.now(clock);
+
+                return configs.save(new SettlementConfig(
+                    merchantId, holdingPeriod, null, 1L, now, now
+                ));
+            });
+    }
+
+    public SettlementConfig set(
+        MerchantId merchantId,
+        Duration holdingPeriod,
+        String payoutDestination,
+        long minimumPayoutMinor
+    ) {
         Instant now = Instant.now(clock);
 
         return configs.save(configs.find(merchantId)
-            .map(existing -> existing.withHoldingPeriod(holdingPeriod, now))
-            .orElseGet(() -> new SettlementConfig(merchantId, holdingPeriod, now, now)));
+            .map(existing -> existing.with(
+                holdingPeriod, payoutDestination, minimumPayoutMinor, now
+            ))
+            .orElseGet(() -> new SettlementConfig(
+                merchantId, holdingPeriod, payoutDestination, minimumPayoutMinor, now, now
+            )));
     }
 }

@@ -60,6 +60,7 @@ public final class SimulatorController {
     private final CreateSimulatedPaymentService createSimulatedPaymentService;
     private final CaptureSimulatedPaymentService captureSimulatedPaymentService;
     private final CreateSimulatedRefundService createSimulatedRefundService;
+    private final com.paymesh.simulator.application.CreateSimulatedPayoutService createSimulatedPayoutService;
     private final ExportReconciliationService exportReconciliationService;
     private final ConfigureFailureProfileService configureFailureProfileService;
 
@@ -67,12 +68,14 @@ public final class SimulatorController {
         CreateSimulatedPaymentService createSimulatedPaymentService,
         CaptureSimulatedPaymentService captureSimulatedPaymentService,
         CreateSimulatedRefundService createSimulatedRefundService,
+        com.paymesh.simulator.application.CreateSimulatedPayoutService createSimulatedPayoutService,
         ExportReconciliationService exportReconciliationService,
         ConfigureFailureProfileService configureFailureProfileService
     ) {
         this.createSimulatedPaymentService = createSimulatedPaymentService;
         this.captureSimulatedPaymentService = captureSimulatedPaymentService;
         this.createSimulatedRefundService = createSimulatedRefundService;
+        this.createSimulatedPayoutService = createSimulatedPayoutService;
         this.exportReconciliationService = exportReconciliationService;
         this.configureFailureProfileService = configureFailureProfileService;
     }
@@ -129,6 +132,32 @@ public final class SimulatorController {
      * recorded and will report in reconciliation; it is not a failure of the request, and returning
      * 4xx for it would make "the issuer said no" indistinguishable from "your request was wrong".
      */
+    /**
+     * A payout, SDD 13.3, and the gap ADR-017 recorded as "no consumer" now that Settlement is one.
+     *
+     * <p>201 on a create and <b>200 on a resubmission</b>, like {@code POST /sim/v1/payments} and
+     * for the same reason: the caller retrying can tell which happened from the status line without
+     * diffing bodies. A resubmission queues no second callback -- see the service.
+     */
+    @PostMapping("payouts")
+    ResponseEntity<SimulatedPayoutResponse> createPayout(
+        @Valid @RequestBody CreateSimulatedPayoutRequest request
+    ) {
+        com.paymesh.simulator.application.CreateSimulatedPayoutService.Result result =
+            createSimulatedPayoutService.create(
+                new com.paymesh.simulator.application.CreateSimulatedPayoutCommand(
+                    request.externalReference(),
+                    request.destination(),
+                    request.amountMinor(),
+                    request.currency()
+                )
+            );
+
+        return ResponseEntity
+            .status(result.created() ? HttpStatus.CREATED : HttpStatus.OK)
+            .body(SimulatedPayoutResponse.from(result.payout()));
+    }
+
     @PostMapping("refunds")
     @ResponseStatus(HttpStatus.CREATED)
     SimulatedRefundResponse createRefund(@Valid @RequestBody CreateSimulatedRefundRequest request) {

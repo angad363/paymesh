@@ -19,6 +19,13 @@ public class SettlementConfigJpaEntity {
     @Column(name = "holding_period_seconds", nullable = false)
     private int holdingPeriodSeconds;
 
+    /** Null means "not configured", which is what stops this merchant being batched at all. */
+    @Column(name = "payout_destination", length = 80)
+    private String payoutDestination;
+
+    @Column(name = "minimum_payout_minor", nullable = false)
+    private long minimumPayoutMinor;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -29,10 +36,17 @@ public class SettlementConfigJpaEntity {
     }
 
     public SettlementConfigJpaEntity(
-        String merchantId, int holdingPeriodSeconds, Instant createdAt, Instant updatedAt
+        String merchantId,
+        int holdingPeriodSeconds,
+        String payoutDestination,
+        long minimumPayoutMinor,
+        Instant createdAt,
+        Instant updatedAt
     ) {
         this.merchantId = merchantId;
         this.holdingPeriodSeconds = holdingPeriodSeconds;
+        this.payoutDestination = payoutDestination;
+        this.minimumPayoutMinor = minimumPayoutMinor;
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
     }
@@ -43,6 +57,14 @@ public class SettlementConfigJpaEntity {
 
     public int holdingPeriodSeconds() {
         return holdingPeriodSeconds;
+    }
+
+    public String payoutDestination() {
+        return payoutDestination;
+    }
+
+    public long minimumPayoutMinor() {
+        return minimumPayoutMinor;
     }
 
     public Instant createdAt() {

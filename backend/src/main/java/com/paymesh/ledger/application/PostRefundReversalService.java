@@ -109,6 +109,13 @@ public final class PostRefundReversalService {
         // The discriminator is the release journal itself: releasing moves ALL of a payment's
         // remaining pending, so "released" and "nothing of it is pending" are the same fact, and
         // the ledger already records it under a unique key.
+        // AND THE CHECK IS TAKEN UNDER A LOCK. The release job locks the same rows before it reads
+        // how much is left to release, so the two orderings that matter -- reversal then release,
+        // release then reversal -- are the only two that can happen. Without it both can read a
+        // world without the other, and the payment over-releases into the balance Settlement pays
+        // out against.
+        transactions.lockPaymentJournals(paymentIntentId);
+
         boolean released = transactions
             .findByIdempotencyKey(LedgerTransaction.fundsReleasedIdempotencyKey(paymentIntentId))
             .isPresent();

@@ -28,6 +28,8 @@ public final class JpaSettlementConfigRepository implements SettlementConfigRepo
         configs.save(new SettlementConfigJpaEntity(
             config.merchantId().value(),
             Math.toIntExact(config.holdingPeriod().toSeconds()),
+            config.payoutDestination(),
+            config.minimumPayoutMinor(),
             config.createdAt(),
             config.updatedAt()
         ));
@@ -39,6 +41,8 @@ public final class JpaSettlementConfigRepository implements SettlementConfigRepo
         return new SettlementConfig(
             MerchantId.from(entity.merchantId()),
             Duration.ofSeconds(entity.holdingPeriodSeconds()),
+            entity.payoutDestination(),
+            entity.minimumPayoutMinor(),
             entity.createdAt(),
             entity.updatedAt()
         );

@@ -69,6 +69,18 @@ public record LedgerTransaction(
     /** Funds clearing the holding period and becoming settleable. SDD 15.1, ADR-031. */
     public static final String FUNDS_RELEASED = "FUNDS_RELEASED";
 
+    /** Available funds committed to a settlement batch. SDD 17.6 invariant 2, ADR-032. */
+    public static final String SETTLEMENT_BATCH_CUT = "SETTLEMENT_BATCH_CUT";
+
+    /** The provider confirmed the payout. The one posting where money leaves PayMesh. */
+    public static final String PAYOUT_PAID = "PAYOUT_PAID";
+
+    /** The payout failed terminally and the funds go back to available. */
+    public static final String PAYOUT_RETURNED = "PAYOUT_RETURNED";
+
+    /** What a settlement journal points back at. */
+    public static final String REFERENCE_SETTLEMENT_BATCH = "SETTLEMENT_BATCH";
+
     public LedgerTransaction {
         if (ledgerTransactionId == null) {
             throw new IllegalArgumentException("Ledger transaction identifier is required");
@@ -226,6 +238,143 @@ public record LedgerTransaction(
      */
     public static String fundsReleasedIdempotencyKey(String paymentIntentId) {
         return "funds-released:" + paymentIntentId;
+    }
+
+    /**
+     * A merchant's available balance being committed to a batch.
+     *
+     * <pre>
+     *   DEBIT   merchant:mrc_x:available:INR    -- can no longer be settled again
+     *   CREDIT  merchant:mrc_x:in-transit:INR   -- committed to a payout
+     * </pre>
+     *
+     * SDD 17.6 invariant 2, and the reason it is an invariant: without this hop, a payout in flight
+     * is either still available (so the next batch settles it a second time) or already gone from
+     * the balance (so a failed payout has nowhere to come back to). Both liabilities belong to the
+     * same merchant, so this nets to zero against PayMesh's position, exactly like a release.
+     */
+    public static LedgerTransaction settlementBatchCut(
+        MerchantId merchantId,
+        String settlementBatchId,
+        LedgerAccountId merchantAvailableAccountId,
+        LedgerAccountId settlementInTransitAccountId,
+        long amountMinor,
+        String currency,
+        Instant occurredAt,
+        Instant createdAt
+    ) {
+        return new LedgerTransaction(
+            LedgerTransactionId.generate(),
+            merchantId,
+            SETTLEMENT_BATCH_CUT,
+            REFERENCE_SETTLEMENT_BATCH,
+            settlementBatchId,
+            currency,
+            settlementBatchCutIdempotencyKey(settlementBatchId),
+            List.of(
+                LedgerEntry.debit(merchantAvailableAccountId, amountMinor),
+                LedgerEntry.credit(settlementInTransitAccountId, amountMinor)
+            ),
+            occurredAt,
+            createdAt
+        );
+    }
+
+    /**
+     * The payout landed.
+     *
+     * <pre>
+     *   DEBIT   merchant:mrc_x:in-transit:INR   -- PayMesh no longer owes it
+     *   CREDIT  bank-cash:INR                   -- and no longer has it
+     * </pre>
+     *
+     * <b>The only journal in this ledger where money leaves the platform</b>, which is why it is
+     * posted on the provider's confirmation and never on PayMesh's own submission. A debit of a
+     * liability against a credit of an asset is the shape of an obligation being discharged with
+     * cash; every other journal here moves value between two accounts on the same side.
+     */
+    public static LedgerTransaction payoutPaid(
+        MerchantId merchantId,
+        String settlementBatchId,
+        LedgerAccountId settlementInTransitAccountId,
+        LedgerAccountId bankCashAccountId,
+        long amountMinor,
+        String currency,
+        Instant occurredAt,
+        Instant createdAt
+    ) {
+        return new LedgerTransaction(
+            LedgerTransactionId.generate(),
+            merchantId,
+            PAYOUT_PAID,
+            REFERENCE_SETTLEMENT_BATCH,
+            settlementBatchId,
+            currency,
+            payoutPaidIdempotencyKey(settlementBatchId),
+            List.of(
+                LedgerEntry.debit(settlementInTransitAccountId, amountMinor),
+                LedgerEntry.credit(bankCashAccountId, amountMinor)
+            ),
+            occurredAt,
+            createdAt
+        );
+    }
+
+    /**
+     * The payout failed for the last time, and the money goes back.
+     *
+     * <pre>
+     *   DEBIT   merchant:mrc_x:in-transit:INR   -- no longer committed
+     *   CREDIT  merchant:mrc_x:available:INR    -- settleable again
+     * </pre>
+     *
+     * SDD 17.6 invariant 3: <b>a new journal, never an edit of the batch's own.</b> The immutability
+     * trigger makes that the only available option rather than the disciplined one, and the reason
+     * it matters is auditability -- "this batch was cut and then returned" is a different history
+     * from "this batch was never cut", and only one of them is what happened.
+     */
+    public static LedgerTransaction payoutReturned(
+        MerchantId merchantId,
+        String settlementBatchId,
+        LedgerAccountId settlementInTransitAccountId,
+        LedgerAccountId merchantAvailableAccountId,
+        long amountMinor,
+        String currency,
+        Instant occurredAt,
+        Instant createdAt
+    ) {
+        return new LedgerTransaction(
+            LedgerTransactionId.generate(),
+            merchantId,
+            PAYOUT_RETURNED,
+            REFERENCE_SETTLEMENT_BATCH,
+            settlementBatchId,
+            currency,
+            payoutReturnedIdempotencyKey(settlementBatchId),
+            List.of(
+                LedgerEntry.debit(settlementInTransitAccountId, amountMinor),
+                LedgerEntry.credit(merchantAvailableAccountId, amountMinor)
+            ),
+            occurredAt,
+            createdAt
+        );
+    }
+
+    /**
+     * {@code settlement-batch-cut:stl_<uuid>}, and the same argument as everywhere else in this
+     * class: the key is the batch, so a redelivered {@code settlement.batch_cut} event posts
+     * nothing on its second arrival.
+     */
+    public static String settlementBatchCutIdempotencyKey(String settlementBatchId) {
+        return "settlement-batch-cut:" + settlementBatchId;
+    }
+
+    public static String payoutPaidIdempotencyKey(String settlementBatchId) {
+        return "payout-paid:" + settlementBatchId;
+    }
+
+    public static String payoutReturnedIdempotencyKey(String settlementBatchId) {
+        return "payout-returned:" + settlementBatchId;
     }
 
     /**

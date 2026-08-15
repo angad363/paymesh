@@ -51,8 +51,10 @@ public class LedgerConfiguration {
     }
 
     @Bean
-    BalanceRepository balanceRepository(SpringDataLedgerEntryRepository entries) {
-        return new JpaBalanceRepository(entries);
+    BalanceRepository balanceRepository(
+        SpringDataLedgerEntryRepository entries, SpringDataLedgerAccountRepository accounts
+    ) {
+        return new JpaBalanceRepository(entries, accounts);
     }
 
     @Bean
@@ -113,6 +115,44 @@ public class LedgerConfiguration {
         PostRefundReversalService postRefundReversalService
     ) {
         return new RefundSucceededLedgerHandler(postRefundReversalService);
+    }
+
+    /**
+     * SETTLEMENT'S THREE POSTINGS, AND THE LEDGER'S THIRD, FOURTH AND FIFTH SUBSCRIPTIONS.
+     * <p>
+     * Declared here, on the Ledger's side, like every other subscription: deleting these beans
+     * unsubscribes the Ledger and nothing in {@code shared} or in Settlement needs to know.
+     */
+    @Bean
+    com.paymesh.ledger.application.PostSettlementJournalsService postSettlementJournalsService(
+        LedgerAccountRepository ledgerAccountRepository,
+        LedgerTransactionRepository ledgerTransactionRepository,
+        Clock clock
+    ) {
+        return new com.paymesh.ledger.application.PostSettlementJournalsService(
+            ledgerAccountRepository, ledgerTransactionRepository, clock
+        );
+    }
+
+    @Bean
+    com.paymesh.ledger.infrastructure.events.SettlementLedgerHandler settlementBatchCutLedgerHandler(
+        com.paymesh.ledger.application.PostSettlementJournalsService journals
+    ) {
+        return com.paymesh.ledger.infrastructure.events.SettlementLedgerHandler.batchCut(journals);
+    }
+
+    @Bean
+    com.paymesh.ledger.infrastructure.events.SettlementLedgerHandler payoutPaidLedgerHandler(
+        com.paymesh.ledger.application.PostSettlementJournalsService journals
+    ) {
+        return com.paymesh.ledger.infrastructure.events.SettlementLedgerHandler.payoutPaid(journals);
+    }
+
+    @Bean
+    com.paymesh.ledger.infrastructure.events.SettlementLedgerHandler payoutReturnedLedgerHandler(
+        com.paymesh.ledger.application.PostSettlementJournalsService journals
+    ) {
+        return com.paymesh.ledger.infrastructure.events.SettlementLedgerHandler.payoutReturned(journals);
     }
 
     @Bean

@@ -299,12 +299,12 @@ class SimulatorCallbackDeliveryIntegrationTest {
         CallbackSender real = sender();
         AtomicBoolean thrown = new AtomicBoolean();
 
-        CallbackSender flaky = body -> {
+        CallbackSender flaky = (body, target) -> {
             if (thrown.compareAndSet(false, true)) {
                 throw new IllegalStateException("the surprise nobody predicted");
             }
 
-            return real.send(body);
+            return real.send(body, target);
         };
 
         return new DispatchProviderCallbacksService(
@@ -327,6 +327,7 @@ class SimulatorCallbackDeliveryIntegrationTest {
         return new HttpCallbackSender(
             RestClient.builder().build(),
             "http://localhost:" + port + "/internal/v1/provider-callbacks/SIMULATOR",
+            "http://localhost:" + port + "/internal/v1/payout-callbacks/SIMULATOR",
             DEV_SECRET,
             objectMapper,
             clock

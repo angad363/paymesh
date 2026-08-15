@@ -1,7 +1,7 @@
 package com.paymesh.ledger.domain;
 
 /**
- * The three accounts PayMesh posts to today, out of SDD 15.1's nine.
+ * The five accounts PayMesh posts to today, out of SDD 15.1's nine.
  *
  * <h2>EACH CARRIES ITS OWN NORMAL BALANCE, AND THAT IS THE POINT OF THE ENUM</h2>
  *
@@ -11,13 +11,16 @@ package com.paymesh.ledger.domain;
  * merchant as owing PayMesh the exact amount PayMesh owes them, with every individual entry
  * correct and no constraint violated. Here that row cannot be written.
  *
- * <h2>Why only three</h2>
+ * <h2>Why only five</h2>
  *
  * The others each need a producer that does not exist: {@code MERCHANT_RESERVED} needs holds,
- * {@code BANK_CASH} and {@code SETTLEMENT_IN_TRANSIT} need Settlement (Phase 2),
  * {@code PLATFORM_FEE_REVENUE} needs a fee schedule this codebase does not have, and
- * {@code REFUND_RECEIVABLE} needs Refund. Adding a constant here without the posting that credits
- * it produces an account that exists, reads zero forever, and implies a capability that is missing.
+ * {@code REFUND_RECEIVABLE} needs a refund that is owed by the provider rather than taken out of
+ * the merchant. Adding a constant here without the posting that credits it produces an account that
+ * exists, reads zero forever, and implies a capability that is missing.
+ * <p>
+ * {@code BANK_CASH} and {@code SETTLEMENT_IN_TRANSIT} were on that list until V32. Settlement is
+ * their producer and it now exists.
  */
 public enum AccountType {
 
@@ -55,7 +58,30 @@ public enum AccountType {
      * {@code ReleaseAvailableFundsService} are that schedule, which is what makes adding it now
      * different from adding it then: there is a producer.
      */
-    MERCHANT_AVAILABLE(Direction.CREDIT);
+    MERCHANT_AVAILABLE(Direction.CREDIT),
+
+    /**
+     * A merchant's money committed to a settlement batch. A LIABILITY, CREDIT-normal, and still the
+     * merchant's -- what changed is that it can no longer be settled a second time.
+     *
+     * <h2>SDD 17.6 INVARIANT 2 IS THE REASON THIS ACCOUNT EXISTS AT ALL</h2>
+     *
+     * Funds must never go straight from available to the bank. Between the two there is a window in
+     * which PayMesh has committed to a payout and does not yet know whether it landed, and money in
+     * that window is neither settleable nor gone. Without this account that window has no
+     * representation, so a payout in flight either double-settles (still available) or vanishes
+     * from the merchant's balance (already paid) -- and one of those is a duplicate payment.
+     */
+    SETTLEMENT_IN_TRANSIT(Direction.CREDIT),
+
+    /**
+     * PayMesh's own bank position. An ASSET, DEBIT-normal, platform-owned, one per currency.
+     * <p>
+     * A completed payout CREDITS this, because paying a merchant reduces PayMesh's cash. That is
+     * the one place in this ledger where money leaves the platform rather than moving inside it,
+     * and it is why the entry is only ever posted on a provider's confirmation.
+     */
+    BANK_CASH(Direction.DEBIT);
 
     private final Direction normalBalance;
 
@@ -70,6 +96,8 @@ public enum AccountType {
 
     /** True when accounts of this type belong to a merchant rather than the platform. */
     public boolean isMerchantOwned() {
-        return this == MERCHANT_PENDING || this == MERCHANT_AVAILABLE;
+        return this == MERCHANT_PENDING
+            || this == MERCHANT_AVAILABLE
+            || this == SETTLEMENT_IN_TRANSIT;
     }
 }

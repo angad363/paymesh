@@ -288,6 +288,48 @@ paymesh:
     # changing this later would silently skip everyone who had been defaulted.
     default-holding-period: 7d
 
+    # --- The two settlement timers (ADR-032) ---------------------------------
+    # Cutting is database work; submitting talks to a provider. Separate passes
+    # on separate schedules, so a provider outage cannot stop batches being cut.
+    sweep:
+      # OFF under dev, like every other sweep here: the suite runs on that
+      # profile and a timer moving a merchant's balance between a test's setup
+      # and its assertion is a flake nobody can reproduce.
+      enabled: true
+      interval: 1h
+      initial-delay: 10m
+
+    payouts:
+      interval: 5m
+      initial-delay: 11m
+
+      # Where a payout is submitted. The simulator today; a real acquirer is the
+      # point of it being a URL rather than a call.
+      url: http://localhost:8080/sim/v1/payouts
+
+      # SEPARATE PROPERTIES THAT HAPPEN TO SHARE A VALUE IN dev. The day payouts
+      # move to another provider, or a leaked secret is rotated, exactly one of
+      # these changes -- which is the whole argument ADR-019 made for Refund's
+      # callback secret and it has not changed.
+      api-key: ${PAYMESH_SIMULATOR_API_KEY:}
+      callback-secret: ${PAYMESH_PROVIDER_CALLBACK_SECRET:}
+
+      connect-timeout: 2s
+      read-timeout: 5s
+
+    # How many payouts one submission pass takes.
+    cut-batch-size: 50
+
+    # A refused submission waits this long. Fixed, not exponential: a bank that
+    # would not take a transfer is not a bank being rate-limited.
+    payout-retry-delay: 15m
+
+    # How long a SUBMITTED payout waits for a callback before becoming due
+    # again. Resubmission is safe (the provider deduplicates on PayMesh's payout
+    # id), so this is what stops a lost callback stranding a merchant's money in
+    # the in-transit account forever.
+    answer-timeout: 1h
+
   ledger:
     release:
       # OFF under dev, same reason as every other sweep: the suite runs on this
@@ -506,6 +548,12 @@ paymesh:
     # because a URL computed from local settings could only ever reach a PayMesh in the same
     # process -- precisely the coupling this module is designed without (SDD 13.6).
     callback-url: http://localhost:8080/internal/v1/provider-callbacks/simulator
+
+    # Where PAYOUT callbacks go. A second URL rather than a path this module
+    # derives from the first: the simulator is built to be deployed away from
+    # PayMesh, and deriving one route from another assumes both sit behind the
+    # same host at paths the simulator gets to know about.
+    payout-callback-url: http://localhost:8080/internal/v1/payout-callbacks/simulator
     dispatch:
       # true: register the scheduled bean. Off -> the timer does not exist at all (the bean
       # is @ConditionalOnProperty), rather than running and doing nothing.
