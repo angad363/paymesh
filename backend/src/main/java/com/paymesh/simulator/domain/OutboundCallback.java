@@ -43,7 +43,9 @@ public final class OutboundCallback {
 
     private final String outboundCallbackId;
     private final String externalEventId;
+    private final CallbackTarget callbackTarget;
     private final SimulatedPaymentId providerPaymentId;
+    private final SimulatedPayoutId providerPayoutId;
     private final String callbackReference;
     private final SimulatedOutcome outcome;
     private final Instant occurredAt;
@@ -60,7 +62,9 @@ public final class OutboundCallback {
     private OutboundCallback(
         String outboundCallbackId,
         String externalEventId,
+        CallbackTarget callbackTarget,
         SimulatedPaymentId providerPaymentId,
+        SimulatedPayoutId providerPayoutId,
         String callbackReference,
         SimulatedOutcome outcome,
         Instant occurredAt,
@@ -76,7 +80,9 @@ public final class OutboundCallback {
     ) {
         this.outboundCallbackId = outboundCallbackId;
         this.externalEventId = externalEventId;
+        this.callbackTarget = callbackTarget;
         this.providerPaymentId = providerPaymentId;
+        this.providerPayoutId = providerPayoutId;
         this.callbackReference = callbackReference;
         this.outcome = outcome;
         this.occurredAt = occurredAt;
@@ -128,7 +134,71 @@ public final class OutboundCallback {
         return new OutboundCallback(
             ROW_ID_PREFIX + UUID.randomUUID(),
             externalEventId,
+            CallbackTarget.PAYMENT,
             providerPaymentId,
+            null,
+            callbackReference,
+            outcome,
+            occurredAt,
+            deliverAfter,
+            body,
+            OutboundCallbackStatus.PENDING,
+            0,
+            null,
+            null,
+            null,
+            createdAt,
+            createdAt
+        );
+    }
+
+    /**
+     * Queues a PAYOUT callback on the same queue as a payment's.
+     *
+     * <h2>ONE QUEUE, AND THE DISPATCHER DOES NOT KNOW THE DIFFERENCE</h2>
+     *
+     * A second table would have duplicated the dispatcher, the retry budget, the signing and the
+     * stored-bytes rule -- four things that are each only correct once. What differs between a
+     * payment callback and a payout callback is the subject, the body and the URL, and all three
+     * are columns.
+     *
+     * <p>{@code outcome} is reused rather than given a payout vocabulary: SUCCEEDED and FAILED are
+     * already in {@code ck_provider_outbound_callbacks_outcome} and mean here exactly what they
+     * mean there. The bank's own words (PAID, RETURNED) stay on {@code provider_payouts}, which is
+     * the row that is actually about a bank.
+     */
+    public static OutboundCallback enqueuePayout(
+        String externalEventId,
+        SimulatedPayoutId providerPayoutId,
+        String callbackReference,
+        SimulatedOutcome outcome,
+        Instant occurredAt,
+        Instant deliverAfter,
+        String body,
+        Instant createdAt
+    ) {
+        if (externalEventId == null || externalEventId.isBlank()) {
+            throw new IllegalArgumentException("An external event identifier is required");
+        }
+
+        if (providerPayoutId == null || outcome == null) {
+            throw new IllegalArgumentException("A callback must name a payout and an outcome");
+        }
+
+        if (occurredAt == null || deliverAfter == null || createdAt == null) {
+            throw new IllegalArgumentException("A callback must be timestamped");
+        }
+
+        if (body == null || body.isBlank()) {
+            throw new IllegalArgumentException("A callback must carry a body");
+        }
+
+        return new OutboundCallback(
+            ROW_ID_PREFIX + UUID.randomUUID(),
+            externalEventId,
+            CallbackTarget.PAYOUT,
+            null,
+            providerPayoutId,
             callbackReference,
             outcome,
             occurredAt,
@@ -193,7 +263,9 @@ public final class OutboundCallback {
     public static OutboundCallback rehydrate(
         String outboundCallbackId,
         String externalEventId,
+        CallbackTarget callbackTarget,
         SimulatedPaymentId providerPaymentId,
+        SimulatedPayoutId providerPayoutId,
         String callbackReference,
         SimulatedOutcome outcome,
         Instant occurredAt,
@@ -208,9 +280,9 @@ public final class OutboundCallback {
         Instant updatedAt
     ) {
         return new OutboundCallback(
-            outboundCallbackId, externalEventId, providerPaymentId, callbackReference, outcome,
-            occurredAt, deliverAfter, body, status, attempts, lastAttemptAt, lastResponseStatus,
-            lastResponseOutcome, createdAt, updatedAt
+            outboundCallbackId, externalEventId, callbackTarget, providerPaymentId,
+            providerPayoutId, callbackReference, outcome, occurredAt, deliverAfter, body, status,
+            attempts, lastAttemptAt, lastResponseStatus, lastResponseOutcome, createdAt, updatedAt
         );
     }
 
@@ -223,9 +295,9 @@ public final class OutboundCallback {
         Instant newDeliverAfter
     ) {
         return new OutboundCallback(
-            outboundCallbackId, externalEventId, providerPaymentId, callbackReference, outcome,
-            occurredAt, newDeliverAfter, body, newStatus, newAttempts, now, responseStatus,
-            responseOutcome, createdAt, now
+            outboundCallbackId, externalEventId, callbackTarget, providerPaymentId,
+            providerPayoutId, callbackReference, outcome, occurredAt, newDeliverAfter, body,
+            newStatus, newAttempts, now, responseStatus, responseOutcome, createdAt, now
         );
     }
 
@@ -237,8 +309,19 @@ public final class OutboundCallback {
         return externalEventId;
     }
 
+    /** Which route this is aimed at. The dispatcher reads this and nothing else about the subject. */
+    public CallbackTarget callbackTarget() {
+        return callbackTarget;
+    }
+
+    /** Null for a payout callback. {@code ck_provider_outbound_callbacks_subject} enforces the XOR. */
     public SimulatedPaymentId providerPaymentId() {
         return providerPaymentId;
+    }
+
+    /** Null for a payment callback. */
+    public SimulatedPayoutId providerPayoutId() {
+        return providerPayoutId;
     }
 
     public String callbackReference() {

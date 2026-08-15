@@ -59,6 +59,7 @@ public final class HttpCallbackSender implements CallbackSender {
 
     private final RestClient restClient;
     private final String callbackUrl;
+    private final String payoutCallbackUrl;
     private final String signingSecret;
     private final ObjectMapper objectMapper;
     private final Clock clock;
@@ -66,26 +67,34 @@ public final class HttpCallbackSender implements CallbackSender {
     public HttpCallbackSender(
         RestClient restClient,
         String callbackUrl,
+        String payoutCallbackUrl,
         String signingSecret,
         ObjectMapper objectMapper,
         Clock clock
     ) {
         this.restClient = restClient;
         this.callbackUrl = callbackUrl;
+        this.payoutCallbackUrl = payoutCallbackUrl;
         this.signingSecret = signingSecret;
         this.objectMapper = objectMapper;
         this.clock = clock;
     }
 
     @Override
-    public CallbackDelivery send(String body) {
+    public CallbackDelivery send(
+        String body, com.paymesh.simulator.domain.CallbackTarget target
+    ) {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         long timestamp = Instant.now(clock).getEpochSecond();
         String signature = "t=" + timestamp + ",v1=" + hmac(timestamp + "." + body);
 
         try {
             return restClient.post()
-                .uri(callbackUrl)
+                // THE ONLY THING THE TARGET CHANGES. Both routes verify the same signature with
+                // the same secret, so a payout callback is a payment callback pointed elsewhere.
+                .uri(target == com.paymesh.simulator.domain.CallbackTarget.PAYOUT
+                    ? payoutCallbackUrl
+                    : callbackUrl)
                 .contentType(MediaType.APPLICATION_JSON)
                 .header(SIGNATURE_HEADER, signature)
                 .body(bytes)

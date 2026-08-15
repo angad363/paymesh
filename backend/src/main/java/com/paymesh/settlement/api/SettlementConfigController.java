@@ -68,7 +68,13 @@ public final class SettlementConfigController {
 
         return SettlementConfigResponse.from(
             settlementConfigs.set(
-                merchantId, Duration.ofSeconds(request.holdingPeriodSeconds())
+                merchantId,
+                Duration.ofSeconds(request.holdingPeriodSeconds()),
+                request.payoutDestination(),
+                // Null means "leave it at the platform's smallest", not "no minimum". The column is
+                // NOT NULL for the same reason: every comparison in the batch job would otherwise
+                // be a special case.
+                request.minimumPayoutMinor() == null ? 1L : request.minimumPayoutMinor()
             ),
             false
         );

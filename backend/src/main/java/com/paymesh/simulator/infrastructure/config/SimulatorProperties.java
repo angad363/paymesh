@@ -27,6 +27,15 @@ public record SimulatorProperties(
     String apiKey,
 
     @NotBlank
-    String callbackUrl
+    String callbackUrl,
+
+    /**
+     * Where signed PAYOUT callbacks are POSTed. A second URL rather than a path appended to the
+     * first, for the reason the first one is configurable at all: the simulator is built to be
+     * deployed away from PayMesh, and deriving one route from another assumes both live behind the
+     * same host at paths this module gets to know about.
+     */
+    @NotBlank
+    String payoutCallbackUrl
 ) {
 }

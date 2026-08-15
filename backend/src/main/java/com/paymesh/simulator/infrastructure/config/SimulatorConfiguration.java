@@ -125,9 +125,31 @@ public class SimulatorConfiguration {
         return new HttpCallbackSender(
             RestClient.builder().requestFactory(requestFactory).build(),
             simulatorProperties.callbackUrl(),
+            simulatorProperties.payoutCallbackUrl(),
             callbackSecret,
             objectMapper,
             clock
+        );
+    }
+
+    @Bean
+    com.paymesh.simulator.application.SimulatedPayoutRepository simulatedPayoutRepository(
+        com.paymesh.simulator.infrastructure.persistence.jpa.SpringDataSimulatedPayoutRepository payouts
+    ) {
+        return new com.paymesh.simulator.infrastructure.persistence.jpa.JpaSimulatedPayoutRepository(payouts);
+    }
+
+    @Bean
+    com.paymesh.simulator.application.CreateSimulatedPayoutService createSimulatedPayoutService(
+        com.paymesh.simulator.application.SimulatedPayoutRepository simulatedPayoutRepository,
+        OutboundCallbackRepository outboundCallbackRepository,
+        CallbackBodyWriter callbackBodyWriter,
+        org.springframework.transaction.support.TransactionTemplate transactionTemplate,
+        java.time.Clock clock
+    ) {
+        return new com.paymesh.simulator.application.CreateSimulatedPayoutService(
+            simulatedPayoutRepository, outboundCallbackRepository, callbackBodyWriter,
+            transactionTemplate, clock
         );
     }
 

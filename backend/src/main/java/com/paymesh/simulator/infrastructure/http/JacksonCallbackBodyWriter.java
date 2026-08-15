@@ -30,4 +30,9 @@ public final class JacksonCallbackBodyWriter implements CallbackBodyWriter {
     public String write(CallbackBody body) {
         return objectMapper.writeValueAsString(body);
     }
+
+    @Override
+    public String writePayout(com.paymesh.simulator.domain.PayoutCallbackBody body) {
+        return objectMapper.writeValueAsString(body);
+    }
 }

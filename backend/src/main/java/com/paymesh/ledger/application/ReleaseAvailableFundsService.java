@@ -107,6 +107,12 @@ public final class ReleaseAvailableFundsService {
         }
 
         return Boolean.TRUE.equals(transactionTemplate.execute(status -> {
+            // BEFORE THE READ, NOT AFTER IT. A refund reversal of this payment takes the same lock,
+            // so the two cannot each compute against a world without the other -- which would
+            // release the gross and leave available too high by the refund. The sum below is the
+            // check; this line is the mechanism (ADR-019 4.1, applied a second time).
+            transactions.lockPaymentJournals(candidate.paymentIntentId());
+
             long remaining = balances.pendingRemainingForPayment(candidate.paymentIntentId());
 
             // Nothing left: fully refunded before it ever cleared. Not an error and not a release --

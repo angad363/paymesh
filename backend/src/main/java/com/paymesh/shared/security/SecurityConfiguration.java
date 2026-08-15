@@ -104,6 +104,12 @@ public class SecurityConfiguration {
                 // must not reach it, because this route decides that money went back to a customer
                 // and a merchant able to call it could settle their own refunds. ADR-019.
                 .requestMatchers(POST, "/internal/v1/refund-callbacks/**").permitAll()
+
+                // The payout callback route, on the same terms: a provider holds no PayMesh token,
+                // and the signature filter is the authentication. It must NOT be reachable with a
+                // merchant's token either -- this route decides that PayMesh's own cash left the
+                // building, and a merchant able to call it could confirm their own payouts.
+                .requestMatchers(POST, "/internal/v1/payout-callbacks/**").permitAll()
                 // THE PROVIDER SIMULATOR IS NOT UNAUTHENTICATED EITHER, AND IT IS NOT THE MERCHANT
                 // API.
                 //

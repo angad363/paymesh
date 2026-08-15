@@ -12756,6 +12756,327 @@
      ]
     }
    ]
+  },
+  {
+   "name": "Settlement (money leaves the platform, ADR-032)",
+   "description": "The HTTP surface of Settlement. The cut->submit->pay loop itself is scheduled and off under `dev`, and there is no route to cut a batch by hand, so this folder covers what a merchant can actually call: the payout config, the settlements read model, and the signature guard on the payout callback. The money movement is proven by SettlementLoopIntegrationTest, not here.",
+   "item": [
+    {
+     "name": "Set the payout config: destination, minimum and no holding period (200)",
+     "request": {
+      "method": "PUT",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       },
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "body": {
+       "mode": "raw",
+       "raw": "{\"holdingPeriodSeconds\": 0, \"payoutDestination\": \"acct_settlement_demo\", \"minimumPayoutMinor\": 1}"
+      },
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/settlement-config",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "settlement-config"
+       ]
+      },
+      "description": "PUT replaces every setting, it does not merge. A destination makes the merchant payable; a zero holding period means 'release on the next run'; a minimum of one means 'any positive net qualifies'."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('200 OK', () => pm.response.to.have.status(200));",
+         "const b = pm.response.json();",
+         "pm.test('destination round-trips', () => pm.expect(b.payoutDestination).to.eql('acct_settlement_demo'));",
+         "pm.test('minimum round-trips', () => pm.expect(b.minimumPayoutMinor).to.eql(1));",
+         "pm.test('holding period is zero', () => pm.expect(b.holdingPeriodSeconds).to.eql(0));",
+         "pm.test('no longer the default', () => pm.expect(b.isDefault).to.eql(false));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Read the config back (200)",
+     "request": {
+      "method": "GET",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/settlement-config",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "settlement-config"
+       ]
+      },
+      "description": "What was just set, read back. isDefault is false because a row now exists for this merchant."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('200 OK', () => pm.response.to.have.status(200));",
+         "const b = pm.response.json();",
+         "pm.test('destination persisted', () => pm.expect(b.payoutDestination).to.eql('acct_settlement_demo'));",
+         "pm.test('not the default', () => pm.expect(b.isDefault).to.eql(false));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Reject a payout destination longer than 80 chars (400)",
+     "request": {
+      "method": "PUT",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       },
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "body": {
+       "mode": "raw",
+       "raw": "{\"holdingPeriodSeconds\": 0, \"payoutDestination\": \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\", \"minimumPayoutMinor\": 1}"
+      },
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/settlement-config",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "settlement-config"
+       ]
+      },
+      "description": "Boundary validation on the request record: the destination is @Size(max=80)."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('400 Bad Request', () => pm.response.to.have.status(400));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Reject a minimum below one (400)",
+     "request": {
+      "method": "PUT",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       },
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "body": {
+       "mode": "raw",
+       "raw": "{\"holdingPeriodSeconds\": 0, \"payoutDestination\": \"acct_settlement_demo\", \"minimumPayoutMinor\": 0}"
+      },
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/settlement-config",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "settlement-config"
+       ]
+      },
+      "description": "A minimum of zero would be indistinguishable from no minimum. The request record is @Min(1); null (omitted) is what means 'the platform's smallest'."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('400 Bad Request', () => pm.response.to.have.status(400));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "List this merchant's settlements (200, envelope)",
+     "request": {
+      "method": "GET",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/settlements",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "settlements"
+       ]
+      },
+      "description": "The batches this merchant has been paid. No batch can be cut over HTTP under dev, so the list is usually empty -- what matters is the shape: a `settlements` array, never a 404 for a merchant who has none."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('200 OK', () => pm.response.to.have.status(200));",
+         "const b = pm.response.json();",
+         "pm.test('has a settlements array', () => pm.expect(b.settlements).to.be.an('array'));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "A settlement that does not exist (404, and it does not say which)",
+     "request": {
+      "method": "GET",
+      "header": [
+       {
+        "key": "Authorization",
+        "value": "Bearer {{accessToken}}"
+       }
+      ],
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/settlements/stl_00000000-0000-0000-0000-000000000000",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "settlements",
+        "stl_00000000-0000-0000-0000-000000000000"
+       ]
+      },
+      "description": "A well-formed id that names nothing is 404, and so is a malformed one -- telling a caller their id is invalid rather than absent leaks whether the format is right. Another merchant's batch answers the same 404, never 403."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('404 Not Found', () => pm.response.to.have.status(404));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "No token, no settlements (401)",
+     "request": {
+      "method": "GET",
+      "header": [],
+      "url": {
+       "raw": "{{baseUrl}}/api/v1/settlements",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "api",
+        "v1",
+        "settlements"
+       ]
+      },
+      "description": "Everything under /api/v1 is authenticated by default; the settlements route needs no rule of its own."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));"
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "name": "Refuse an unsigned payout callback (401)",
+     "request": {
+      "method": "POST",
+      "header": [
+       {
+        "key": "Content-Type",
+        "value": "application/json"
+       }
+      ],
+      "body": {
+       "mode": "raw",
+       "raw": "{\"payoutId\": \"po_00000000-0000-0000-0000-000000000000\", \"externalEventId\": \"evt_unsigned\", \"outcome\": \"SUCCEEDED\"}"
+      },
+      "url": {
+       "raw": "{{baseUrl}}/internal/v1/payout-callbacks/SIMULATOR",
+       "host": [
+        "{{baseUrl}}"
+       ],
+       "path": [
+        "internal",
+        "v1",
+        "payout-callbacks",
+        "SIMULATOR"
+       ]
+      },
+      "description": "BANK_CASH only moves on a signed callback. The route is permitAll at the security layer and guarded by ProviderCallbackSignatureFilter instead -- an HMAC over the raw body -- so an unsigned POST is rejected before any handler runs, exactly like the refund callback route."
+     },
+     "event": [
+      {
+       "listen": "test",
+       "script": {
+        "type": "text/javascript",
+        "exec": [
+         "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));"
+        ]
+       }
+      }
+     ]
+    }
+   ]
   }
  ]
 }

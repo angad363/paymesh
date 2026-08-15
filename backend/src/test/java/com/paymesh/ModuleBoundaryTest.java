@@ -215,7 +215,20 @@ class ModuleBoundaryTest {
                 continue;
             }
 
-            assertOnlyTheseImport("com/paymesh/" + capability, "com.paymesh.ledger.", List.of());
+            // SETTLEMENT IS THE ONE EXCEPTION, AND IT IS A NAMED, TESTED CYCLE (ADR-032). The
+            // Ledger already reads Settlement for a holding period; Settlement reads the Ledger for
+            // a balance. Two modules importing each other is the thing this file otherwise forbids,
+            // so the crossing is confined to one adapter and its configuration, and any third file
+            // reaching into the Ledger from Settlement fails here. What crosses is a READ -- the
+            // adapter cannot post, so neither module can move money in the other (ADR-018 section 6).
+            List<String> allowed = capability.equals("settlement")
+                ? List.of(
+                    "settlement/infrastructure/ledger/LedgerModuleAvailableFunds.java",
+                    "settlement/infrastructure/config/SettlementConfiguration.java"
+                )
+                : List.of();
+
+            assertOnlyTheseImport("com/paymesh/" + capability, "com.paymesh.ledger.", allowed);
         }
 
         assertOnlyTheseImport("com/paymesh/shared", "com.paymesh.ledger.", List.of());

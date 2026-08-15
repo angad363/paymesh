@@ -134,6 +134,54 @@ public record LedgerAccount(
         );
     }
 
+    /**
+     * A merchant's money committed to a settlement batch:
+     * {@code merchant:mrc_<uuid>:in-transit:INR}.
+     * <p>
+     * The third bucket in the same family as pending and available, spelled the same way for the
+     * same reason. A merchant's total claim on PayMesh is the sum of all three.
+     */
+    public static LedgerAccount settlementInTransit(
+        MerchantId merchantId,
+        String currency,
+        Instant createdAt
+    ) {
+        if (merchantId == null) {
+            throw new IllegalArgumentException("A settlement in-transit account requires a merchant");
+        }
+
+        String normalised = requireCurrency(currency);
+
+        return new LedgerAccount(
+            LedgerAccountId.generate(),
+            "merchant:" + merchantId.value() + ":in-transit:" + normalised,
+            merchantId,
+            AccountType.SETTLEMENT_IN_TRANSIT,
+            normalised,
+            createdAt
+        );
+    }
+
+    /**
+     * PayMesh's own cash for one currency: {@code bank-cash:INR}.
+     * <p>
+     * Platform-owned, like {@link #providerClearing}, and one per currency for the whole
+     * installation rather than one per bank account. PayMesh has one bank concept, and splitting
+     * the account per destination would invent a distinction nothing else here can make.
+     */
+    public static LedgerAccount bankCash(String currency, Instant createdAt) {
+        String normalised = requireCurrency(currency);
+
+        return new LedgerAccount(
+            LedgerAccountId.generate(),
+            "bank-cash:" + normalised,
+            null,
+            AccountType.BANK_CASH,
+            normalised,
+            createdAt
+        );
+    }
+
     /** The direction that increases this account. Delegates to the type; see {@link AccountType}. */
     public Direction normalBalance() {
         return accountType.normalBalance();

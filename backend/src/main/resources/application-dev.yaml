@@ -129,6 +129,21 @@ paymesh:
     release:
       enabled: false
 
+  settlement:
+    # OFF, and for the same reason as the release job: this one cuts batches and
+    # POSTs payouts at the simulator, so a tick landing mid-test rewrites the
+    # balance under assertion AND queues callbacks nobody asked for. Both
+    # services are plain beans, so tests call them directly.
+    sweep:
+      enabled: false
+    payouts:
+      url: http://localhost:8080/sim/v1/payouts
+      # The same two values the simulator and the payment callback route use in
+      # dev, spelled out rather than referenced -- these are separate properties
+      # that happen to agree today, and a YAML anchor would hide that.
+      api-key: dev-only-insecure-simulator-api-key-change-me
+      callback-secret: dev-only-insecure-provider-callback-secret-change-me
+
   orders:
     expiry-sweep:
       enabled: false

@@ -38,4 +38,23 @@ public interface BalanceRepository {
      * unique key.
      */
     long pendingRemainingForPayment(String paymentIntentId);
+
+    /**
+     * What each of a merchant's payments has contributed to its AVAILABLE account, per currency.
+     * <p>
+     * The read Settlement cuts a batch from: the sum of these figures is the available balance, and
+     * each one names the payment it came from so a statement can be reconciled against orders. A
+     * payment refunded past its own release contributes a negative figure, which is a real
+     * adjustment rather than a row to drop.
+     */
+    List<AvailableContribution> availableContributionsByMerchant(MerchantId merchantId);
+
+    /**
+     * Every merchant with a {@code MERCHANT_AVAILABLE} account, ordered.
+     * <p>
+     * From {@code ledger_accounts} rather than from a balance: an account exists because something
+     * was released into it, so this is "every merchant who has ever been settleable" -- a cheap
+     * candidate list rather than an expensive answer.
+     */
+    List<MerchantId> merchantsWithAnAvailableAccount();
 }

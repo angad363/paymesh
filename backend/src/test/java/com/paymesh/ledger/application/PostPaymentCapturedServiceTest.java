@@ -211,5 +211,10 @@ class PostPaymentCapturedServiceTest {
         public Optional<LedgerTransaction> findByIdempotencyKey(String idempotencyKey) {
             return Optional.ofNullable(posted.get(idempotencyKey));
         }
+
+        @Override
+        public int lockPaymentJournals(String paymentIntentId) {
+            return posted.size();
+        }
     }
 }

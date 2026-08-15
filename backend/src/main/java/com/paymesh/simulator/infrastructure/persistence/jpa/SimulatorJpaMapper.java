@@ -1,6 +1,7 @@
 package com.paymesh.simulator.infrastructure.persistence.jpa;
 
 import com.paymesh.simulator.domain.FailureProfile;
+import com.paymesh.simulator.domain.CallbackTarget;
 import com.paymesh.simulator.domain.OutboundCallback;
 import com.paymesh.simulator.domain.OutboundCallbackStatus;
 import com.paymesh.simulator.domain.RefundStatus;
@@ -10,6 +11,7 @@ import com.paymesh.simulator.domain.SimulatedMethod;
 import com.paymesh.simulator.domain.SimulatedOutcome;
 import com.paymesh.simulator.domain.SimulatedPayment;
 import com.paymesh.simulator.domain.SimulatedPaymentId;
+import com.paymesh.simulator.domain.SimulatedPayoutId;
 import com.paymesh.simulator.domain.SimulatedPaymentStatus;
 import com.paymesh.simulator.domain.SimulatedRefund;
 import com.paymesh.simulator.domain.SimulatedRefundId;
@@ -111,7 +113,9 @@ final class SimulatorJpaMapper {
         return new OutboundCallbackJpaEntity(
             callback.outboundCallbackId(),
             callback.externalEventId(),
-            callback.providerPaymentId().value(),
+            callback.providerPaymentId() == null ? null : callback.providerPaymentId().value(),
+            callback.providerPayoutId() == null ? null : callback.providerPayoutId().value(),
+            callback.callbackTarget().name(),
             callback.callbackReference(),
             callback.outcome().name(),
             callback.occurredAt(),
@@ -131,7 +135,11 @@ final class SimulatorJpaMapper {
         return OutboundCallback.rehydrate(
             entity.outboundCallbackId(),
             entity.externalEventId(),
-            SimulatedPaymentId.from(entity.providerPaymentId()),
+            CallbackTarget.valueOf(entity.callbackTarget()),
+            entity.providerPaymentId() == null
+                ? null : SimulatedPaymentId.from(entity.providerPaymentId()),
+            entity.providerPayoutId() == null
+                ? null : SimulatedPayoutId.from(entity.providerPayoutId()),
             entity.callbackReference(),
             SimulatedOutcome.valueOf(entity.outcome()),
             entity.occurredAt(),

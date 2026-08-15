@@ -35,8 +35,15 @@ public class OutboundCallbackJpaEntity {
     @Column(name = "external_event_id", nullable = false, length = 120)
     private String externalEventId;
 
-    @Column(name = "provider_payment_id", nullable = false, length = 50)
+    /** NULLABLE since V31: a payout callback names a payout instead. The XOR is a CHECK. */
+    @Column(name = "provider_payment_id", length = 50)
     private String providerPaymentId;
+
+    @Column(name = "provider_payout_id", length = 60)
+    private String providerPayoutId;
+
+    @Column(name = "callback_target", nullable = false, length = 20)
+    private String callbackTarget;
 
     @Column(name = "callback_reference", nullable = false, length = 60)
     private String callbackReference;
@@ -84,6 +91,8 @@ public class OutboundCallbackJpaEntity {
         String outboundCallbackId,
         String externalEventId,
         String providerPaymentId,
+        String providerPayoutId,
+        String callbackTarget,
         String callbackReference,
         String outcome,
         Instant occurredAt,
@@ -100,6 +109,8 @@ public class OutboundCallbackJpaEntity {
         this.outboundCallbackId = outboundCallbackId;
         this.externalEventId = externalEventId;
         this.providerPaymentId = providerPaymentId;
+        this.providerPayoutId = providerPayoutId;
+        this.callbackTarget = callbackTarget;
         this.callbackReference = callbackReference;
         this.outcome = outcome;
         this.occurredAt = occurredAt;
@@ -124,6 +135,14 @@ public class OutboundCallbackJpaEntity {
 
     String providerPaymentId() {
         return providerPaymentId;
+    }
+
+    String providerPayoutId() {
+        return providerPayoutId;
+    }
+
+    String callbackTarget() {
+        return callbackTarget;
     }
 
     String callbackReference() {

@@ -142,7 +142,7 @@ public final class DispatchProviderCallbacksService {
             // THE STORED BYTES, UNTOUCHED. The sender signs exactly this string and posts exactly
             // this string; nothing re-serializes it, which is the only reason the signature can be
             // trusted to cover what is on the wire.
-            CallbackDelivery delivery = sender.send(callback.body());
+            CallbackDelivery delivery = sender.send(callback.body(), callback.callbackTarget());
 
             if (delivery.accepted()) {
                 callbacks.save(callback.delivered(

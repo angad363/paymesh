@@ -121,18 +121,19 @@ class BalanceControllerTest {
      * ledger had. ADR-031 gave it one: the money is genuinely pending until the holding period
      * passes, so zero is what this merchant actually has available.
      *
-     * <p>The other two stay omitted for the original reason -- {@code reserved} needs balance holds
-     * and {@code inSettlement} needs Settlement, and neither exists to produce a figure.
+     * <p>{@code inSettlement} has now graduated the same way (ADR-032): Settlement exists, so a zero
+     * is a real answer -- this merchant has cut no batch. Only {@code reserved} stays omitted,
+     * because nothing holds funds and a zero there would still be a placeholder.
      */
     @Test
-    void reportsAvailableAndStillOmitsTheBalancesNothingProducesYet() throws Exception {
+    void reportsAvailableAndInSettlementAndStillOmitsWhatNothingProducesYet() throws Exception {
         MerchantId merchantId = registerMerchant();
         collect(merchantId, 99900, "INR");
 
         mockMvc.perform(get("/api/v1/balances").with(callerFor(merchantId)))
             .andExpect(jsonPath("$.balances[0].availableMinor").value(0))
-            .andExpect(jsonPath("$.balances[0].reservedMinor").doesNotExist())
-            .andExpect(jsonPath("$.balances[0].inSettlementMinor").doesNotExist());
+            .andExpect(jsonPath("$.balances[0].inSettlementMinor").value(0))
+            .andExpect(jsonPath("$.balances[0].reservedMinor").doesNotExist());
     }
 
     /** A merchant who has never been paid has a balance of nothing, which is not a 404. */

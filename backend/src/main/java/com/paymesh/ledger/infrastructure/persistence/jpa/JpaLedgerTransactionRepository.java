@@ -91,4 +91,9 @@ public final class JpaLedgerTransactionRepository implements LedgerTransactionRe
             ))
             .toList();
     }
+
+    @Override
+    public int lockPaymentJournals(String paymentIntentId) {
+        return transactions.lockPaymentJournals(paymentIntentId).size();
+    }
 }
