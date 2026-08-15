@@ -41,11 +41,13 @@ tests bypass it and still pass, because the constraint is the guard.
 
 ## Current status
 
-**All nine of Phase 1's capabilities are built, and Phase 2 is three in** — Webhook
+**All nine of Phase 1's capabilities are built, and Phase 2 is four in** — Webhook
 ([ADR-028](docs/decisions/ADR-028-sign-webhooks-with-a-secret-that-is-never-stored.md)), **Risk**
-([ADR-030](docs/decisions/ADR-030-risk-decides-and-payment-acts.md)) and **the settleable balance**
-([ADR-031](docs/decisions/ADR-031-release-funds-from-the-ledger-itself.md)) that Settlement needs.
-Settlement itself, Notification and Reporting are not. Payment is feature-complete:
+([ADR-030](docs/decisions/ADR-030-risk-decides-and-payment-acts.md)), **the settleable balance**
+([ADR-031](docs/decisions/ADR-031-release-funds-from-the-ledger-itself.md)) and **Settlement**
+itself ([ADR-032](docs/decisions/ADR-032-settlement-cuts-and-the-provider-posts-cash.md)) — which
+cuts a batch from available, submits the payout to the provider simulator, and posts `BANK_CASH`
+only on the provider's signed callback. Notification and Reporting are not. Payment is feature-complete:
 create, attach, confirm, provider callbacks, capture and cancel, with order expiry and
 stranded-payment sweeps behind them. **Domain events are now delivered**: the outbox has a
 relay, an in-process dispatcher and a `processed_events` inbox, and Order consumes
@@ -57,7 +59,7 @@ balance, which was not true of this codebase before
 **Refund** closes the loop in the other direction: money goes back out, the Ledger posts a
 reversal, and the payment reaches `REFUNDED`
 ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)).
-**1374 tests, 0 failures. Twenty-nine Flyway migrations (V1–V29). Thirty-one ADRs.**
+**1376 tests, 0 failures. Thirty-two Flyway migrations (V1–V32). Thirty-two ADRs.**
 
 **A merchant can now be stopped.** Three lifecycle enums had exactly one reachable value each —
 no merchant could be suspended, no user disabled, no customer blocked, and nothing anywhere read
@@ -72,13 +74,13 @@ the caller's role instead of discarding it
 | **Customer** | Built | No list/search. PII is **plaintext** — stored in the encrypted *shape*, not encrypted ([ADR-006](docs/decisions/ADR-006-defer-customer-pii-encryption.md)) |
 | **Order** | Built | Every status is now reachable: `CANCELLED` by request, `EXPIRED` by the sweeper, `PAID` / `PARTIALLY_PAID` by consuming `payment.succeeded` |
 | **Payment** | Built | One shared provider callback secret. Refunds and reconciliation now exist as their own capabilities, below |
-| **Provider Simulator** | Built | No payouts (Settlement is Phase 2), no refund callbacks (no receiver yet), no percentage-based failure injection ([ADR-017](docs/decisions/ADR-017-simulate-providers-through-scheduled-signed-callbacks.md)) |
+| **Provider Simulator** | Built | Payouts now exist (Settlement is the consumer), no refund callbacks (no receiver yet), no percentage-based failure injection ([ADR-017](docs/decisions/ADR-017-simulate-providers-through-scheduled-signed-callbacks.md), [ADR-032](docs/decisions/ADR-032-settlement-cuts-and-the-provider-posts-cash.md)) |
 | **Ledger** | Built | Double-entry posting, refund reversals, a pending→available release once a holding period passes, and `GET /api/v1/balances`. No holds, no `account_balances` projection, no platform fee ([ADR-018](docs/decisions/ADR-018-post-the-ledger-from-events-with-the-invariants-in-the-database.md), [ADR-031](docs/decisions/ADR-031-release-funds-from-the-ledger-itself.md)) |
 | **Refund** | Built | No provider-simulator refund callbacks yet, no ops retry route. A lost callback times out after six hours rather than holding head-room forever ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)) |
 | **Reconciliation** | Built | Reads the simulator's day report and repairs what drifted. Payments and refunds only — no settlement file, no ledger-level reconciliation ([ADR-026](docs/decisions/ADR-026-reconcile-against-the-providers-record-by-replaying-it.md)) |
 | **Risk** | Built | Evaluated on every confirm: denylist, velocity and amount, with an immutable assessment recording the inputs and the ruleset version. Rules are code, not a table. No analyst queue, no `REQUIRE_ACTION` step-up, no read API yet ([ADR-030](docs/decisions/ADR-030-risk-decides-and-payment-acts.md)) |
 | **Webhook** | Built | Phase 2's first. Merchant-facing endpoints, a signing secret **derived rather than stored**, and a scheduled dispatcher with its own retry budget. No per-attempt history table, no merchant-visible delivery log ([ADR-028](docs/decisions/ADR-028-sign-webhooks-with-a-secret-that-is-never-stored.md)) |
-| **Settlement** | Partial | Only the holding period: `GET`/`PUT /api/v1/settlement-config`, and the release job the Ledger runs against it. No batches, no items, no payouts — that is the next PR ([ADR-031](docs/decisions/ADR-031-release-funds-from-the-ledger-itself.md)) |
+| **Settlement** | Built | Cuts a batch from available, submits the payout to the simulator, and posts `BANK_CASH` only on the signed callback; a terminal failure returns funds by a new journal. `GET /api/v1/settlements`, config with destination and minimum. No FX, no fee deduction ([ADR-032](docs/decisions/ADR-032-settlement-cuts-and-the-provider-posts-cash.md)) |
 
 Platform pieces, honestly:
 
@@ -87,7 +89,7 @@ Platform pieces, honestly:
 | PostgreSQL + Flyway | Working; Hibernate runs `ddl-auto=validate`, Flyway owns the schema |
 | Idempotency | Working, on four registered routes |
 | Outbox + relay + inbox | Working. Events are written in-transaction, polled by a scheduled relay, dispatched in-process, and deduplicated per consumer in `processed_events`. **Two** consumers now read one event — Order and the Ledger — each with its own inbox row |
-| Double-entry ledger | Working for captures, refund reversals **and releases** — a scheduled job moves a payment's remaining pending balance to `MERCHANT_AVAILABLE` once the merchant's holding period passes, and carries no state of its own because the ledger already records what it released ([ADR-031](docs/decisions/ADR-031-release-funds-from-the-ledger-itself.md)). Debits equal credits, entries are immutable, and both rules are enforced by PostgreSQL triggers rather than by application code. A correction is a new journal, never an edit |
+| Double-entry ledger | Working for captures, refund reversals, releases **and settlement** — beyond the release job, Settlement moves cleared funds `available → SETTLEMENT_IN_TRANSIT → BANK_CASH`, the last step posted only on the provider's signed payout callback ([ADR-031](docs/decisions/ADR-031-release-funds-from-the-ledger-itself.md), [ADR-032](docs/decisions/ADR-032-settlement-cuts-and-the-provider-posts-cash.md)). Debits equal credits, entries are immutable, and both rules are enforced by PostgreSQL triggers rather than by application code. A correction is a new journal, never an edit |
 | Kafka | None, deliberately — the **consumer contract** is the one a broker needs (envelope in, inbox dedup, idempotent handler), so the transport can be swapped without touching a consumer ([ADR-016](docs/decisions/ADR-016-in-process-event-dispatch-before-kafka.md)) |
 | API keys | Working. `Authorization: ApiKey ak_…`, hashed secrets returned once, revocable, and subject to the same role and merchant-status rules as a human caller |
 | HMAC webhooks | Working. Merchant endpoints, `pmsec_` signing secrets derived per endpoint and never stored, an event-to-wire translator, and a scheduled dispatcher with SSRF guards and its own retry budget ([ADR-028](docs/decisions/ADR-028-sign-webhooks-with-a-secret-that-is-never-stored.md)) |

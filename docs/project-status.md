@@ -1,10 +1,10 @@
 # PayMesh — Project Status and Roadmap
 
-_Last updated: 12 August 2026, after PR #60 merged. Update this
+_Last updated: 15 August 2026, after PR #61 merged. Update this
 file at the end of a working session, not during one._
 
-**Reading this to resume? Go to "What comes next" → "PICK UP HERE".** Phase 2's PRs 0–3 are
-merged (#54, #55, #59, #60) and `main` is the current state. Settlement (PR 4) is next.
+**Reading this to resume? Go to "What comes next" → "PICK UP HERE".** Phase 2's PRs 0–4 are
+merged (#54, #55, #59, #60, #61) and `main` is the current state. Notification (PR 5) is next.
 
 This is the pick-up-here document. It records what exists, what has actually been
 verified, what is deliberately unfinished, and what comes next. For *why* a design
@@ -24,13 +24,13 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1374 tests, 0 failures.** Twenty-nine Flyway migrations (V1–V29). Thirty-one ADRs. The Postman
-collection runs **seventeen folders green** (a newman run executes 233–234 requests and 566–567
+**1376 tests, 0 failures.** Thirty-two Flyway migrations (V1–V32). Thirty-two ADRs. The Postman
+collection runs **eighteen folders green** (a newman run executes 233–234 requests and 566–567
 assertions; the count varies because the polling requests re-run themselves) — the newest showing an
 order paid and a signed webhook delivery queued for it without anyone calling a webhook endpoint.
 
-**Phase 2 is half built.** See `docs/phase-2-plan.md` for the eight-PR plan and "What comes next"
-below for where it stands. Four of the eight are **merged into `main`**:
+**Phase 2 is more than half built.** See `docs/phase-2-plan.md` for the eight-PR plan and "What comes
+next" below for where it stands. Five of the eight are **merged into `main`**:
 
 | PR | What it delivered | Merged |
 |---|---|---|
@@ -38,8 +38,9 @@ below for where it stands. Four of the eight are **merged into `main`**:
 | 1 | **Webhook** (ADR-028) — merchant-facing endpoints, a signing secret that is derived rather than stored, an internal-to-external translator, and a scheduled dispatcher with its own retry budget | #55 |
 | 2 | **Risk** (ADR-030) — evaluated on confirm, with an immutable assessment carrying the inputs and the ruleset version, and no rules table, no Redis and no review queue | #59 |
 | 3 | **The settleable balance** (ADR-031) — `MERCHANT_AVAILABLE`, a per-merchant holding period, and a release job that carries no state because the ledger is its own record of what has been released | #60 |
+| 4 | **Settlement** (ADR-032) — cut a batch from available, submit the payout to the simulator, and post `BANK_CASH` only on the provider's signed callback; a terminal failure returns the funds to available by a new journal | #61 |
 
-**Settlement's prerequisite is met**, so PR 4 (Settlement itself) is what comes next.
+**Settlement is built**, so PR 5 (Notification) is what comes next.
 
 **Phase 1 is complete, including its operational half.** The last PR closed the three things that
 were still only described: the outbox relay now gives up on an event rather than freezing its
@@ -106,13 +107,13 @@ The SDD describes ~15 services across 31 sections. This is what the code actuall
 | Idempotency & concurrency | §23.1–§23.2 | Built in PostgreSQL. §23.3's Redis accelerator: not built, deliberately. |
 | Events / outbox | §22.1 envelope, §22.3 outbox, §22.4 inbox, §24 durability | Built: in-transaction write, a scheduled relay, an in-process dispatcher, `processed_events`, consumers, and a retry budget with a dead letter (ADR-025). **§22.2 (Kafka topics and partition keys) does not exist, deliberately** — the consumer contract is a broker's, so the transport can be swapped without touching a consumer. **§24's alerting now exists** as a health indicator on oldest-unpublished age and abandoned-event count; it is not metrics, and §26 still has none. |
 | API Gateway / Edge | §7 | Partial. API keys exist (ADR-022) and HMAC guards both callback routes; rate limiting is absent. |
-| Provider Simulator | §13.1–§13.2, §13.5–§13.6 | Built, and §13.1's reconciliation export is now **read** (ADR-026). **§13.3's payouts and §13.4's `provider_payouts` are not** — Settlement is Phase 2 and has no consumer. Percentage-based injection is deliberately absent (ADR-017 §5). |
+| Provider Simulator | §13.1–§13.3, §13.5–§13.6 | Built, and §13.1's reconciliation export is now **read** (ADR-026). **§13.3's payouts and §13.4's `provider_payouts` now exist** (ADR-032): `POST /sim/v1/payouts` accepts a payout and posts a signed callback, Settlement being the first consumer. Percentage-based injection is deliberately absent (ADR-017 §5). |
 | Reconciliation | §21.4 | Built (ADR-026). Fetches the provider's daily record over HTTP and replays every terminal row through the ordinary callback path, so ADR-015's and ADR-023's timeout *guesses* are revisable by the provider's own word. No settlement reconciliation and no fee reconciliation — neither exists to reconcile. |
 | Risk & Fraud | §14 | Built (ADR-030). Evaluated synchronously on confirm; an immutable assessment records the inputs and the ruleset version. Rules are code, not a table. No analyst queue, no `REQUIRE_ACTION` step-up, no read API. |
-| Ledger | §15.1–§15.2, §15.6 | Core built (ADR-018): double-entry accounts, journals, immutable entries, and a merchant balance. **`MERCHANT_AVAILABLE` now exists and a release job moves cleared funds into it** (ADR-031), so the balance reports pending *and* available. **§15.3's internal posting API is deliberately absent** — the only writer is an event consumer, so every posting traces to a committed state change. **§15.5's `balance_holds` and `account_balances` are not built**: nothing reserves funds until Settlement, and a SUM over entries cannot drift the way a projection can. No fee split (§15.2) — there is no fee schedule. Reversals: Refund (ADR-019). |
+| Ledger | §15.1–§15.2, §15.6 | Core built (ADR-018): double-entry accounts, journals, immutable entries, and a merchant balance. **`MERCHANT_AVAILABLE` now exists and a release job moves cleared funds into it** (ADR-031); **`SETTLEMENT_IN_TRANSIT` and `BANK_CASH` arrived with Settlement** (ADR-032), so the balance reports pending, available *and* in-settlement. **§15.3's internal posting API is deliberately absent** — the only writer is an event consumer, so every posting traces to a committed state change; Settlement's three journals are posted from its outbox events, not through a port. **§15.5's `balance_holds` and `account_balances` are not built**: nothing reserves funds, and a SUM over entries cannot drift the way a projection can. No fee split (§15.2) — there is no fee schedule. Reversals: Refund (ADR-019). |
 | Refund | §16.1–§16.3, §16.5–§16.6 | Built (ADR-019). Create, read, list, cancel, and a Refund-owned callback route. **§16.4's `refund_reservations` and `refund_attempts` are not built** — the first is a second copy of what `refunds.status` says, the second is for a conversation a refund does not have. §16.3's ops retry route is absent. §16.6's third line — reconciling a lost callback — is the known gap. |
 | Webhook | §18.1–§18.4 | Built (ADR-028). Endpoints, subscriptions, a derived signing secret, an internal-to-external translator, a scheduled dispatcher with backoff, and replay. **§18.4's `webhook_delivery_attempts` is deliberately not built** — the counters on the delivery row answer what a merchant debugging a failure asks, and a row per attempt is a log wearing a table's clothes. No merchant-facing event catalogue endpoint; the four published types are named in the 422 you get for asking for a fifth. |
-| Settlement | §17 | Not started, **except §17.4's holding period** (ADR-031): `settlement_configs` carries that one column and `GET`/`PUT /api/v1/settlement-config` read and set it. The schedule, minimum payout, currency and payout account are PR 4's — no batches, no items, no payouts. |
+| Settlement | §17.1–§17.6 | Built (ADR-032). A scheduled job cuts a merchant's available balance into a batch and items (§17.1), submits the payout to the simulator (§17.2), and the provider's signed callback posts `BANK_CASH` — a terminal failure returns the funds to available by a new journal. `settlement_configs` now carries the holding period *and* a payout destination and minimum (§17.4); `GET /api/v1/settlements` reads batches. §17.6's invariants are DB triggers: a deferred batch-total check, immutability on posted rows, and the two account CHECKs. **No FX and no fee deduction** — one currency per batch, and there is no fee schedule to net. |
 | Notification/Reporting/Audit, AI Ops | §19–§20 | Not started. |
 | End-to-end workflows | §21 | The create-order → collect → refund path exists, and **§21.4 reconciliation is now built** (ADR-026). |
 | Security & privacy | §25 | Partial: authn, tenant isolation, secret guards. No encryption at rest, no key management, no audit trail beyond `security_events`. |
@@ -426,6 +427,46 @@ Properties worth not breaking:
 - **Webhook is a leaf.** It imports nothing from any capability; it consumes four event types as a
   `Map` through the shared dispatcher, exactly like the Ledger does.
 
+### Settlement — `com.paymesh.settlement`
+
+**Where the money leaves.** A scheduled job turns a merchant's available balance into a batch, hands
+the payout to the provider, and PayMesh's cash account only moves when the provider says the money
+landed (ADR-032). Migrations V30–V32.
+
+| Endpoint | Auth | Notes |
+|---|---|---|
+| `GET /api/v1/settlement-config` | Bearer | Holding period, payout destination, minimum |
+| `PUT /api/v1/settlement-config` | Bearer | PUT semantics — every setting replaced, not merged |
+| `GET /api/v1/settlements` | Bearer | The merchant's batches, newest first |
+| `GET /api/v1/settlements/{settlementBatchId}` | Bearer | `404` for another merchant's, never `403` |
+| `POST /internal/v1/payout-callbacks/{provider}` | HMAC signature | Settlement's own route; the only thing that posts `BANK_CASH` |
+
+Batch `CREATED → SUBMITTED → PAID | RETURNED`; the money moves `available → SETTLEMENT_IN_TRANSIT`
+on cut and `in-transit → BANK_CASH` on paid, or `in-transit → available` on a terminal failure.
+
+Properties worth not breaking:
+
+- **`BANK_CASH` is credited from a signed callback and nothing else.** The same rule Payment follows:
+  submitting a payout is not confirmation it landed. Settlement writes rows and an outbox event; the
+  Ledger consumes the event and posts. There is no internal posting port (ADR-018 §3), so every
+  journal traces to a committed row and a redelivery is a no-op on the idempotency key.
+- **A terminal failure returns the funds by a NEW journal, never an edit.** `in-transit → available`
+  is a fresh reversal transaction, so the batch that failed and the funds that came back are both on
+  the record. The batch is marked `RETURNED` and the money is settleable again.
+- **Cut and the callback both take the payment-journal lock before reading available** — open item 20.
+  Settlement pays against `available`, and a refund against already-released funds drives the same
+  figure; without the lock a concurrent cut and refund each see a world without the other. Same shape
+  as Refund's over-refund lock (ADR-019 §4.1), applied a second time.
+- **§17.6's invariants are database triggers, not application checks.** A deferred trigger makes a
+  batch's ledger debit equal the sum of its items, immutability triggers freeze posted rows, and two
+  CHECKs bound `SETTLEMENT_IN_TRANSIT` and `BANK_CASH`. The application pre-checks turn a violation
+  into a readable error; the constraint is what makes it true.
+- **The Ledger↔Settlement cycle is named and allowed.** `ModuleBoundaryTest` records the one edge:
+  Settlement emits events the Ledger posts from, and the Ledger reads Settlement's available
+  contributions to cut against. Every other import stays one-directional.
+- **One currency per batch, no fees.** FX and fee deduction are absent because there is no fee
+  schedule and no cross-currency payout — a batch is per currency and nets nothing out.
+
 ### Provider Simulator — `com.paymesh.simulator`
 
 **Not the merchant API.** Everything is under `/sim/v1/**`, authenticated by a dedicated shared key
@@ -436,6 +477,7 @@ in `X-PayMesh-Simulator-Key` and nothing else — a merchant bearer token is ref
 | `POST /sim/v1/payments` | simulator key | `sim_pay_` id; `201` on create, **`200` on a replay** |
 | `POST /sim/v1/payments/{id}/capture` | simulator key | Only from `AUTHORIZED`, else 409 |
 | `POST /sim/v1/refunds` | simulator key | `sim_ref_` id; **enqueues no callback — now a gap, not a decision** |
+| `POST /sim/v1/payouts` | simulator key | `sim_po_` id; accepts a payout and **enqueues a signed payout callback** (ADR-032) |
 | `GET /sim/v1/reconciliation/{date}` | simulator key | One UTC day of the provider's own truth |
 | `POST /sim/v1/failure-profile` | simulator key | Last-write-wins; not idempotency-keyed |
 
@@ -627,6 +669,7 @@ The collection is not decorative: dropping the tenant predicate in
 | 029 | Constrain identifier formats in the database, so a row the application cannot read back cannot be written |
 | 030 | Risk decides and Payment acts — rules as code, evaluated synchronously on confirm |
 | 031 | Release funds from the ledger itself: a holding period, a pending→available journal, and no state table for the job |
+| 032 | Settlement cuts against available, submits to the provider, and posts `BANK_CASH` only on the signed callback; failures return funds by a new journal |
 
 Note that the SDD's Appendix D has its own ADR list with the same numbers and
 different decisions. When citing one, say which source you mean.
@@ -878,22 +921,19 @@ failing test._
     Third time this month an exhaustiveness or correctness claim has been wrong, and all three were
     found by removing an assumption rather than by adding a test.
 
-20. **Two limits the release job ships with, both recorded in ADR-031 rather than fixed** (found by
-    reviewing #60, not by a failing test).
+20. **One limit the release job still ships with; the interleave was closed by PR #61** (both found
+    by reviewing #60, not by a failing test).
 
     **A capture fully refunded before it cleared never leaves the candidate set.** It earns no
     release journal, so the anti-join never filters it out and the job counts it `held` on every
     pass. The cost is a slot in the oldest-first batch: accumulate `batch-size` of them and
-    releases stop.
+    releases stop. **Still open.**
 
-    **Release and a refund reversal of the same payment can interleave, and `available` takes the
-    error.** Neither path takes a lock, so under `READ COMMITTED` a reversal that reads "not yet
-    released" can commit its debit against pending *after* the job has read the pending remainder,
-    and the job then releases the gross. The total owed stays right — pending goes negative by
-    exactly what available is too high by — but available is what Settlement pays against. The fix
-    is ADR-019 §4.1's row lock; it is not taken yet because a lock whose only proof is an argument
-    is the false coverage this repo deletes, and **PR 4 must not start paying out against
-    `available` without closing it.**
+    **~~Release and a refund reversal of the same payment can interleave~~ — CLOSED (PR #61).** The
+    fix is ADR-019 §4.1's row lock, applied a second time: `lockPaymentJournals` is now taken before
+    the read in both the release job and the refund reversal, so a concurrent release and refund of
+    one payment serialize instead of each reading a world without the other. Settlement pays against
+    `available`, and this had to close before it could — it did.
 
 18. **`SERVICE_ACCOUNT` is the last unreachable enum constant on the platform**, and unlike the
     ones ADR-021/024/027 closed it is unreachable *by decision* rather than by oversight.
@@ -937,7 +977,7 @@ Ledger's `MERCHANT_AVAILABLE` account, which `AccountType`'s own javadoc names a
 | 1 ✅ | Webhook — **merged, PR #55** | — | V24–V25 | ADR-028 |
 | 2 ✅ | Risk — **merged, PR #59** | — | V27–V28 | ADR-030 |
 | 3 ✅ | Ledger available balance — **merged, PR #60** | — | V29 | ADR-031 |
-| 4 | Settlement | PR3 | V30–V32 | ADR-032 |
+| 4 ✅ | Settlement — **merged, PR #61** | — | V30–V32 | ADR-032 |
 | 5 | Notification | — | V33 | ADR-033 |
 | 6 | Reporting | PR4 (content) | V34–V35 | ADR-034 |
 | 7 | Audit | PR2, PR4 (subjects) | V36 | ADR-035 |
@@ -1059,35 +1099,29 @@ the documents again.
   loses an endpoint id has no way to enumerate.
 - **The DNS-rebinding race in the SSRF guard is open and documented** (ADR-028 §7).
 
-### PICK UP HERE — after PR #60
+### PICK UP HERE — after PR #61
 
-`main` is at PR #60. Phase 2's PRs 0–3 are merged, 1374 tests are green, and the next thing to
-build is **PR 4, Settlement** (`docs/phase-2-plan.md`): migrations **V30–V32**, **ADR-032**,
-branch `feature/settlement`.
+`main` is at PR #61. Phase 2's PRs 0–4 are merged, 1376 tests are green, and the next thing to
+build is **PR 5, Notification** (`docs/phase-2-plan.md`): migration **V33**, **ADR-033**. Settlement
+is done — cut, submit, the signed payout callback and the three ledger journals all land.
 
-- **Read open item 20 before writing any of it.** Settlement pays against `available`, and the two
-  limits recorded there are both about `available` being wrong: a payment released while a refund
-  of it is in flight leaves available too high, and the release job can starve. Neither matters
-  while nothing pays out. PR 4 is the thing that makes them matter, so the lock belongs in it or
-  immediately before it.
-- **The holding period is already there and is Settlement's only settled column.**
-  `settlement_configs` carries `holding_period_seconds` and nothing else; the schedule, minimum
-  payout, currency and payout account are PR 4's to add as an ordinary `ALTER` (ADR-031). The
-  merchant-facing routes exist at `/api/v1/settlement-config`.
-- **`AccountType` needs `SETTLEMENT_IN_TRANSIT` and `BANK_CASH`**, and V29 is the worked example of
-  how: **two** CHECKs name the account types, `ck_ledger_accounts_type` and
-  `ck_ledger_accounts_owner`, and missing the second is how V29 failed the first time it ran. Only
-  a test that actually opens the account catches it.
-- **The Provider Simulator has no payouts** (SDD §13.3–§13.4). Settlement is the first consumer
-  that would want them, so PR 4 either simulates a payout provider or stops at
-  `SETTLEMENT_IN_TRANSIT` and says so.
+- **Settlement is a pure event producer/consumer now, and the loop is scheduled.** Cut and submit are
+  `@Scheduled`, off under `dev`, so they are driven directly in tests
+  (`SettlementLoopIntegrationTest`) rather than by waiting for a tick. `BANK_CASH` only moves on the
+  provider's signed callback to `/internal/v1/payout-callbacks/{provider}`.
+- **Open item 20's held-slot leak is still open** — a capture fully refunded before it cleared never
+  leaves the release candidate set. Not on the payout path; a `held`-slot cost only. The interleave
+  half of item 20 was closed by this PR.
+- **Notification (SDD §19) depends on nothing on the money path** — it is another event consumer like
+  Webhook, so the Webhook build is the closest worked example: a leaf that reads event types as a
+  `Map` through the shared dispatcher. Read ADR-033 and `docs/phase-2-plan.md` first.
 - **The rest of open item 17 is still not worked through** — the `FailureAnalyzer`,
   `ModuleBoundaryTest` allowlisting by filename rather than path, the idempotency filter's
   hard-coded replay `Content-Type`, the `@Email` inconsistency. All cosmetic or test-only; none is
   on the money path.
-- **Postman still has no settlement folder.** The release job cannot be walked over HTTP under
-  `dev` — the timer is off and the default holding period is seven days — so the collection was
-  left alone for #60. PR 4 is the point where a folder starts paying for itself.
+- **Postman now has a Settlement folder** covering the config and read endpoints and the unsigned
+  payout-callback rejection. The full cut→pay loop is not walkable over HTTP under `dev` — the timer
+  is off and there is no route to cut a batch — so the folder stops at the HTTP surface and says so.
 
 **The judgement call to revisit when a second provider arrives.** Reconciliation reads this
 provider's `TIMED_OUT` as "nothing was collected", which is true of the simulator's file because
