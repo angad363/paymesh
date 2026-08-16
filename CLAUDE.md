@@ -72,7 +72,7 @@ The dependency direction is inward: `api → application → domain`, with `infr
 
 ### Identifiers
 
-Public IDs are opaque, prefixed strings: `<prefix>_<uuid>` (ADR-003). In use: `mrc_` (merchant), `cus_`, `ord_`, `pi_` (payment intent), `ref_`, `evt_` (outbox event), `whe_` (webhook endpoint), `whv_` (webhook event), `whd_` (webhook delivery). Planned: `pay_`, `stl_`. IDs are value-object records (`MerchantId`) that validate the prefix + UUID in their compact constructor: `MerchantId.generate()` mints one, `MerchantId.from(String)` parses/validates. Do not expose sequential DB IDs.
+Public IDs are opaque, prefixed strings: `<prefix>_<uuid>` (ADR-003). In use: `mrc_` (merchant), `cus_`, `ord_`, `pi_` (payment intent), `ref_`, `evt_` (outbox event), `whe_` (webhook endpoint), `whv_` (webhook event), `whd_` (webhook delivery), `nfn_` (notification). Planned: `pay_`, `stl_`. IDs are value-object records (`MerchantId`) that validate the prefix + UUID in their compact constructor: `MerchantId.generate()` mints one, `MerchantId.from(String)` parses/validates. Do not expose sequential DB IDs.
 
 ### Persistence
 

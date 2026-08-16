@@ -73,9 +73,10 @@ class LedgerConfigurationTest {
      * the names differ -- but only two handlers of the SAME event exercise that, and this was the
      * first branch where there were two.
      * <p>
-     * Three now: Webhook subscribed in the PR that built it (ADR-028). Listed exhaustively rather
-     * than with {@code contains}, because the failure this catches is a consumer <b>disappearing</b>
-     * from a rename or a lost {@code @Bean}, and a containment assertion would not notice.
+     * Four now: Webhook subscribed in the PR that built it (ADR-028), Notification in ADR-033. Listed
+     * exhaustively rather than with {@code contains}, because the failure this catches is a consumer
+     * <b>disappearing</b> from a rename or a lost {@code @Bean}, and a containment assertion would not
+     * notice.
      */
     @Test
     void registersEveryConsumerOfPaymentSucceeded() {
@@ -84,7 +85,8 @@ class LedgerConfigurationTest {
             .map(EventHandler::consumerName)
             .toList())
             .containsExactlyInAnyOrder(
-                "order.payment-succeeded", "ledger.payment-succeeded", "webhook.payment.succeeded"
+                "order.payment-succeeded", "ledger.payment-succeeded", "webhook.payment.succeeded",
+                "notification.payment.succeeded"
             );
     }
 }

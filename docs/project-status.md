@@ -4,7 +4,8 @@ _Last updated: 15 August 2026, after PR #61 merged. Update this
 file at the end of a working session, not during one._
 
 **Reading this to resume? Go to "What comes next" → "PICK UP HERE".** Phase 2's PRs 0–4 are
-merged (#54, #55, #59, #60, #61) and `main` is the current state. Notification (PR 5) is next.
+merged (#54, #55, #59, #60, #61); **PR 5 (Notification, ADR-033) is built on `feature/notification`**
+and is the current tip. Reporting (PR 6) is next.
 
 This is the pick-up-here document. It records what exists, what has actually been
 verified, what is deliberately unfinished, and what comes next. For *why* a design
@@ -24,7 +25,7 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1376 tests, 0 failures.** Thirty-two Flyway migrations (V1–V32). Thirty-two ADRs. The Postman
+**1401 tests, 0 failures.** Thirty-three Flyway migrations (V1–V33). Thirty-three ADRs. The Postman
 collection runs **eighteen folders green** (a newman run executes 233–234 requests and 566–567
 assertions; the count varies because the polling requests re-run themselves) — the newest showing an
 order paid and a signed webhook delivery queued for it without anyone calling a webhook endpoint.
@@ -40,7 +41,10 @@ next" below for where it stands. Five of the eight are **merged into `main`**:
 | 3 | **The settleable balance** (ADR-031) — `MERCHANT_AVAILABLE`, a per-merchant holding period, and a release job that carries no state because the ledger is its own record of what has been released | #60 |
 | 4 | **Settlement** (ADR-032) — cut a batch from available, submit the payout to the simulator, and post `BANK_CASH` only on the provider's signed callback; a terminal failure returns the funds to available by a new journal | #61 |
 
-**Settlement is built**, so PR 5 (Notification) is what comes next.
+**Settlement is built, and PR 5 (Notification) now is too** — see below. PR 6 (Reporting) is what
+comes next.
+
+| 5 | **Notification** (ADR-033) — a third pure event consumer that records a merchant notification per committed `payment.succeeded` / `payment.failed` / `refund.succeeded`, renders it from code templates, and a scheduled dispatcher hands it to a simulated sender; templates and attempt history are code and a counter, not two tables | built |
 
 **Phase 1 is complete, including its operational half.** The last PR closed the three things that
 were still only described: the outbox relay now gives up on an event rather than freezing its
@@ -114,7 +118,8 @@ The SDD describes ~15 services across 31 sections. This is what the code actuall
 | Refund | §16.1–§16.3, §16.5–§16.6 | Built (ADR-019). Create, read, list, cancel, and a Refund-owned callback route. **§16.4's `refund_reservations` and `refund_attempts` are not built** — the first is a second copy of what `refunds.status` says, the second is for a conversation a refund does not have. §16.3's ops retry route is absent. §16.6's third line — reconciling a lost callback — is the known gap. |
 | Webhook | §18.1–§18.4 | Built (ADR-028). Endpoints, subscriptions, a derived signing secret, an internal-to-external translator, a scheduled dispatcher with backoff, and replay. **§18.4's `webhook_delivery_attempts` is deliberately not built** — the counters on the delivery row answer what a merchant debugging a failure asks, and a row per attempt is a log wearing a table's clothes. No merchant-facing event catalogue endpoint; the four published types are named in the 422 you get for asking for a fifth. |
 | Settlement | §17.1–§17.6 | Built (ADR-032). A scheduled job cuts a merchant's available balance into a batch and items (§17.1), submits the payout to the simulator (§17.2), and the provider's signed callback posts `BANK_CASH` — a terminal failure returns the funds to available by a new journal. `settlement_configs` now carries the holding period *and* a payout destination and minimum (§17.4); `GET /api/v1/settlements` reads batches. §17.6's invariants are DB triggers: a deferred batch-total check, immutability on posted rows, and the two account CHECKs. **No FX and no fee deduction** — one currency per batch, and there is no fee schedule to net. |
-| Notification/Reporting/Audit, AI Ops | §19–§20 | Not started. |
+| Notification | §19.1 | Built (ADR-033). A merchant notification is recorded per committed `payment.succeeded` / `payment.failed` / `refund.succeeded`, rendered from code templates, and a scheduled dispatcher (off under `dev`) hands each to a **simulated** sender. **§19.1's `notification_templates` and `delivery_attempts` are deliberately not built** — templates are code (as Risk's rules are) and attempts are a counter on the row (as Webhook chose over `webhook_delivery_attempts`). No channels, no recipient resolution: it stays a leaf. `GET /internal/v1/notifications/{id}` is platform-admin-only, for support. |
+| Reporting/Audit, AI Ops | §19.2–§20 | Not started. |
 | End-to-end workflows | §21 | The create-order → collect → refund path exists, and **§21.4 reconciliation is now built** (ADR-026). |
 | Security & privacy | §25 | Partial: authn, tenant isolation, secret guards. No encryption at rest, no key management, no audit trail beyond `security_events`. |
 | Observability | §26 | `/actuator/health` and `/actuator/info`, the former now carrying the outbox backlog alert (ADR-025). No OpenTelemetry, metrics, tracing or structured correlation ids. |
@@ -600,7 +605,7 @@ no financial effect.
 
 ```bash
 cd backend
-./mvnw test                     # 1374 tests; needs Docker, no local database
+./mvnw test                     # 1401 tests; needs Docker, no local database
 ./mvnw spring-boot:run          # port 8080, activates the dev profile via the pom
 
 # API contract, end to end, including cross-tenant isolation and idempotency
@@ -670,6 +675,7 @@ The collection is not decorative: dropping the tenant predicate in
 | 030 | Risk decides and Payment acts — rules as code, evaluated synchronously on confirm |
 | 031 | Release funds from the ledger itself: a holding period, a pending→available journal, and no state table for the job |
 | 032 | Settlement cuts against available, submits to the provider, and posts `BANK_CASH` only on the signed callback; failures return funds by a new journal |
+| 033 | Notify merchants from committed events with a simulated sender; templates are code and attempts are a counter, not two tables |
 
 Note that the SDD's Appendix D has its own ADR list with the same numbers and
 different decisions. When citing one, say which source you mean.
@@ -1099,11 +1105,22 @@ the documents again.
   loses an endpoint id has no way to enumerate.
 - **The DNS-rebinding race in the SSRF guard is open and documented** (ADR-028 §7).
 
-### PICK UP HERE — after PR #61
+### PICK UP HERE — after Notification (PR 5)
 
-`main` is at PR #61. Phase 2's PRs 0–4 are merged, 1376 tests are green, and the next thing to
-build is **PR 5, Notification** (`docs/phase-2-plan.md`): migration **V33**, **ADR-033**. Settlement
-is done — cut, submit, the signed payout callback and the three ledger journals all land.
+Phase 2's PRs 0–4 are merged; **PR 5 (Notification, ADR-033, V33) is built on
+`feature/notification`** and 1401 tests are green. The next thing to build is **PR 6, Reporting**
+(`docs/phase-2-plan.md`): migrations **V34–V35**, **ADR-034**, depends on Settlement's content.
+
+- **Notification is a third pure event consumer, the same shape as Webhook.** It records a merchant
+  notification per committed `payment.succeeded` / `payment.failed` / `refund.succeeded`, renders it
+  from code templates, and a scheduled dispatcher (off under `dev`) hands each to a **simulated**
+  sender. Two of the three tables the plan named are cut, each with in-repo precedent: templates are
+  code (as Risk's rules are), attempts are a counter on the row (as Webhook chose over
+  `webhook_delivery_attempts`). `GET /internal/v1/notifications/{id}` is platform-admin-only.
+- **The FAILED path is unreachable while the sender is simulated** — the seam is where a real
+  provider or a failure profile plugs in, and the dispatcher's retry/fail logic is proved by a stub
+  sender that throws. Documented in ADR-033.
+- Settlement is done — cut, submit, the signed payout callback and the three ledger journals all land.
 
 - **Settlement is a pure event producer/consumer now, and the loop is scheduled.** Cut and submit are
   `@Scheduled`, off under `dev`, so they are driven directly in tests
@@ -1112,9 +1129,10 @@ is done — cut, submit, the signed payout callback and the three ledger journal
 - **Open item 20's held-slot leak is still open** — a capture fully refunded before it cleared never
   leaves the release candidate set. Not on the payout path; a `held`-slot cost only. The interleave
   half of item 20 was closed by this PR.
-- **Notification (SDD §19) depends on nothing on the money path** — it is another event consumer like
-  Webhook, so the Webhook build is the closest worked example: a leaf that reads event types as a
-  `Map` through the shared dispatcher. Read ADR-033 and `docs/phase-2-plan.md` first.
+- **Reporting (SDD §19.2) is the next consumer** — merchant-scoped projections built from domain
+  events, in PostgreSQL, each report carrying an `asOf`. It depends on Settlement's content so the
+  settlement report lands in the same pass. Read `docs/phase-2-plan.md` PR 6 first; the Notification
+  and Webhook builds are the closest worked examples of a leaf reading events as a `Map`.
 - **The rest of open item 17 is still not worked through** — the `FailureAnalyzer`,
   `ModuleBoundaryTest` allowlisting by filename rather than path, the idempotency filter's
   hard-coded replay `Content-Type`, the `@Email` inconsistency. All cosmetic or test-only; none is
