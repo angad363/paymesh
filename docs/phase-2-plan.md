@@ -56,7 +56,7 @@ nothing and is the thing an integrator actually notices; it goes first.
 | 2 ✅ | `feature/risk` | Evaluation on confirm, decisions, denylist — **merged, PR #59** | — | V27–V28 | ADR-030 |
 | 3 ✅ | `feature/ledger-available-balance` | `MERCHANT_AVAILABLE`, holding period, pending→available release — **merged, PR #60** | — | V29 | ADR-031 |
 | 4 | `feature/settlement` | Batches, items, payouts, retries, statements | PR3 | V30–V32 | ADR-032 |
-| 5 | `feature/notification` | Templates, preferences, simulated sends, attempt history | — | V33 | ADR-033 |
+| 5 ✅ | `feature/notification` | Simulated sends from committed events; templates as code, attempt counters on the row — **built** | — | V33 | ADR-033 |
 | 6 | `feature/reporting` | Projections, summaries, async CSV export | PR4 (content) | V34–V35 | ADR-034 |
 | 7 | `feature/audit` | Append-only log of privileged and financial-operational actions | PR2, PR4 (subjects) | V36 | ADR-035 |
 

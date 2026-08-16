@@ -66,16 +66,18 @@ class RefundConfigurationTest {
      * a context that starts has already proved it -- but only if every bean exists, which is what
      * this actually pins. A missing handler bean starts perfectly and simply never runs.
      * <p>
-     * Three now: Webhook joined the Ledger and Payment in the PR that built it (ADR-028).
+     * Four now: Webhook joined the Ledger and Payment in the PR that built it (ADR-028), Notification
+     * in ADR-033.
      */
     @Test
-    void subscribesTheLedgerPaymentAndWebhookToRefundSucceeded() {
+    void subscribesTheLedgerPaymentWebhookAndNotificationToRefundSucceeded() {
         assertThat(context.getBeansOfType(EventHandler.class).values().stream()
             .filter(handler -> handler.eventType().equals("refund.succeeded"))
             .map(EventHandler::consumerName)
             .toList())
             .containsExactlyInAnyOrder(
-                "ledger.refund-succeeded", "payment.refund-succeeded", "webhook.refund.succeeded"
+                "ledger.refund-succeeded", "payment.refund-succeeded", "webhook.refund.succeeded",
+                "notification.refund.succeeded"
             );
     }
 

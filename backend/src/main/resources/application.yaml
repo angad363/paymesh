@@ -528,6 +528,20 @@ paymesh:
       # property is claim-send-acknowledge with a lease expiry; ADR-028 section 6 lists it under
       # accepted costs rather than pretending the cost is not there.
       read-timeout: 5s
+  notification:
+    dispatch:
+      # true: register the scheduled bean. Off -> the timer does not exist at all
+      # (@ConditionalOnProperty), rather than running and doing nothing. On by default, off under
+      # dev -- the profile the test suite runs under.
+      enabled: true
+      # How long after one pass FINISHES the next begins. Resolved straight into @Scheduled from the
+      # environment and NOT bound into NotificationDispatchProperties, same note as webhook's above.
+      interval: 30s
+      # How many PENDING notifications one pass may take, each in its own transaction.
+      batch-size: 50
+      # The attempt budget before a notification is FAILED rather than retried again -- terminal,
+      # like ADR-025's dead letter. Unreachable while the sender is simulated (it always succeeds).
+      max-attempts: 5
   simulator:
     # THE ONLY AUTHENTICATION ON /sim/v1/**. Declared but deliberately EMPTY, and the
     # application refuses to start without it (@NotBlank on SimulatorProperties).

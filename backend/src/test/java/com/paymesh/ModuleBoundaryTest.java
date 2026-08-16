@@ -536,11 +536,48 @@ class ModuleBoundaryTest {
         assertOnlyTheseImport("com/paymesh/shared", "com.paymesh.reconciliation.", List.of());
     }
 
+    /**
+     * NOTIFICATION IS A LEAF. It consumes three event types as a {@code Map} through the shared
+     * dispatcher and imports nothing from any capability -- the same shape as the Ledger's consumer.
+     * This is what keeps ADR-033's "a notification failing never touches a payment" true at the type
+     * level: the handler cannot name a Payment or Refund type, so it cannot call into one.
+     */
+    @Test
+    void notificationImportsNoOtherCapability() throws IOException {
+        for (String capability : CAPABILITIES) {
+            if (capability.equals("notification")) {
+                continue;
+            }
+
+            assertOnlyTheseImport(
+                "com/paymesh/notification", "com.paymesh." + capability + ".", List.of()
+            );
+        }
+    }
+
+    /**
+     * The reverse, and the empty allowlist is the claim: nothing reaches back into Notification. It
+     * produces no event and owns no port another module reads, so an import this way round would be a
+     * mistake rather than a boundary.
+     */
+    @Test
+    void noCapabilityImportsNotification() throws IOException {
+        for (String capability : CAPABILITIES) {
+            if (capability.equals("notification")) {
+                continue;
+            }
+
+            assertOnlyTheseImport("com/paymesh/" + capability, "com.paymesh.notification.", List.of());
+        }
+
+        assertOnlyTheseImport("com/paymesh/shared", "com.paymesh.notification.", List.of());
+    }
+
     /** Every capability package except the simulator itself. */
     private static final List<String> CAPABILITIES =
         List.of(
             "merchant", "identity", "customer", "order", "payment", "ledger", "refund",
-            "reconciliation", "risk", "settlement"
+            "reconciliation", "risk", "settlement", "notification"
         );
 
     private static void assertOnlyTheseImport(
