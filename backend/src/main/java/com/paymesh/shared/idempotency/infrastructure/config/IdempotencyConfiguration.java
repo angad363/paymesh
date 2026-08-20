@@ -89,7 +89,13 @@ public class IdempotencyConfiguration {
         // storage ADR-028's whole design exists to avoid. Rotate is idempotent on its own terms
         // instead: the caller names the version it is rotating from, so a repeat re-derives the
         // same secret rather than bumping again.
-        "POST /api/v1/webhook-endpoints/{endpointId}/deliveries/{deliveryId}/replay"
+        "POST /api/v1/webhook-endpoints/{endpointId}/deliveries/{deliveryId}/replay",
+        // Requesting a CSV export. Not money, and the state machine would not refuse a second one
+        // -- which is exactly why it is here: a retried request whose first attempt already
+        // committed would produce a SECOND export row, and the merchant would poll one id while a
+        // duplicate rendered the same window beside it. The same shape as refunds, in a much
+        // cheaper currency.
+        "POST /api/v1/report-exports"
     );
 
     @Bean

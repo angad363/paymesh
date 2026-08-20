@@ -86,7 +86,7 @@ class LedgerConfigurationTest {
             .toList())
             .containsExactlyInAnyOrder(
                 "order.payment-succeeded", "ledger.payment-succeeded", "webhook.payment.succeeded",
-                "notification.payment.succeeded"
+                "notification.payment.succeeded", "reporting.payment.succeeded"
             );
     }
 }
