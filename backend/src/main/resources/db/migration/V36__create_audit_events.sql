@@ -122,6 +122,12 @@ CREATE INDEX idx_audit_events_merchant
 CREATE INDEX idx_audit_events_action
     ON audit_events (action, occurred_at DESC, audit_event_id DESC);
 
+-- The third advertised filter: an actor's own history ("what did this operator do").
+-- Partial, because a SYSTEM row has no actor_id and this index never wants one.
+CREATE INDEX idx_audit_events_actor
+    ON audit_events (actor_id, occurred_at DESC, audit_event_id DESC)
+    WHERE actor_id IS NOT NULL;
+
 CREATE INDEX idx_audit_events_recent
     ON audit_events (occurred_at DESC, audit_event_id DESC);
 
