@@ -1,11 +1,11 @@
 # PayMesh — Project Status and Roadmap
 
-_Last updated: 15 August 2026, after PR #61 merged. Update this
+_Last updated: 22 August 2026, after PR #62 merged and Reporting built. Update this
 file at the end of a working session, not during one._
 
-**Reading this to resume? Go to "What comes next" → "PICK UP HERE".** Phase 2's PRs 0–4 are
-merged (#54, #55, #59, #60, #61); **PR 5 (Notification, ADR-033) is built on `feature/notification`**
-and is the current tip. Reporting (PR 6) is next.
+**Reading this to resume? Go to "What comes next" → "PICK UP HERE".** Phase 2's PRs 0–5 are
+merged (#54, #55, #59, #60, #61, #62); **PR 6 (Reporting, ADR-034, V34–V35) is built on
+`feature/reporting`** and is the current tip. Audit (PR 7) is the last one.
 
 This is the pick-up-here document. It records what exists, what has actually been
 verified, what is deliberately unfinished, and what comes next. For *why* a design
@@ -25,10 +25,10 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1401 tests, 0 failures.** Thirty-three Flyway migrations (V1–V33). Thirty-three ADRs. The Postman
-collection runs **eighteen folders green** (a newman run executes 233–234 requests and 566–567
-assertions; the count varies because the polling requests re-run themselves) — the newest showing an
-order paid and a signed webhook delivery queued for it without anyone calling a webhook endpoint.
+**1479 tests, 0 failures.** Thirty-five Flyway migrations (V1–V35). Thirty-four ADRs. The Postman
+collection runs **nineteen folders green** — the newest a self-contained Reporting folder (17
+requests, 30 assertions, verified with newman against the running app) covering the two summary
+reads, the async export lifecycle, tenant isolation and every error path.
 
 **Phase 2 is more than half built.** See `docs/phase-2-plan.md` for the eight-PR plan and "What comes
 next" below for where it stands. Five of the eight are **merged into `main`**:
@@ -119,7 +119,8 @@ The SDD describes ~15 services across 31 sections. This is what the code actuall
 | Webhook | §18.1–§18.4 | Built (ADR-028). Endpoints, subscriptions, a derived signing secret, an internal-to-external translator, a scheduled dispatcher with backoff, and replay. **§18.4's `webhook_delivery_attempts` is deliberately not built** — the counters on the delivery row answer what a merchant debugging a failure asks, and a row per attempt is a log wearing a table's clothes. No merchant-facing event catalogue endpoint; the four published types are named in the 422 you get for asking for a fifth. |
 | Settlement | §17.1–§17.6 | Built (ADR-032). A scheduled job cuts a merchant's available balance into a batch and items (§17.1), submits the payout to the simulator (§17.2), and the provider's signed callback posts `BANK_CASH` — a terminal failure returns the funds to available by a new journal. `settlement_configs` now carries the holding period *and* a payout destination and minimum (§17.4); `GET /api/v1/settlements` reads batches. §17.6's invariants are DB triggers: a deferred batch-total check, immutability on posted rows, and the two account CHECKs. **No FX and no fee deduction** — one currency per batch, and there is no fee schedule to net. |
 | Notification | §19.1 | Built (ADR-033). A merchant notification is recorded per committed `payment.succeeded` / `payment.failed` / `refund.succeeded`, rendered from code templates, and a scheduled dispatcher (off under `dev`) hands each to a **simulated** sender. **§19.1's `notification_templates` and `delivery_attempts` are deliberately not built** — templates are code (as Risk's rules are) and attempts are a counter on the row (as Webhook chose over `webhook_delivery_attempts`). No channels, no recipient resolution: it stays a leaf. `GET /internal/v1/notifications/{id}` is platform-admin-only, for support. |
-| Reporting/Audit, AI Ops | §19.2–§20 | Not started. |
+| Reporting | §19.2 | Built (ADR-034, V34–V35). Merchant-scoped projections built from domain events into one append-only `report_facts` table (PK = the `evt_` source event, so a redelivery is a refused insert), aggregated on read. `GET /api/v1/reports/payment-summary` and `.../settlements` return per-currency totals with a daily trend, each carrying an `asOf` that admits eventual consistency (null when nothing is projected). `POST /api/v1/report-exports` records a `PENDING` row and returns `202`; a scheduled generator (off under `dev`) renders the CSV, served from `GET .../{id}` by content negotiation (`Accept: text/csv`). Six subscribed types; `order.paid` omitted to avoid double-counting `payment.succeeded`. **No OpenSearch, no pre-aggregated rollup, no export retention** — deliberately. |
+| Audit, AI Ops | §19.3–§20 | Not started. |
 | End-to-end workflows | §21 | The create-order → collect → refund path exists, and **§21.4 reconciliation is now built** (ADR-026). |
 | Security & privacy | §25 | Partial: authn, tenant isolation, secret guards. No encryption at rest, no key management, no audit trail beyond `security_events`. |
 | Observability | §26 | `/actuator/health` and `/actuator/info`, the former now carrying the outbox backlog alert (ADR-025). No OpenTelemetry, metrics, tracing or structured correlation ids. |
@@ -605,7 +606,7 @@ no financial effect.
 
 ```bash
 cd backend
-./mvnw test                     # 1401 tests; needs Docker, no local database
+./mvnw test                     # 1479 tests; needs Docker, no local database
 ./mvnw spring-boot:run          # port 8080, activates the dev profile via the pom
 
 # API contract, end to end, including cross-tenant isolation and idempotency
@@ -984,8 +985,8 @@ Ledger's `MERCHANT_AVAILABLE` account, which `AccountType`'s own javadoc names a
 | 2 ✅ | Risk — **merged, PR #59** | — | V27–V28 | ADR-030 |
 | 3 ✅ | Ledger available balance — **merged, PR #60** | — | V29 | ADR-031 |
 | 4 ✅ | Settlement — **merged, PR #61** | — | V30–V32 | ADR-032 |
-| 5 | Notification | — | V33 | ADR-033 |
-| 6 | Reporting | PR4 (content) | V34–V35 | ADR-034 |
+| 5 ✅ | Notification — **merged, PR #62** | — | V33 | ADR-033 |
+| 6 ✅ | Reporting — **built on `feature/reporting`** | PR4 (content) | V34–V35 | ADR-034 |
 | 7 | Audit | PR2, PR4 (subjects) | V36 | ADR-035 |
 
 The numbers moved once: open item 19 took V26 and ADR-029 mid-plan, so everything after it shifted
@@ -1105,41 +1106,46 @@ the documents again.
   loses an endpoint id has no way to enumerate.
 - **The DNS-rebinding race in the SSRF guard is open and documented** (ADR-028 §7).
 
-### PICK UP HERE — after Notification (PR 5)
+### PICK UP HERE — after Reporting (PR 6)
 
-Phase 2's PRs 0–4 are merged; **PR 5 (Notification, ADR-033, V33) is built on
-`feature/notification`** and 1401 tests are green. The next thing to build is **PR 6, Reporting**
-(`docs/phase-2-plan.md`): migrations **V34–V35**, **ADR-034**, depends on Settlement's content.
+Phase 2's PRs 0–5 are merged; **PR 6 (Reporting, ADR-034, V34–V35) is built on
+`feature/reporting`** and 1479 tests are green. The next thing to build is **PR 7, Audit**
+(`docs/phase-2-plan.md`): migration **V36**, **ADR-035**, and it is the last PR of Phase 2.
 
-- **Notification is a third pure event consumer, the same shape as Webhook.** It records a merchant
-  notification per committed `payment.succeeded` / `payment.failed` / `refund.succeeded`, renders it
-  from code templates, and a scheduled dispatcher (off under `dev`) hands each to a **simulated**
-  sender. Two of the three tables the plan named are cut, each with in-repo precedent: templates are
-  code (as Risk's rules are), attempts are a counter on the row (as Webhook chose over
-  `webhook_delivery_attempts`). `GET /internal/v1/notifications/{id}` is platform-admin-only.
-- **The FAILED path is unreachable while the sender is simulated** — the seam is where a real
-  provider or a failure profile plugs in, and the dispatcher's retry/fail logic is proved by a stub
-  sender that throws. Documented in ADR-033.
-- Settlement is done — cut, submit, the signed payout callback and the three ledger journals all land.
-
-- **Settlement is a pure event producer/consumer now, and the loop is scheduled.** Cut and submit are
-  `@Scheduled`, off under `dev`, so they are driven directly in tests
-  (`SettlementLoopIntegrationTest`) rather than by waiting for a tick. `BANK_CASH` only moves on the
-  provider's signed callback to `/internal/v1/payout-callbacks/{provider}`.
+- **Reporting is the last of the three pure event consumers, the same shape as Webhook and
+  Notification.** It projects one append-only fact per source event into `report_facts` — the
+  primary key is the `evt_` id, so a redelivered event is a refused insert, not a double-counted
+  payment — and both reports are a `GROUP BY` over it, the export a `SELECT`. It names no producer
+  type: payloads are read as a `Map`, so `ModuleBoundaryTest`'s allowlist stays empty. Six subscribed
+  types (`payment.succeeded/failed`, `refund.succeeded`, `settlement.batch_cut`, `payout.paid/
+  returned`); `order.paid` omitted, as Notification omits it, to avoid double-counting a collection.
+- **Every report carries an `asOf`** — the newest `recorded_at` this merchant's projection holds,
+  or null when it holds none. Never the read time: a relay that stopped shows up as an `asOf` that
+  stops advancing, which is the delayed-data signal SDD §19.2 asks for. Everything is per currency;
+  nothing sums USD and EUR.
+- **The two derived helpers were cut in review.** `netAmountMinor` (payment) and `inFlightAmountMinor`
+  (settlement) were subtractions over a windowed fact set that does not partition, so they could go
+  negative in a way that reads as a defect; the raw counts are always correct, and true balances are
+  the Ledger's. ADR-034 records this.
+- **Exports live in a `TEXT` column, not object storage** (there is none in this project yet), and an
+  export over the row cap is `FAILED` with a reason rather than retried forever. The generator timer
+  is off under `dev`, so an export stays `PENDING` in the test/newman path — which is what makes the
+  not-ready `409` deterministic there.
 - **Open item 20's held-slot leak is still open** — a capture fully refunded before it cleared never
-  leaves the release candidate set. Not on the payout path; a `held`-slot cost only. The interleave
-  half of item 20 was closed by this PR.
-- **Reporting (SDD §19.2) is the next consumer** — merchant-scoped projections built from domain
-  events, in PostgreSQL, each report carrying an `asOf`. It depends on Settlement's content so the
-  settlement report lands in the same pass. Read `docs/phase-2-plan.md` PR 6 first; the Notification
-  and Webhook builds are the closest worked examples of a leaf reading events as a `Map`.
+  leaves the settlement release candidate set. Not on the payout path; a `held`-slot cost only.
+- **Audit (SDD §19.3) is next and last** — an append-only `audit_events` log of privileged and
+  financial-operational actions (risk decisions, payout retries, secret rotations, merchant freezes,
+  manual recovery), immutability enforced by a trigger exactly as `ledger_entries` is. It is
+  sequenced last because its subjects are what the rest of Phase 2 created. Read `docs/phase-2-plan.md`
+  PR 7 first.
 - **The rest of open item 17 is still not worked through** — the `FailureAnalyzer`,
   `ModuleBoundaryTest` allowlisting by filename rather than path, the idempotency filter's
-  hard-coded replay `Content-Type`, the `@Email` inconsistency. All cosmetic or test-only; none is
-  on the money path.
-- **Postman now has a Settlement folder** covering the config and read endpoints and the unsigned
-  payout-callback rejection. The full cut→pay loop is not walkable over HTTP under `dev` — the timer
-  is off and there is no route to cut a batch — so the folder stops at the HTTP surface and says so.
+  hard-coded replay `Content-Type`, the `@Email` inconsistency. All cosmetic or test-only.
+- **Postman now has a Reporting folder** (self-contained: its own merchant, no dependence on earlier
+  folders), covering the two summary reads, the export `202` → `PENDING` → not-ready `409` path,
+  idempotent replay, tenant isolation and every error path. Projection from real relayed events is
+  covered by `ReportingIntegrationTest` and was verified live by hand this session (a simulator-
+  collected payment surfaced in `payment-summary` and in a downloaded CSV).
 
 **The judgement call to revisit when a second provider arrives.** Reconciliation reads this
 provider's `TIMED_OUT` as "nothing was collected", which is true of the simulator's file because
