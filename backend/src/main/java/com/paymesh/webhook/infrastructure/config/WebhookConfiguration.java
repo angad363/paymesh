@@ -206,11 +206,12 @@ public class WebhookConfiguration {
     RotateWebhookSecretService rotateWebhookSecretService(
         WebhookEndpointRepository endpoints,
         WebhookProperties properties,
+        com.paymesh.shared.audit.AuditRecorder auditRecorder,
         TransactionTemplate transactions,
         Clock clock
     ) {
         return new RotateWebhookSecretService(
-            endpoints, verifiedMasterKey(properties), transactions, clock
+            endpoints, verifiedMasterKey(properties), auditRecorder, transactions, clock
         );
     }
 

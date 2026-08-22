@@ -131,6 +131,12 @@ paymesh:
       # export from PENDING to COMPLETED would mutate the row a test is asserting on.
       # GenerateReportExportsService is a plain bean, so tests call generate() directly.
       enabled: false
+  audit:
+    export:
+      # OFF under dev, same reason as reporting's: a timer flipping an audit export from PENDING to
+      # COMPLETED would mutate the row a test is asserting on. GenerateAuditExportsService is a plain
+      # bean, so tests call generate() directly.
+      enabled: false
   # OFF, and this one is not optional. Every @SpringBootTest runs under this
   # profile and the release job MOVES A MERCHANT'S BALANCE between two accounts
   # -- a tick landing between a test's setup and its assertion rewrites the very

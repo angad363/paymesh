@@ -5,6 +5,9 @@ import com.paymesh.identity.domain.SecurityEvent;
 import com.paymesh.identity.domain.SecurityEventType;
 import com.paymesh.identity.domain.User;
 import com.paymesh.identity.domain.UserId;
+import com.paymesh.shared.audit.ActorType;
+import com.paymesh.shared.audit.AuditEntry;
+import com.paymesh.shared.audit.AuditRecorder;
 import com.paymesh.shared.tenant.MerchantId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -52,6 +55,7 @@ public final class ManageUserAccessService {
     private final UserRepository users;
     private final RefreshTokenRepository refreshTokens;
     private final SecurityEventRepository securityEvents;
+    private final AuditRecorder auditRecorder;
     private final TransactionTemplate transactions;
     private final Clock clock;
 
@@ -59,12 +63,14 @@ public final class ManageUserAccessService {
         UserRepository users,
         RefreshTokenRepository refreshTokens,
         SecurityEventRepository securityEvents,
+        AuditRecorder auditRecorder,
         TransactionTemplate transactions,
         Clock clock
     ) {
         this.users = users;
         this.refreshTokens = refreshTokens;
         this.securityEvents = securityEvents;
+        this.auditRecorder = auditRecorder;
         this.transactions = transactions;
         this.clock = clock;
     }
@@ -77,6 +83,8 @@ public final class ManageUserAccessService {
             User suspended = users.save(require(userId).suspend(now()));
 
             endEverySession(userId, SecurityEventType.USER_SUSPENDED);
+
+            audit("user.suspended", operatorId, null, userId, null);
 
             log.warn("User suspended userId={} operator={}", userId.value(), operatorId);
 
@@ -107,6 +115,8 @@ public final class ManageUserAccessService {
             User promoted = users.save(require(userId).grantPlatformRole(Role.PLATFORM_ADMIN, now()));
 
             endEverySession(userId, SecurityEventType.PLATFORM_ADMIN_GRANTED);
+
+            audit("user.platform_admin_granted", operatorId, null, userId, null);
 
             log.warn("Granted PLATFORM_ADMIN userId={} operator={}", userId.value(), operatorId);
 
@@ -156,6 +166,8 @@ public final class ManageUserAccessService {
             User demoted = users.save(target.revokePlatformRole(Role.PLATFORM_ADMIN, now()));
 
             endEverySession(userId, SecurityEventType.PLATFORM_ADMIN_REVOKED);
+
+            audit("user.platform_admin_revoked", operatorId, null, userId, null);
 
             log.warn("Revoked PLATFORM_ADMIN userId={} operator={}", userId.value(), operatorId);
 
@@ -262,6 +274,8 @@ public final class ManageUserAccessService {
                 SecurityEventType.USER_REACTIVATED, userId.value(), null, now()
             ));
 
+            audit("user.reactivated", operatorId, null, userId, null);
+
             log.warn("User reactivated userId={} operator={}", userId.value(), operatorId);
 
             return reactivated;
@@ -274,6 +288,8 @@ public final class ManageUserAccessService {
             User closed = users.save(require(userId).close(now()));
 
             endEverySession(userId, SecurityEventType.USER_CLOSED);
+
+            audit("user.closed", operatorId, null, userId, null);
 
             log.warn("User closed userId={} operator={}", userId.value(), operatorId);
 
@@ -308,6 +324,8 @@ public final class ManageUserAccessService {
             // otherwise "revoked" means "in up to fifteen minutes" with nothing saying so.
             endEverySession(userId, SecurityEventType.MERCHANT_ACCESS_REVOKED);
 
+            audit("user.access_revoked", actorId, merchantId, userId, null);
+
             log.warn(
                 "Revoked user access userId={} merchantId={} actor={}",
                 userId.value(), merchantId.value(), actorId
@@ -339,14 +357,21 @@ public final class ManageUserAccessService {
      * project-status rather than left for the next audit.
      */
     public User grantAccessAt(MerchantId merchantId, UserId userId, Role role, String actorId) {
-        User granted = users.save(require(userId).grantRoleAt(role, merchantId.value(), now()));
+        // Wrapped now that it writes twice -- the grant and its audit row -- so they commit together
+        // (ADR-035). It was a single save before audit existed; the reactivate javadoc's list of
+        // "all transactional" siblings now includes this one.
+        return transactions.execute(status -> {
+            User granted = users.save(require(userId).grantRoleAt(role, merchantId.value(), now()));
 
-        log.warn(
-            "Granted user access userId={} merchantId={} role={} actor={}",
-            userId.value(), merchantId.value(), role, actorId
-        );
+            audit("user.access_granted", actorId, merchantId, userId, "role=" + role);
 
-        return granted;
+            log.warn(
+                "Granted user access userId={} merchantId={} role={} actor={}",
+                userId.value(), merchantId.value(), role, actorId
+            );
+
+            return granted;
+        });
     }
 
     /** The people who can act for this merchant. What an admin needs before revoking anybody. */
@@ -363,6 +388,37 @@ public final class ManageUserAccessService {
      * would bite at the next refresh anyway. Doing it here as well means it bites at once, and
      * means the bar does not depend on that one check still being there.
      */
+    /**
+     * Records one privileged user-management action in the audit log, inside the caller's
+     * transaction (ADR-035).
+     *
+     * <h2>THIS OVERLAPS security_events ON PURPOSE</h2>
+     *
+     * {@code security_events} is Identity's auth history -- logins, refreshes, session revocations.
+     * The audit log is the ONE cross-capability place a compliance reviewer reads every privileged
+     * action, merchant freezes and secret rotations beside these, immutable by trigger. The two
+     * answer different questions and the small overlap here is the price of that single view.
+     *
+     * <p>No before/after hash and no IP: the action verb ({@code user.suspended}) carries the
+     * transition, this runs below the HTTP boundary so no request is in scope, and {@code merchantId}
+     * is null for a platform-scoped action.
+     *
+     * @param merchantId the tenant for a merchant-scoped action, or null for a platform-scoped one
+     * @param detail     an optional note for {@code reason}, e.g. the role granted
+     */
+    private void audit(
+        String action, String operatorId, MerchantId merchantId, UserId target, String detail
+    ) {
+        auditRecorder.record(
+            AuditEntry.builder(action, ActorType.USER)
+                .actorId(operatorId)
+                .merchant(merchantId)
+                .resource("user", target.value())
+                .reason(detail)
+                .build()
+        );
+    }
+
     private void endEverySession(UserId userId, SecurityEventType reason) {
         refreshTokens.revokeAllForUser(userId, now());
 

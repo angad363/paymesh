@@ -3,9 +3,10 @@
 _Last updated: 22 August 2026, after PR #62 merged and Reporting built. Update this
 file at the end of a working session, not during one._
 
-**Reading this to resume? Go to "What comes next" → "PICK UP HERE".** Phase 2's PRs 0–5 are
-merged (#54, #55, #59, #60, #61, #62); **PR 6 (Reporting, ADR-034, V34–V35) is built on
-`feature/reporting`** and is the current tip. Audit (PR 7) is the last one.
+**Reading this to resume?** Phase 2 is **complete**: PRs 0–6 are merged, and **PR 7 (Audit,
+ADR-035, V36) is built on `feature/audit`** — the last PR of Phase 2. All eight of Phase 2's
+capabilities exist. The next horizon is Phase 3 (AI Ops, SDD §20) and service extraction; nothing
+in Phase 2 remains.
 
 This is the pick-up-here document. It records what exists, what has actually been
 verified, what is deliberately unfinished, and what comes next. For *why* a design
@@ -25,7 +26,7 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1479 tests, 0 failures.** Thirty-five Flyway migrations (V1–V35). Thirty-four ADRs. The Postman
+**1514 tests, 0 failures.** Thirty-six Flyway migrations (V1–V36). Thirty-five ADRs. The Postman
 collection runs **nineteen folders green** — the newest a self-contained Reporting folder (17
 requests, 30 assertions, verified with newman against the running app) covering the two summary
 reads, the async export lifecycle, tenant isolation and every error path.
@@ -120,7 +121,8 @@ The SDD describes ~15 services across 31 sections. This is what the code actuall
 | Settlement | §17.1–§17.6 | Built (ADR-032). A scheduled job cuts a merchant's available balance into a batch and items (§17.1), submits the payout to the simulator (§17.2), and the provider's signed callback posts `BANK_CASH` — a terminal failure returns the funds to available by a new journal. `settlement_configs` now carries the holding period *and* a payout destination and minimum (§17.4); `GET /api/v1/settlements` reads batches. §17.6's invariants are DB triggers: a deferred batch-total check, immutability on posted rows, and the two account CHECKs. **No FX and no fee deduction** — one currency per batch, and there is no fee schedule to net. |
 | Notification | §19.1 | Built (ADR-033). A merchant notification is recorded per committed `payment.succeeded` / `payment.failed` / `refund.succeeded`, rendered from code templates, and a scheduled dispatcher (off under `dev`) hands each to a **simulated** sender. **§19.1's `notification_templates` and `delivery_attempts` are deliberately not built** — templates are code (as Risk's rules are) and attempts are a counter on the row (as Webhook chose over `webhook_delivery_attempts`). No channels, no recipient resolution: it stays a leaf. `GET /internal/v1/notifications/{id}` is platform-admin-only, for support. |
 | Reporting | §19.2 | Built (ADR-034, V34–V35). Merchant-scoped projections built from domain events into one append-only `report_facts` table (PK = the `evt_` source event, so a redelivery is a refused insert), aggregated on read. `GET /api/v1/reports/payment-summary` and `.../settlements` return per-currency totals with a daily trend, each carrying an `asOf` that admits eventual consistency (null when nothing is projected). `POST /api/v1/report-exports` records a `PENDING` row and returns `202`; a scheduled generator (off under `dev`) renders the CSV, served from `GET .../{id}` by content negotiation (`Accept: text/csv`). Six subscribed types; `order.paid` omitted to avoid double-counting `payment.succeeded`. **No OpenSearch, no pre-aggregated rollup, no export retention** — deliberately. |
-| Audit, AI Ops | §19.3–§20 | Not started. |
+| Audit | §19.3 | Built (ADR-035, V36). Append-only `audit_events` recorded in-process inside the acting transaction through the shared `AuditRecorder` port (its subjects — merchant freezes, role grants, secret rotations — emit no outbox event, so it is NOT a pure consumer like Notification/Reporting). Immutability is a trigger, the actor rule a CHECK, both proven by raw SQL. Platform-admin read + async CSV export (`audit_exports`). Wired: merchant status change, user privileged access, webhook secret rotation. Deferred with the port ready: risk decisions (no caller until confirm) and SYSTEM-actor recovery. |
+| AI Ops | §20 | Not started. Phase 3. |
 | End-to-end workflows | §21 | The create-order → collect → refund path exists, and **§21.4 reconciliation is now built** (ADR-026). |
 | Security & privacy | §25 | Partial: authn, tenant isolation, secret guards. No encryption at rest, no key management, no audit trail beyond `security_events`. |
 | Observability | §26 | `/actuator/health` and `/actuator/info`, the former now carrying the outbox backlog alert (ADR-025). No OpenTelemetry, metrics, tracing or structured correlation ids. |
@@ -677,6 +679,8 @@ The collection is not decorative: dropping the tenant predicate in
 | 031 | Release funds from the ledger itself: a holding period, a pending→available journal, and no state table for the job |
 | 032 | Settlement cuts against available, submits to the provider, and posts `BANK_CASH` only on the signed callback; failures return funds by a new journal |
 | 033 | Notify merchants from committed events with a simulated sender; templates are code and attempts are a counter, not two tables |
+| 034 | Project one fact per event into an append-only table, aggregate on read; export async |
+| 035 | An append-only audit log recorded in-process inside the acting transaction (its subjects emit no event), immutable by trigger like `ledger_entries` |
 
 Note that the SDD's Appendix D has its own ADR list with the same numbers and
 different decisions. When citing one, say which source you mean.
@@ -987,7 +991,7 @@ Ledger's `MERCHANT_AVAILABLE` account, which `AccountType`'s own javadoc names a
 | 4 ✅ | Settlement — **merged, PR #61** | — | V30–V32 | ADR-032 |
 | 5 ✅ | Notification — **merged, PR #62** | — | V33 | ADR-033 |
 | 6 ✅ | Reporting — **built on `feature/reporting`** | PR4 (content) | V34–V35 | ADR-034 |
-| 7 | Audit | PR2, PR4 (subjects) | V36 | ADR-035 |
+| 7 ✅ | Audit — **built on `feature/audit`** | PR2, PR4 (subjects) | V36 | ADR-035 |
 
 The numbers moved once: open item 19 took V26 and ADR-029 mid-plan, so everything after it shifted
 by one. `docs/phase-2-plan.md` carries the same table and the two agree.

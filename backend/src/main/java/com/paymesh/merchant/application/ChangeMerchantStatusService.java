@@ -3,6 +3,9 @@ package com.paymesh.merchant.application;
 import com.paymesh.merchant.domain.Merchant;
 import com.paymesh.merchant.domain.MerchantStatus;
 import com.paymesh.merchant.domain.MerchantStatusChange;
+import com.paymesh.shared.audit.ActorType;
+import com.paymesh.shared.audit.AuditEntry;
+import com.paymesh.shared.audit.AuditRecorder;
 import com.paymesh.shared.tenant.MerchantId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,6 +36,7 @@ public final class ChangeMerchantStatusService {
     private final MerchantRepository merchants;
     private final MerchantStatusHistoryRepository history;
     private final GetMerchantService getMerchantService;
+    private final AuditRecorder auditRecorder;
     private final TransactionTemplate transactions;
     private final Clock clock;
 
@@ -40,12 +44,14 @@ public final class ChangeMerchantStatusService {
         MerchantRepository merchants,
         MerchantStatusHistoryRepository history,
         GetMerchantService getMerchantService,
+        AuditRecorder auditRecorder,
         TransactionTemplate transactions,
         Clock clock
     ) {
         this.merchants = merchants;
         this.history = history;
         this.getMerchantService = getMerchantService;
+        this.auditRecorder = auditRecorder;
         this.transactions = transactions;
         this.clock = clock;
     }
@@ -95,6 +101,21 @@ public final class ChangeMerchantStatusService {
                 MerchantStatusChange.ActorType.PLATFORM, operatorId, reason, now
             ));
 
+            // The audit event, inside this same transaction, so a committed status change always
+            // carries it (ADR-035). This deliberately overlaps merchant_status_history: that table
+            // is Merchant's own record of ITS transitions; the audit log is the ONE place a
+            // compliance reviewer reads every privileged action across every capability, immutable
+            // by trigger. The overlap is the same shape as Reporting restating Ledger figures.
+            auditRecorder.record(
+                AuditEntry.builder("merchant." + action(saved.status()), ActorType.USER)
+                    .actorId(operatorId)
+                    .merchant(merchantId)
+                    .resource("merchant", merchantId.value())
+                    .reason(reason)
+                    .changing(from.name(), saved.status().name())
+                    .build()
+            );
+
             log.warn(
                 "Merchant status changed merchantId={} from={} to={} operator={} reason={}",
                 merchantId.value(), from, saved.status(), operatorId, reason
@@ -102,5 +123,15 @@ public final class ChangeMerchantStatusService {
 
             return saved;
         });
+    }
+
+    /** The audit action verb for a reached status: SUSPENDED -> "suspended", ACTIVE -> "activated". */
+    private static String action(MerchantStatus status) {
+        return switch (status) {
+            case ACTIVE -> "activated";
+            case SUSPENDED -> "suspended";
+            case CLOSED -> "closed";
+            case PENDING_VERIFICATION -> "pending_verification";
+        };
     }
 }
