@@ -41,13 +41,20 @@ tests bypass it and still pass, because the constraint is the guard.
 
 ## Current status
 
-**All nine of Phase 1's capabilities are built, and Phase 2 is four in** — Webhook
+**All nine of Phase 1's capabilities are built, and Phase 2 is six in** — Webhook
 ([ADR-028](docs/decisions/ADR-028-sign-webhooks-with-a-secret-that-is-never-stored.md)), **Risk**
 ([ADR-030](docs/decisions/ADR-030-risk-decides-and-payment-acts.md)), **the settleable balance**
-([ADR-031](docs/decisions/ADR-031-release-funds-from-the-ledger-itself.md)) and **Settlement**
-itself ([ADR-032](docs/decisions/ADR-032-settlement-cuts-and-the-provider-posts-cash.md)) — which
+([ADR-031](docs/decisions/ADR-031-release-funds-from-the-ledger-itself.md)), **Settlement**
+([ADR-032](docs/decisions/ADR-032-settlement-cuts-and-the-provider-posts-cash.md)) — which
 cuts a batch from available, submits the payout to the provider simulator, and posts `BANK_CASH`
-only on the provider's signed callback. Notification and Reporting are not. Payment is feature-complete:
+only on the provider's signed callback — **Notification**
+([ADR-033](docs/decisions/ADR-033-notify-merchants-from-committed-events-with-a-simulated-sender.md)),
+which records a merchant notification per committed event and hands it to a simulated sender, and
+**Reporting**
+([ADR-034](docs/decisions/ADR-034-project-facts-once-per-event-and-aggregate-on-read.md)), which
+projects one fact per event and aggregates on read into per-currency summaries and an async CSV
+export, each report carrying an `asOf` that admits it is eventually consistent. Only Audit is left.
+Payment is feature-complete:
 create, attach, confirm, provider callbacks, capture and cancel, with order expiry and
 stranded-payment sweeps behind them. **Domain events are now delivered**: the outbox has a
 relay, an in-process dispatcher and a `processed_events` inbox, and Order consumes
@@ -59,7 +66,7 @@ balance, which was not true of this codebase before
 **Refund** closes the loop in the other direction: money goes back out, the Ledger posts a
 reversal, and the payment reaches `REFUNDED`
 ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)).
-**1376 tests, 0 failures. Thirty-two Flyway migrations (V1–V32). Thirty-two ADRs.**
+**1479 tests, 0 failures. Thirty-five Flyway migrations (V1–V35). Thirty-four ADRs.**
 
 **A merchant can now be stopped.** Three lifecycle enums had exactly one reachable value each —
 no merchant could be suspended, no user disabled, no customer blocked, and nothing anywhere read
@@ -275,9 +282,10 @@ three responses byte for byte.
 | `GET` | `/actuator/health` | public (`show-details: never`) |
 | `GET` | `/actuator/info` | public |
 
-The four routes requiring `Idempotency-Key` are registered in one place,
-`IdempotencyConfiguration`. Nothing is idempotent by default; an unregistered route
-passes through the filter untouched.
+The routes requiring `Idempotency-Key` are registered in one place,
+`IdempotencyConfiguration` — public writes on the money path plus `POST /report-exports`,
+so a retried export request replays rather than creating a second row. Nothing is idempotent
+by default; an unregistered route passes through the filter untouched.
 
 ## Data model
 
@@ -501,8 +509,10 @@ The operational half that was called out as missing here has since been built:
 - **Refund callbacks from the simulator**, so the last hand-signed request in the test
   suite can go away.
 
-Then the rest of Phase 2, in SDD order: Settlement, Notification, Reporting. **Webhook and Risk
-are already built** — Webhook was Phase 2's first, not its third.
+**Only Audit is left in Phase 2.** Webhook, Risk, the settleable balance, Settlement,
+Notification and Reporting are all built; the last PR adds an append-only `audit_events` log
+of privileged and financial-operational actions, immutability enforced by a trigger exactly
+as the ledger's entries are.
 
 The Ledger will still be the last thing extracted into a service (SDD §30.1). It is the
 financial source of truth — double-entry, immutable entries, corrections as reversal

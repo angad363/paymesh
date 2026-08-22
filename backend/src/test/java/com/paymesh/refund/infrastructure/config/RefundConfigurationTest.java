@@ -70,14 +70,14 @@ class RefundConfigurationTest {
      * in ADR-033.
      */
     @Test
-    void subscribesTheLedgerPaymentWebhookAndNotificationToRefundSucceeded() {
+    void subscribesTheLedgerPaymentWebhookNotificationAndReportingToRefundSucceeded() {
         assertThat(context.getBeansOfType(EventHandler.class).values().stream()
             .filter(handler -> handler.eventType().equals("refund.succeeded"))
             .map(EventHandler::consumerName)
             .toList())
             .containsExactlyInAnyOrder(
                 "ledger.refund-succeeded", "payment.refund-succeeded", "webhook.refund.succeeded",
-                "notification.refund.succeeded"
+                "notification.refund.succeeded", "reporting.refund.succeeded"
             );
     }
 

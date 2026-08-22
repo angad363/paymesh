@@ -125,6 +125,12 @@ paymesh:
       # notification rows to SENT would mutate the rows a test asserts on.
       # SendPendingNotificationsService is a plain bean, so tests call dispatch() directly.
       enabled: false
+  reporting:
+    export:
+      # OFF under dev, same reason: the suite runs under this profile and a timer flipping an
+      # export from PENDING to COMPLETED would mutate the row a test is asserting on.
+      # GenerateReportExportsService is a plain bean, so tests call generate() directly.
+      enabled: false
   # OFF, and this one is not optional. Every @SpringBootTest runs under this
   # profile and the release job MOVES A MERCHANT'S BALANCE between two accounts
   # -- a tick landing between a test's setup and its assertion rewrites the very
