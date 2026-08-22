@@ -557,6 +557,20 @@ paymesh:
       # the ceiling that stops a year-long window becoming a multi-megabyte column. An export over
       # the cap is FAILED with a reason naming this number rather than retried forever.
       max-rows: 50000
+  audit:
+    export:
+      # The audit-log CSV. Same shape as reporting's export: on by default, off under dev, the
+      # timer removed entirely by @ConditionalOnProperty rather than running and doing nothing.
+      enabled: true
+      # How long after one pass FINISHES the next begins. Resolved straight into @Scheduled from the
+      # environment and NOT bound into AuditExportProperties, same note as reporting's above.
+      interval: 30s
+      # How many PENDING exports one pass may take, each in its own transaction.
+      batch-size: 5
+      # The largest export a single row may carry. The CSV lives in a TEXT column (V36), so this is
+      # the ceiling that stops a platform-wide year-long window becoming a multi-megabyte column. An
+      # export over the cap is FAILED with a reason naming this number rather than retried forever.
+      max-rows: 50000
   simulator:
     # THE ONLY AUTHENTICATION ON /sim/v1/**. Declared but deliberately EMPTY, and the
     # application refuses to start without it (@NotBlank on SimulatorProperties).

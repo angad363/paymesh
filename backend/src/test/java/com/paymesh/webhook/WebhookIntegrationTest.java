@@ -63,6 +63,9 @@ class WebhookIntegrationTest {
 
     private static final Instant CREATED_AT = Instant.parse("2026-08-05T10:00:00Z");
 
+    /** The operator id a rotation is attributed to in the audit log (ADR-035). */
+    private static final String OPERATOR = "usr_11111111-1111-1111-1111-111111111111";
+
     @Autowired
     private RegisterWebhookEndpointService registerEndpoint;
 
@@ -191,7 +194,7 @@ class WebhookIntegrationTest {
         assertThat(registered.endpoint().secretVersion()).isEqualTo(1);
 
         RegisteredWebhookEndpoint rotated =
-            rotateSecret.rotate(merchantId, registered.endpoint().endpointId(), 1);
+            rotateSecret.rotate(merchantId, registered.endpoint().endpointId(), 1, OPERATOR);
 
         assertThat(rotated.endpoint().secretVersion()).isEqualTo(2);
         assertThat(rotated.secret()).isNotEqualTo(registered.secret());
@@ -208,8 +211,8 @@ class WebhookIntegrationTest {
         MerchantId merchantId = merchant();
         EndpointId endpointId = endpoint(merchantId, "order.paid").endpoint().endpointId();
 
-        RegisteredWebhookEndpoint first = rotateSecret.rotate(merchantId, endpointId, 1);
-        RegisteredWebhookEndpoint retry = rotateSecret.rotate(merchantId, endpointId, 1);
+        RegisteredWebhookEndpoint first = rotateSecret.rotate(merchantId, endpointId, 1, OPERATOR);
+        RegisteredWebhookEndpoint retry = rotateSecret.rotate(merchantId, endpointId, 1, OPERATOR);
 
         assertThat(retry.secret()).isEqualTo(first.secret());
         assertThat(retry.endpoint().secretVersion()).isEqualTo(2);
@@ -220,7 +223,7 @@ class WebhookIntegrationTest {
         MerchantId merchantId = merchant();
         EndpointId endpointId = endpoint(merchantId, "order.paid").endpoint().endpointId();
 
-        assertThatThrownBy(() -> rotateSecret.rotate(merchantId, endpointId, 7))
+        assertThatThrownBy(() -> rotateSecret.rotate(merchantId, endpointId, 7, OPERATOR))
             .isInstanceOf(SecretVersionMismatchException.class);
     }
 

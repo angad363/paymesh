@@ -124,12 +124,13 @@ public class IdentityConfiguration {
         UserRepository userRepository,
         RefreshTokenRepository refreshTokenRepository,
         SecurityEventRepository securityEventRepository,
+        com.paymesh.shared.audit.AuditRecorder auditRecorder,
         org.springframework.transaction.support.TransactionTemplate transactionTemplate,
         Clock clock
     ) {
         return new ManageUserAccessService(
-            userRepository, refreshTokenRepository, securityEventRepository, transactionTemplate,
-            clock
+            userRepository, refreshTokenRepository, securityEventRepository, auditRecorder,
+            transactionTemplate, clock
         );
     }
 

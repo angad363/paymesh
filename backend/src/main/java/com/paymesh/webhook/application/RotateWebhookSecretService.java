@@ -1,5 +1,8 @@
 package com.paymesh.webhook.application;
 
+import com.paymesh.shared.audit.ActorType;
+import com.paymesh.shared.audit.AuditEntry;
+import com.paymesh.shared.audit.AuditRecorder;
 import com.paymesh.shared.tenant.MerchantId;
 import com.paymesh.webhook.application.WebhookEndpointExceptions.WebhookEndpointNotFoundException;
 import com.paymesh.webhook.domain.EndpointId;
@@ -30,23 +33,32 @@ public final class RotateWebhookSecretService {
 
     private final WebhookEndpointRepository endpoints;
     private final byte[] masterKey;
+    private final AuditRecorder auditRecorder;
     private final TransactionTemplate transactions;
     private final Clock clock;
 
     public RotateWebhookSecretService(
         WebhookEndpointRepository endpoints,
         byte[] masterKey,
+        AuditRecorder auditRecorder,
         TransactionTemplate transactions,
         Clock clock
     ) {
         this.endpoints = endpoints;
         this.masterKey = masterKey.clone();
+        this.auditRecorder = auditRecorder;
         this.transactions = transactions;
         this.clock = clock;
     }
 
+    /**
+     * @param operatorId the {@code usr_} rotating the secret, for the audit log. The secret itself
+     *     is never audited -- only the version bump, and even that as hashed before/after -- because
+     *     a signing secret in the audit log would defeat the point of deriving it and never storing
+     *     it (ADR-028, ADR-035).
+     */
     public RegisteredWebhookEndpoint rotate(
-        MerchantId merchantId, EndpointId endpointId, int fromVersion
+        MerchantId merchantId, EndpointId endpointId, int fromVersion, String operatorId
     ) {
         WebhookEndpoint rotated = transactions.execute(status -> {
             WebhookEndpoint endpoint = endpoints.findByEndpointId(merchantId, endpointId)
@@ -56,7 +68,27 @@ public final class RotateWebhookSecretService {
 
             // Unchanged means the retry case above. Writing it anyway would bump the optimistic
             // version and turn an idempotent retry into a lost update somewhere else.
-            return next == endpoint ? endpoint : endpoints.save(next);
+            if (next == endpoint) {
+                return endpoint;
+            }
+
+            WebhookEndpoint saved = endpoints.save(next);
+
+            // Only a REAL rotation is audited, inside this transaction, so the audit row and the
+            // bump commit together. The idempotent retry above records nothing -- there was no
+            // second rotation to log.
+            auditRecorder.record(
+                AuditEntry.builder("webhook.secret_rotated", ActorType.USER)
+                    .actorId(operatorId)
+                    .merchant(merchantId)
+                    .resource("webhook_endpoint", endpointId.value())
+                    .changing(
+                        "v" + endpoint.secretVersion(), "v" + saved.secretVersion()
+                    )
+                    .build()
+            );
+
+            return saved;
         });
 
         return new RegisteredWebhookEndpoint(

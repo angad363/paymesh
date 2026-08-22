@@ -573,12 +573,58 @@ class ModuleBoundaryTest {
         assertOnlyTheseImport("com/paymesh/shared", "com.paymesh.notification.", List.of());
     }
 
+    /**
+     * AUDIT IS A LEAF THAT IS REACHED THROUGH A SHARED PORT, NEVER IMPORTED. Merchant, Identity and
+     * Webhook record privileged actions by depending on {@code com.paymesh.shared.audit.AuditRecorder}
+     * -- the port lives in {@code shared}, exactly like {@code MerchantId} and {@code Clock} -- so no
+     * capability names {@code com.paymesh.audit}. This is what keeps ADR-035's "a failure to record
+     * is a failure to act, and nothing else couples to Audit" true at the type level: the recorder's
+     * single implementation is the only thing on the other side of that interface.
+     */
+    @Test
+    void auditImportsNoOtherCapability() throws IOException {
+        for (String other : OTHER_CAPABILITIES) {
+            if (other.equals("audit")) {
+                continue;
+            }
+
+            assertOnlyTheseImport("com/paymesh/audit", "com.paymesh." + other + ".", List.of());
+        }
+    }
+
+    /**
+     * The reverse, and the claim the shared port exists to make: privileged services depend on
+     * {@code com.paymesh.shared.audit}, so nothing imports {@code com.paymesh.audit} itself -- not a
+     * capability, not {@code shared}. An import appearing here means a call site reached past the
+     * port into the module, and the leaf has become a dependency.
+     */
+    @Test
+    void noCapabilityImportsAudit() throws IOException {
+        for (String other : OTHER_CAPABILITIES) {
+            if (other.equals("audit")) {
+                continue;
+            }
+
+            assertOnlyTheseImport("com/paymesh/" + other, "com.paymesh.audit.", List.of());
+        }
+
+        assertOnlyTheseImport("com/paymesh/shared", "com.paymesh.audit.", List.of());
+    }
+
     /** Every capability package except the simulator itself. */
     private static final List<String> CAPABILITIES =
         List.of(
             "merchant", "identity", "customer", "order", "payment", "ledger", "refund",
             "reconciliation", "risk", "settlement", "notification"
         );
+
+    /**
+     * The fuller set, used by the Audit boundary tests: {@link #CAPABILITIES} plus the three leaves
+     * added after it was written ({@code webhook}, {@code reporting}, {@code simulator}), so "no
+     * capability imports Audit" genuinely means no capability -- including the ones that record.
+     */
+    private static final List<String> OTHER_CAPABILITIES =
+        Stream.concat(CAPABILITIES.stream(), Stream.of("webhook", "reporting", "simulator")).toList();
 
     private static void assertOnlyTheseImport(
         String moduleDirectory,

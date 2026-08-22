@@ -104,7 +104,8 @@ public final class WebhookEndpointController {
         AuthenticatedCaller caller
     ) {
         return WebhookEndpointResponse.from(rotateWebhookSecretService.rotate(
-            caller.requireSingleMerchant(), EndpointId.from(endpointId), request.fromVersion()
+            caller.requireSingleMerchant(), EndpointId.from(endpointId),
+            request.fromVersion(), caller.userId()
         ));
     }
 

@@ -55,7 +55,7 @@ class WebhookConfigurationTest {
         )).isInstanceOf(IllegalArgumentException.class);
 
         assertThatThrownBy(() -> configuration.rotateWebhookSecretService(
-            null, tooShort, null, Clock.systemUTC()
+            null, tooShort, null, null, Clock.systemUTC()
         )).isInstanceOf(IllegalArgumentException.class);
     }
 

@@ -68,12 +68,13 @@ public class MerchantConfiguration {
         MerchantRepository merchantRepository,
         MerchantStatusHistoryRepository merchantStatusHistoryRepository,
         GetMerchantService getMerchantService,
+        com.paymesh.shared.audit.AuditRecorder auditRecorder,
         TransactionTemplate transactionTemplate,
         Clock clock
     ) {
         return new ChangeMerchantStatusService(
             merchantRepository, merchantStatusHistoryRepository, getMerchantService,
-            transactionTemplate, clock
+            auditRecorder, transactionTemplate, clock
         );
     }
 
