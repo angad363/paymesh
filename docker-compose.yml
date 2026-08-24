@@ -42,12 +42,15 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       # Don't wait 3s for other consumers that will never join a one-broker dev box.
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      # ponytail: topics are auto-created on first publish, with one partition and
-      # the defaults. That is fine while ordering is per aggregate on a single
-      # partition and no consumer is scaled out. When a topic needs a real
-      # partition count, declare it -- NewTopic beans or a provisioning step --
-      # rather than raising this default, and turn auto-creation off so a typo in
-      # a topic name fails loudly instead of creating a topic nobody reads.
+      # ponytail: topics are auto-created on first publish, with one partition AND
+      # REPLICATION FACTOR 1. Both are fine on a one-broker dev box and neither is
+      # fine in the target, and the replication factor is the one that lies: with
+      # RF=1 the producer's acks=all is identical to acks=1, so the durability
+      # setting in application.yaml is silently void on any topic created this way.
+      # Upgrade path: declare topics explicitly (NewTopic beans or a provisioning
+      # step) with a real partition count and RF=3, and turn auto-creation OFF --
+      # so a typo in a topic name fails loudly instead of quietly creating a
+      # single-replica topic nobody reads.
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     # No named volume: the log lives in the container and a `down` discards it.
     # Dev events are replayable from the outbox, and a stale local Kafka log that

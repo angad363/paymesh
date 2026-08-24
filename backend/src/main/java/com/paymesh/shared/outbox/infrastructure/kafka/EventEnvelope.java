@@ -5,7 +5,9 @@ import com.paymesh.shared.outbox.domain.OutboxEvent;
 import com.paymesh.shared.tenant.MerchantId;
 
 import java.time.Instant;
+import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * One domain event as it crosses the wire (ADR-036): the JSON body of a Kafka record.
@@ -60,6 +62,9 @@ public record EventEnvelope(
 
     private static final String TOPIC_SUFFIX = "-events";
 
+    /** Kafka's own rule for a topic name, minus the dot and the empty string. */
+    private static final Pattern LEGAL_TOPIC = Pattern.compile("[a-z0-9][a-z0-9-]{0,248}");
+
     public static EventEnvelope from(OutboxEvent event) {
         return new EventEnvelope(
             event.eventId().value(),
@@ -95,43 +100,58 @@ public record EventEnvelope(
     }
 
     /**
-     * The topic this event belongs on: <b>the first segment of {@code eventType}, plus
-     * {@code -events}</b>. {@code order.created} to {@code order-events},
-     * {@code payment.succeeded} to {@code payment-events},
-     * {@code customer.payment_method.attached} to {@code customer-events}.
-     * <p>
-     * <b>Per aggregate, not per service</b>, and derived rather than configured. Per service would
-     * mean renaming topics every time a capability moves between deployables, which is precisely
-     * what Phase 3 does repeatedly. Derived rather than a registry means adding an event type adds
-     * no configuration and cannot forget to -- the naming rule is the only place a topic name
-     * exists.
-     * <p>
-     * It is the {@code eventType} prefix rather than {@code aggregateType} because the prefix is
-     * already the domain name a reader expects ({@code payment.succeeded} on {@code payment-events})
-     * while the aggregate is an implementation detail of who emits it ({@code PAYMENT_INTENT}).
-     * {@code eventType} is NOT NULL and CHECKed non-blank in {@code outbox_events}, so the prefix is
-     * always there; an event type with no dot is a producer bug and is refused here rather than
-     * silently landing on a topic named after the whole type.
+     * The topic this event belongs on: <b>the aggregate type, lowercased, with underscores
+     * hyphenated, plus {@code -events}</b>. {@code ORDER} to {@code order-events},
+     * {@code PAYMENT_INTENT} to {@code payment-intent-events}, {@code SETTLEMENT_BATCH} to
+     * {@code settlement-batch-events}.
      *
-     * @throws IllegalArgumentException when the event type carries no {@code domain.} prefix
+     * <h2>THE AGGREGATE, NOT THE EVENT TYPE'S PREFIX, AND THE DIFFERENCE IS AN ORDERING BUG</h2>
+     *
+     * This rule first read the domain prefix of {@code eventType} ({@code payment.succeeded} to
+     * {@code payment-events}), which is what the Phase 3 plan's illustrative topic list looks like.
+     * It is wrong, and Settlement is the proof: one {@code SETTLEMENT_BATCH} aggregate emits
+     * {@code settlement.batch_cut} AND {@code payout.paid}/{@code payout.returned}, so the prefix
+     * rule put one aggregate's stream on two topics. {@link #partitionKey()} is the same {@code stl_}
+     * id for all three, but <b>a key only orders within a topic</b> -- across two, nothing is
+     * ordered at all. The Ledger consumes all three ({@code SettlementLedgerHandler}) and they are
+     * causally chained: {@code batch_cut} moves available to in-transit and {@code payout.paid}
+     * discharges in-transit. Delivered in the wrong order the Ledger discharges funds it never moved
+     * there, which the relay's oldest-first pass makes impossible today.
+     * <p>
+     * So the topic is derived from the same thing the key is derived from. <b>One aggregate, one
+     * topic, one key space</b> -- and then per-aggregate ordering is a property of the naming rule
+     * rather than a coincidence about which event types happen to share a prefix. It also matches
+     * the plan's own words ("topics per aggregate, not per service"); only its example names assumed
+     * the aggregate and the event prefix were the same string.
+     *
+     * <h2>Derived, not configured</h2>
+     *
+     * A registry mapping types to topics would be a second place to update and a second place to
+     * forget; adding an event type should require no topic configuration at all, and this is the
+     * only place a topic name exists.
+     *
+     * @throws IllegalArgumentException when the aggregate type cannot form a legal Kafka topic name.
+     *     {@code aggregateType} is free text as far as the outbox is concerned (deliberately -- see
+     *     {@link OutboxEvent}), so this is the boundary that has to say so.
      */
     public String topic() {
-        int dot = eventType == null ? -1 : eventType.indexOf('.');
+        String name = aggregateType.toLowerCase(Locale.ROOT).replace('_', '-') + TOPIC_SUFFIX;
 
-        if (dot <= 0) {
+        if (!LEGAL_TOPIC.matcher(name).matches()) {
             throw new IllegalArgumentException(
-                "Event type '" + eventType + "' has no domain prefix, so it has no topic"
+                "Aggregate type '" + aggregateType + "' does not form a legal topic name"
             );
         }
 
-        return eventType.substring(0, dot) + TOPIC_SUFFIX;
+        return name;
     }
 
     /**
      * The Kafka record key, and therefore the partition: <b>the aggregate id</b>.
      * <p>
-     * Kafka promises ordering within a partition and nothing across partitions, so the key chooses
-     * what is ordered. The aggregate is the right grain because it is the only ordering the money
+     * Kafka promises ordering within a partition of one topic and nothing else, so the key chooses
+     * what is ordered -- given that {@link #topic()} has already put the whole aggregate on one
+     * topic for it to order within. The aggregate is the right grain because it is the only ordering the money
      * path has ever needed -- ADR-012 already reasoned this out for provider callbacks, where two
      * callbacks about ONE payment must not overtake each other and callbacks about two different
      * payments have no relationship at all.

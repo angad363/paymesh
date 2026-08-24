@@ -18,42 +18,54 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class EventEnvelopeTest {
 
     @Test
-    void topicIsTheEventTypesDomainPrefixPlusEvents() {
-        assertThat(envelopeOf("order.created", "ord_x").topic()).isEqualTo("order-events");
-        assertThat(envelopeOf("payment.succeeded", "pi_x").topic()).isEqualTo("payment-events");
-        assertThat(envelopeOf("refund.failed", "ref_x").topic()).isEqualTo("refund-events");
-        assertThat(envelopeOf("settlement.batch_cut", "stl_x").topic()).isEqualTo("settlement-events");
-    }
-
-    /**
-     * The one event type in the system with two dots. Only the FIRST segment names the topic, so a
-     * sub-namespaced type stays with its domain instead of inventing a topic of its own.
-     */
-    @Test
-    void aSubNamespacedEventTypeStaysOnItsDomainsTopic() {
-        assertThat(envelopeOf("customer.payment_method.attached", "cus_x").topic())
+    void topicIsTheAggregateTypeHyphenatedPlusEvents() {
+        assertThat(envelopeOf("ORDER", "order.created", "ord_x").topic()).isEqualTo("order-events");
+        assertThat(envelopeOf("CUSTOMER", "customer.payment_method.attached", "cus_x").topic())
             .isEqualTo("customer-events");
+        assertThat(envelopeOf("PAYMENT_INTENT", "payment.succeeded", "pi_x").topic())
+            .isEqualTo("payment-intent-events");
     }
 
     /**
-     * A producer bug, refused at the boundary. Silently routing it to a topic named after the whole
-     * type would create a topic nobody consumes and lose the event in plain sight.
+     * THE REASON THE RULE READS THE AGGREGATE AND NOT THE EVENT TYPE'S PREFIX.
+     * <p>
+     * One {@code SETTLEMENT_BATCH} emits {@code settlement.batch_cut} and then
+     * {@code payout.paid}, and the Ledger consumes both: the first moves available to in-transit,
+     * the second discharges in-transit. A rule keyed on the event type's prefix would put them on
+     * {@code settlement-events} and {@code payout-events}, where the shared {@code stl_} key orders
+     * nothing, and the Ledger could be asked to discharge funds it had not yet moved.
      */
     @Test
-    void rejectsAnEventTypeWithNoDomainPrefix() {
-        assertThatThrownBy(() -> envelopeOf("succeeded", "pi_x").topic())
+    void oneAggregatesEventsShareATopicEvenWhenTheirTypesDoNot() {
+        String cut = envelopeOf("SETTLEMENT_BATCH", "settlement.batch_cut", "stl_1").topic();
+        String paid = envelopeOf("SETTLEMENT_BATCH", "payout.paid", "stl_1").topic();
+        String returned = envelopeOf("SETTLEMENT_BATCH", "payout.returned", "stl_1").topic();
+
+        assertThat(cut).isEqualTo("settlement-batch-events");
+        assertThat(paid).isEqualTo(cut);
+        assertThat(returned).isEqualTo(cut);
+    }
+
+    /**
+     * {@code aggregateType} is free text to the outbox, so the boundary has to refuse what cannot
+     * be a topic rather than letting the broker reject it later, per event, forever.
+     */
+    @Test
+    void rejectsAnAggregateTypeThatCannotFormATopicName() {
+        assertThatThrownBy(() -> envelopeOf("SETTLEMENT BATCH", "settlement.batch_cut", "stl_1").topic())
             .isInstanceOf(IllegalArgumentException.class)
-            .hasMessageContaining("no domain prefix");
+            .hasMessageContaining("legal topic name");
     }
 
     @Test
     void partitionKeyIsTheAggregateIdSoOneAggregatesEventsStayOrdered() {
-        assertThat(envelopeOf("payment.succeeded", "pi_7").partitionKey()).isEqualTo("pi_7");
+        assertThat(envelopeOf("PAYMENT_INTENT", "payment.succeeded", "pi_7").partitionKey())
+            .isEqualTo("pi_7");
     }
 
     @Test
     void carriesEveryFactTheOutboxRowHolds() {
-        OutboxEvent event = event("payment.succeeded", "pi_7");
+        OutboxEvent event = event("PAYMENT_INTENT", "payment.succeeded", "pi_7");
 
         EventEnvelope envelope = EventEnvelope.from(event);
 
@@ -63,15 +75,17 @@ class EventEnvelopeTest {
         assertThat(envelope.toEvent()).isEqualTo(event);
     }
 
-    private static EventEnvelope envelopeOf(String eventType, String aggregateId) {
-        return EventEnvelope.from(event(eventType, aggregateId));
+    private static EventEnvelope envelopeOf(
+        String aggregateType, String eventType, String aggregateId
+    ) {
+        return EventEnvelope.from(event(aggregateType, eventType, aggregateId));
     }
 
-    private static OutboxEvent event(String eventType, String aggregateId) {
+    private static OutboxEvent event(String aggregateType, String eventType, String aggregateId) {
         return new OutboxEvent(
             EventId.generate(),
             MerchantId.generate(),
-            "PAYMENT_INTENT",
+            aggregateType,
             aggregateId,
             eventType,
             3,

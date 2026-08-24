@@ -683,7 +683,7 @@ The collection is not decorative: dropping the tenant predicate in
 | 033 | Notify merchants from committed events with a simulated sender; templates are code and attempts are a counter, not two tables |
 | 034 | Project one fact per event into an append-only table, aggregate on read; export async |
 | 035 | An append-only audit log recorded in-process inside the acting transaction (its subjects emit no event), immutable by trigger like `ledger_entries` |
-| 036 | Kafka (KRaft) is the event backbone; the wire envelope is the outbox row formalized as a separate published type, topics are `<event-type-prefix>-events`, the partition key is the aggregate id, and changes are additive within a version |
+| 036 | Kafka (KRaft) is the event backbone; the wire envelope is the outbox row formalized as a separate published type, one topic per aggregate type with the aggregate id as the partition key (so one aggregate's causally-chained events cannot be reordered), and changes are additive within a version |
 
 Note that the SDD's Appendix D has its own ADR list with the same numbers and
 different decisions. When citing one, say which source you mean.
@@ -1183,10 +1183,14 @@ What PR 1 actually put in the tree, and what it deliberately did not:
 - **The envelope adds no field to the outbox row.** Same seven facts since V7. It is a separate
   *type* only so that renaming a field of `OutboxEvent` is not a breaking change to nine
   consumers, and so `{"value":"evt_..."}` does not end up on the wire.
-- **Topic = the event type's first segment + `-events`** (`payment.succeeded` →
-  `payment-events`), derived rather than configured. **Partition key = `aggregateId`**, because
-  per-aggregate ordering is the only ordering the money path needs (ADR-012) and keying by
-  merchant would serialize a whole tenant for no invariant.
+- **Topic = the aggregate type, hyphenated, + `-events`** (`SETTLEMENT_BATCH` →
+  `settlement-batch-events`), derived rather than configured. **Partition key = `aggregateId`**,
+  because per-aggregate ordering is the only ordering the money path needs (ADR-012) and keying by
+  merchant would serialize a whole tenant for no invariant. **The topic is derived from the
+  aggregate and not from the event type's prefix** — code review caught that the prefix rule split
+  `SETTLEMENT_BATCH`'s stream across `settlement-events` and `payout-events`, where the shared
+  `stl_` key orders nothing, and the Ledger consumes both halves of a causal chain. The topic names
+  therefore differ from the illustrative list in the Phase 3 plan, deliberately.
 - **`acks=all`, `enable.idempotence=true`, `auto-offset-reset=earliest`** are set explicitly in
   `application.yaml`, each with the reason in a comment. None of them is exactly-once and none
   replaces the consumer inbox — ADR-016's refusal stands.
@@ -1199,14 +1203,22 @@ What PR 1 actually put in the tree, and what it deliberately did not:
 - **No HTTP surface changed, so the Postman collection is untouched** — deliberately, not by
   omission.
 
-Two things to carry into PR 2:
+Three things to carry into PR 2, all raised by `/code-review` on this branch:
 
+- **The retry budget is sized for the wrong failure, and PR 2 is where it bites.** The relay runs
+  every 2s and dead-letters at 25 failed attempts, so once it publishes to Kafka an unreachable
+  broker burns a row's whole budget in under a minute and dead-letters the backlog — for an outage
+  nobody would call long. That budget was sized for a handler failing on its own state, where 25
+  attempts means a real defect; a dependency being down needs a longer or backing-off budget, or
+  not to count against that budget at all. Decide it in ADR-037 before the sink has a caller.
 - The dual path is safe *because* the inbox already makes redelivery a no-op. That property is
   tested (the guard-free handler that counts invocations, above); do not weaken it to make the
   two paths easier to run together.
-- Topics are auto-created with **one partition** today, marked with a `ponytail:` note in
-  `docker-compose.yml`. A consumer that is scaled out needs a real partition count declared and
-  auto-creation turned off; that is a PR-2-or-later decision, not an oversight.
+- Topics are auto-created with **one partition and replication factor 1**, marked with a
+  `ponytail:` note in `docker-compose.yml`. RF=1 is the one that lies: it makes the producer's
+  `acks=all` identical to `acks=1`, so the durability setting is void on any auto-created topic.
+  Declaring topics with a real partition count and RF=3, and turning auto-creation off, is a
+  later decision — but it is a real ceiling, not a cosmetic one.
 
 ### Working method that has been effective
 

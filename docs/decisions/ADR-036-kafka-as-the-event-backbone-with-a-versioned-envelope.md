@@ -71,34 +71,52 @@ schema per event. That is what keeps a consumer from importing the producer's
 domain types, which is the property `ModuleBoundaryTest` protects today and that
 an extracted service must keep once no compiler is checking it.
 
-### 3. Topic per aggregate, named by the event type's domain prefix
+### 3. Topic per aggregate, named from the aggregate type
 
-`order.created` → `order-events`. `payment.succeeded` → `payment-events`.
-`customer.payment_method.attached` → `customer-events` (only the first segment
-counts). The `eventType` field discriminates within the topic, exactly as it
-already discriminates within the outbox table.
+`ORDER` → `order-events`. `PAYMENT_INTENT` → `payment-intent-events`.
+`SETTLEMENT_BATCH` → `settlement-batch-events`. Lowercased, underscores
+hyphenated, `-events` appended. The `eventType` field discriminates within the
+topic, exactly as it already discriminates within the outbox table.
 
 **Per aggregate, not per service**, because this phase moves capabilities between
 deployables repeatedly and a topic named after a service would have to be renamed
 each time — a rename that means republishing history or living with two topics.
 An aggregate does not move.
 
-**Derived, not configured.** The rule is a function of the event type and lives
-in exactly one place (`EventEnvelope.topic()`). A registry mapping event types to
-topics would be a second place to update and a second place to forget; adding an
-event type should require no topic configuration at all. An event type with no
-`domain.` prefix is a producer bug and throws rather than quietly creating a
-topic nobody consumes.
+**From the aggregate type, not from the event type's domain prefix.** This
+decision was made the other way first, because the Phase 3 plan's illustrative
+topic names (`payment-events`, `settlement-events`) read like event-type prefixes.
+Code review caught what that costs, and Settlement is the counterexample: one
+`SETTLEMENT_BATCH` aggregate emits `settlement.batch_cut` *and*
+`payout.paid`/`payout.returned`, so the prefix rule put one aggregate's stream on
+two topics. §4's partition key is the same `stl_` id for all three, but **a key
+only orders within a topic** — across two, nothing is ordered at all. The Ledger
+consumes all three (`SettlementLedgerHandler`) and they are causally chained:
+`batch_cut` moves available to in-transit, `payout.paid` discharges in-transit.
+Reordered, the Ledger is asked to discharge funds it has not yet moved there —
+something the relay's oldest-first pass makes impossible today, and something a
+transport change must not quietly take away.
 
-It is the `eventType` prefix rather than `aggregateType` because the prefix is
-already the domain name a reader expects — `payment.succeeded` belongs on
-`payment-events`, not on the `payment-intent-events` its aggregate type
-(`PAYMENT_INTENT`) would have produced.
+Deriving the topic from the same field the key is derived from makes **one
+aggregate, one topic, one key space**, so per-aggregate ordering is a property of
+the naming rule rather than a coincidence about which event types share a prefix.
+The plan's own words are "topics per aggregate, not per service"; only its example
+names assumed the aggregate and the event prefix were the same string. The names
+in this repo therefore differ from that list, and that is deliberate.
+
+**Derived, not configured.** The rule is a function of the aggregate type and
+lives in exactly one place (`EventEnvelope.topic()`). A registry mapping types to
+topics would be a second place to update and a second place to forget; adding an
+event type should require no topic configuration at all. `aggregateType` is free
+text as far as the outbox is concerned — deliberately, so the shared outbox never
+enumerates capabilities — so `topic()` refuses a value that cannot be a legal
+topic name rather than letting the broker refuse it later, per event, forever.
 
 ### 4. Partition key is the aggregate id
 
-Kafka orders records within a partition and promises nothing across partitions,
-so the key chooses what is ordered. The key is `aggregateId`.
+Kafka orders records within a partition of one topic and promises nothing else,
+so the key chooses what is ordered — given that §3 has already put the whole
+aggregate on one topic for it to order within. The key is `aggregateId`.
 
 The aggregate is the right grain because it is the only ordering the money path
 has ever needed. ADR-012 already reasoned this out for provider callbacks: two
@@ -195,11 +213,19 @@ inbox); a gap is not.
   `KafkaEventRoundTripTest`, not in the shared `TestcontainersConfiguration`,
   where it would have started a Kafka for every context in the suite to serve one
   test.
-- **A new operational dependency exists from PR 2 onward.** From the moment the
-  relay publishes, a broker being down means events accumulate in `outbox_events`
-  and the backlog health indicator (ADR-025) is the thing that says so. That is
-  the correct failure — nothing is lost, delivery is delayed — but it is a new
-  way to be paged.
+- **A new operational dependency exists from PR 2 onward, and PR 2 must settle
+  the retry budget before it does.** From the moment the relay publishes, a broker
+  being down means events accumulate in `outbox_events` and the backlog health
+  indicator (ADR-025) is the thing that says so. Delivery is delayed, not lost —
+  **but only for as long as the retry budget lasts.** The relay runs every 2s and
+  dead-letters at 25 failed attempts (`paymesh.events.outbox-relay`), so an
+  unreachable broker would burn a row's whole budget in under a minute and
+  dead-letter the backlog for an outage no operator would call long. That budget
+  was sized for a handler that fails because of *its own* state, where 25 attempts
+  means a real defect; a dependency that is simply down is a different failure and
+  needs a different answer (a longer or backing-off budget, or not counting a
+  transport failure against it at all). It cannot bite in this PR — nothing
+  publishes — and it is the first thing ADR-037 has to decide.
 - **The topic naming rule is now load-bearing.** Renaming an event type's domain
   prefix moves its topic, which strands consumers on the old one. Event types were
   already immutable in practice (they are matched on by `EventHandler.eventType()`

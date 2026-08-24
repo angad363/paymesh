@@ -89,7 +89,7 @@ class KafkaEventRoundTripTest {
 
         publisher.publish(event);
 
-        ConsumerRecord<String, String> record = consumeOne("payment-events");
+        ConsumerRecord<String, String> record = consumeOne("payment-intent-events");
 
         // The key is what buys per-aggregate ordering, so it is asserted separately from the body:
         // a body that survives on the wrong partition is not the guarantee ADR-036 claims.
