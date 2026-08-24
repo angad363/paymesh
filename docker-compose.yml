@@ -1,0 +1,57 @@
+# ============================================================================
+#  PayMesh local infrastructure
+#
+#  Kafka only, deliberately. There is no `postgres` service here: this machine's
+#  application connects to a PostgreSQL you already run (see the README), and a
+#  second one on 5432 would shadow it -- the app would migrate one database and
+#  you would inspect the other. The test suite needs neither: Testcontainers
+#  starts its own throwaway PostgreSQL and its own throwaway Kafka.
+#
+#    docker compose up -d kafka        # start the broker
+#    docker compose logs -f kafka
+#    docker compose down -v            # stop it and discard its log
+# ============================================================================
+
+services:
+  # The event backbone (ADR-036). KRaft, no ZooKeeper: one container that is both
+  # broker and controller. The target is three brokers; one is what a laptop needs
+  # and the only thing it costs is replication, which a dev broker has nothing to
+  # replicate to anyway.
+  kafka:
+    image: apache/kafka:4.3.1
+    container_name: paymesh-kafka
+    ports:
+      # The app runs on the host (./mvnw spring-boot:run), so this is the port
+      # spring.kafka.bootstrap-servers names.
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      # What the broker tells clients to come back on. localhost, because the
+      # client is the app running on the host, not another container.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      # One broker cannot replicate to anyone, so every internal topic is
+      # single-replica. These are the settings that make a single-node KRaft
+      # broker start at all; none of them is a choice for the three-broker target.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Don't wait 3s for other consumers that will never join a one-broker dev box.
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # ponytail: topics are auto-created on first publish, with one partition AND
+      # REPLICATION FACTOR 1. Both are fine on a one-broker dev box and neither is
+      # fine in the target, and the replication factor is the one that lies: with
+      # RF=1 the producer's acks=all is identical to acks=1, so the durability
+      # setting in application.yaml is silently void on any topic created this way.
+      # Upgrade path: declare topics explicitly (NewTopic beans or a provisioning
+      # step) with a real partition count and RF=3, and turn auto-creation OFF --
+      # so a typo in a topic name fails loudly instead of quietly creating a
+      # single-replica topic nobody reads.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    # No named volume: the log lives in the container and a `down` discards it.
+    # Dev events are replayable from the outbox, and a stale local Kafka log that
+    # outlives the database it was produced from is worth less than the disk.

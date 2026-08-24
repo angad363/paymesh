@@ -1,12 +1,13 @@
 # PayMesh — Project Status and Roadmap
 
-_Last updated: 22 August 2026, after PR #62 merged and Reporting built. Update this
-file at the end of a working session, not during one._
+_Last updated: 24 August 2026, after Phase 3 PR 1 (the Kafka backbone) was built. Update
+this file at the end of a working session, not during one._
 
-**Reading this to resume?** Phase 2 is **complete**: PRs 0–6 are merged, and **PR 7 (Audit,
-ADR-035, V36) is built on `feature/audit`** — the last PR of Phase 2. All eight of Phase 2's
-capabilities exist. The next horizon is Phase 3 (AI Ops, SDD §20) and service extraction; nothing
-in Phase 2 remains.
+**Reading this to resume?** Phase 2 is **complete** — all eight of its capabilities are merged,
+Audit (ADR-035, V36) last. **Phase 3 has started**: `docs/phase-3-microservices-extraction-plan.md`
+is the plan of record, and **PR 1 (the Kafka backbone, ADR-036) is built on
+`feature/kafka-backbone`**. Nothing is extracted and nothing publishes to Kafka yet; read
+"PICK UP HERE — Phase 3, after the Kafka backbone" at the bottom before starting PR 2.
 
 This is the pick-up-here document. It records what exists, what has actually been
 verified, what is deliberately unfinished, and what comes next. For *why* a design
@@ -26,7 +27,7 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1514 tests, 0 failures.** Thirty-six Flyway migrations (V1–V36). Thirty-five ADRs. The Postman
+**1521 tests, 0 failures.** Thirty-six Flyway migrations (V1–V36). Thirty-six ADRs. The Postman
 collection runs **nineteen folders green** — the newest a self-contained Reporting folder (17
 requests, 30 assertions, verified with newman against the running app) covering the two summary
 reads, the async export lifecycle, tenant isolation and every error path.
@@ -544,6 +545,7 @@ did not exist until this session.
 | `EventDispatcher` | Handlers indexed by event type. **One transaction per (handler, event)**, holding the inbox claim and everything the handler writes |
 | `ProcessedEventRepository` | `INSERT … ON CONFLICT DO NOTHING`; the row count is the answer. No read, so there is no read-then-write window |
 | `EventHandler` | The consumer contract: envelope in, `Map` payload, must be idempotent, must throw to retry, **must not open a transaction** |
+| `EventEnvelope`, `KafkaEventPublisher` | ADR-036, `…outbox.infrastructure.kafka`. The wire contract and the Kafka sink. **No caller yet** — the relay still dispatches in-process, so this is dormant code that the suite proves round-trips |
 
 Properties worth not breaking:
 
@@ -681,6 +683,7 @@ The collection is not decorative: dropping the tenant predicate in
 | 033 | Notify merchants from committed events with a simulated sender; templates are code and attempts are a counter, not two tables |
 | 034 | Project one fact per event into an append-only table, aggregate on read; export async |
 | 035 | An append-only audit log recorded in-process inside the acting transaction (its subjects emit no event), immutable by trigger like `ledger_entries` |
+| 036 | Kafka (KRaft) is the event backbone; the wire envelope is the outbox row formalized as a separate published type, one topic per aggregate type with the aggregate id as the partition key (so one aggregate's causally-chained events cannot be reordered), and changes are additive within a version |
 
 Note that the SDD's Appendix D has its own ADR list with the same numbers and
 different decisions. When citing one, say which source you mean.
@@ -1157,6 +1160,65 @@ those rows carry `capturedAmountMinor = 0`. A real acquirer may report an outcom
 not yet know, and a file meaning "unknown" must never be read as "nothing moved". That judgement
 belongs in the provider's adapter — which is why the job carries the provider's status as a raw
 string and skips every value it does not recognise rather than defaulting.
+
+### PICK UP HERE — Phase 3, after the Kafka backbone (PR 1)
+
+Phase 2 is closed. **Phase 3 PR 1 (ADR-036) is built on `feature/kafka-backbone`** and 1521
+tests are green. The plan of record is `docs/phase-3-microservices-extraction-plan.md`; work it
+**one PR at a time, in table order**. The next PR is **PR 2, the dual-path relay**
+(`feature/dual-path-relay`, **ADR-037**).
+
+What PR 1 actually put in the tree, and what it deliberately did not:
+
+- **A single-broker KRaft Kafka in `docker-compose.yml`** (repository root; there was no compose
+  file before this). No `postgres` service in it on purpose — a second Postgres on 5432 would
+  shadow the one the app connects to.
+- **`com.paymesh.shared.outbox.infrastructure.kafka`** — `EventEnvelope` (the wire contract, and
+  the only place the topic-naming rule lives) and `KafkaEventPublisher` (blocks on the broker's
+  acknowledgement, throws otherwise). Wired as a bean in `OutboxConfiguration`.
+- **Nothing calls the publisher.** The relay is untouched and still hands events to the
+  in-process `EventDispatcher`. The app starts and the whole suite passes with **no broker
+  running**, because a `KafkaTemplate` opens no connection until something sends. That is also
+  the rollback: it is the current state.
+- **The envelope adds no field to the outbox row.** Same seven facts since V7. It is a separate
+  *type* only so that renaming a field of `OutboxEvent` is not a breaking change to nine
+  consumers, and so `{"value":"evt_..."}` does not end up on the wire.
+- **Topic = the aggregate type, hyphenated, + `-events`** (`SETTLEMENT_BATCH` →
+  `settlement-batch-events`), derived rather than configured. **Partition key = `aggregateId`**,
+  because per-aggregate ordering is the only ordering the money path needs (ADR-012) and keying by
+  merchant would serialize a whole tenant for no invariant. **The topic is derived from the
+  aggregate and not from the event type's prefix** — code review caught that the prefix rule split
+  `SETTLEMENT_BATCH`'s stream across `settlement-events` and `payout-events`, where the shared
+  `stl_` key orders nothing, and the Ledger consumes both halves of a causal chain. The topic names
+  therefore differ from the illustrative list in the Phase 3 plan, deliberately.
+- **`acks=all`, `enable.idempotence=true`, `auto-offset-reset=earliest`** are set explicitly in
+  `application.yaml`, each with the reason in a comment. None of them is exactly-once and none
+  replaces the consumer inbox — ADR-016's refusal stands.
+- **Only one test starts a broker.** `KafkaEventRoundTripTest` declares its own `KafkaContainer`
+  rather than adding one to the shared `TestcontainersConfiguration`, where it would have started
+  a Kafka for every context in the suite.
+- **Both new assertions were proved by breaking the implementation**: pointing `topic()` at
+  `aggregateType` reds `EventEnvelopeTest`, and pointing `partitionKey()` at `merchantId` reds
+  the round trip on the real broker.
+- **No HTTP surface changed, so the Postman collection is untouched** — deliberately, not by
+  omission.
+
+Three things to carry into PR 2, all raised by `/code-review` on this branch:
+
+- **The retry budget is sized for the wrong failure, and PR 2 is where it bites.** The relay runs
+  every 2s and dead-letters at 25 failed attempts, so once it publishes to Kafka an unreachable
+  broker burns a row's whole budget in under a minute and dead-letters the backlog — for an outage
+  nobody would call long. That budget was sized for a handler failing on its own state, where 25
+  attempts means a real defect; a dependency being down needs a longer or backing-off budget, or
+  not to count against that budget at all. Decide it in ADR-037 before the sink has a caller.
+- The dual path is safe *because* the inbox already makes redelivery a no-op. That property is
+  tested (the guard-free handler that counts invocations, above); do not weaken it to make the
+  two paths easier to run together.
+- Topics are auto-created with **one partition and replication factor 1**, marked with a
+  `ponytail:` note in `docker-compose.yml`. RF=1 is the one that lies: it makes the producer's
+  `acks=all` identical to `acks=1`, so the durability setting is void on any auto-created topic.
+  Declaring topics with a real partition count and RF=3, and turning auto-creation off, is a
+  later decision — but it is a real ceiling, not a cosmetic one.
 
 ### Working method that has been effective
 

@@ -105,6 +105,17 @@
             <artifactId>spring-boot-flyway</artifactId>
         </dependency>
 
+        <!-- Kafka (ADR-036). The event backbone Phase 3 extracts services onto. The starter brings
+             spring-kafka and Boot's auto-configuration, which is what supplies the KafkaTemplate
+             KafkaEventPublisher sends through. NOTHING PRODUCES OR CONSUMES YET: the relay still
+             hands events to the in-process dispatcher (ADR-016), so the app starts and the whole
+             suite passes with no broker running: a KafkaTemplate opens no connection until a
+             send happens. PR 2 (the dual-path relay) is what makes this dependency load-bearing. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-kafka</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webmvc-test</artifactId>
@@ -144,6 +155,15 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers-postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- A real single-broker KRaft Kafka for KafkaEventRoundTripTest, same as PostgreSQL above.
+             The round trip is only worth asserting against a real broker's serialization, keys and
+             offsets. Only that one test starts it, so no other context pays for a broker. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-kafka</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

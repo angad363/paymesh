@@ -11,12 +11,14 @@ import com.paymesh.shared.outbox.infrastructure.persistence.jpa.JpaOutboxWriter;
 import com.paymesh.shared.outbox.infrastructure.persistence.jpa.JpaProcessedEventRepository;
 import com.paymesh.shared.outbox.infrastructure.persistence.jpa.SpringDataOutboxRepository;
 import com.paymesh.shared.outbox.infrastructure.health.OutboxBacklogHealthIndicator;
+import com.paymesh.shared.outbox.infrastructure.kafka.KafkaEventPublisher;
 import com.paymesh.shared.outbox.infrastructure.persistence.jpa.SpringDataProcessedEventRepository;
 import com.paymesh.shared.outbox.infrastructure.schedule.OutboxRelay;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.ObjectMapper;
 
@@ -70,6 +72,26 @@ public class OutboxConfiguration {
         Clock clock
     ) {
         return new EventDispatcher(handlers, processedEventRepository, transactionTemplate, clock);
+    }
+
+    /**
+     * The Kafka sink (ADR-036), wired but not yet plumbed to anything.
+     * <p>
+     * Declared unconditionally and with no {@code enabled} flag, because there is nothing to switch
+     * off: no caller, and a {@link KafkaTemplate} opens no connection until something sends. The app
+     * therefore starts, and the whole suite passes, with no broker anywhere. The flag arrives in PR
+     * 2 with the relay change that gives this a caller and makes it a real choice.
+     * <p>
+     * {@code KafkaTemplate<String, String>} rather than a typed value serializer: the envelope is
+     * serialized by the application's own {@code ObjectMapper} in
+     * {@link KafkaEventPublisher#publish}, so the wire format is Jackson's under our configuration
+     * rather than a second, separately configured mapper inside a Kafka serializer.
+     */
+    @Bean
+    KafkaEventPublisher kafkaEventPublisher(
+        KafkaTemplate<String, String> kafkaTemplate, ObjectMapper objectMapper
+    ) {
+        return new KafkaEventPublisher(kafkaTemplate, objectMapper);
     }
 
     /**
