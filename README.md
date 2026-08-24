@@ -6,8 +6,8 @@ balances, settlements and webhooks. It exists to model the parts of a payment pl
 that are genuinely hard (retries, duplicate delivery, tenant isolation, state machines,
 auditability) rather than the parts that are CRUD.
 
-It is a single Spring Boot application, Java 21, PostgreSQL, Flyway. **All nine of Phase 1's
-capabilities are built, and Phase 2 has started.**
+It is a single Spring Boot application, Java 21, PostgreSQL, Flyway. **Phases 1 and 2 are
+complete; Phase 3 — extraction into services around a Kafka backbone — has started.**
 
 ## What this is not
 
@@ -328,6 +328,27 @@ cd backend
 ./mvnw verify                   # full build + tests
 ```
 
+### Kafka
+
+`docker-compose.yml` at the repository root runs a single-broker KRaft Kafka
+([ADR-036](docs/decisions/ADR-036-kafka-as-the-event-backbone-with-a-versioned-envelope.md)),
+the event backbone Phase 3 extracts services onto.
+
+```bash
+docker compose up -d kafka      # from the repository root
+docker compose down -v          # stop it and discard its log
+```
+
+**It is optional today, and the application does not need it.** Domain events still go
+to the in-process dispatcher (ADR-016); the Kafka publisher is wired and has no caller,
+and a `KafkaTemplate` opens no connection until something sends. The app starts and the
+whole suite passes with no broker running. `KafkaEventRoundTripTest` starts its own
+throwaway broker, as every other integration test starts its own PostgreSQL.
+
+There is deliberately **no `postgres` service in that compose file**: the app connects
+to a PostgreSQL you already run, and a second one on 5432 would shadow it — you would
+migrate one database and inspect the other.
+
 ### The dev-profile trap
 
 `application.yaml` is committed and therefore ships **no secrets**. It leaves
@@ -377,7 +398,7 @@ wrong.
 
 ## Testing
 
-**1374 tests, 0 failures.** They need Docker and never touch a developer database:
+**1521 tests, 0 failures.** They need Docker and never touch a developer database:
 integration tests run against a throwaway PostgreSQL container
 ([ADR-005](docs/decisions/ADR-005-use-testcontainers-for-integration-tests.md)), so
 Flyway migrates an empty database on every run and the migrations are re-proved rather
@@ -463,6 +484,7 @@ uses it.
 | [010](docs/decisions/ADR-010-transactional-outbox-in-postgresql.md) | Domain events to a PostgreSQL outbox, in the caller's transaction | A broker write cannot join a database transaction, so no ordering of the two calls closes the gap. Its §3 ("no relay") is superseded by ADR-016 |
 | [011](docs/decisions/ADR-011-one-live-payment-intent-per-order.md) | One live payment intent per order, enforced by a partial unique index | Reconciling several intents against an order needs a running total that is correct under concurrency, and there is no Ledger yet to hold one |
 | [016](docs/decisions/ADR-016-in-process-event-dispatch-before-kafka.md) | Deliver events in-process, on a broker-shaped consumer contract, before Kafka | A broker between two packages in one JVM buys nothing — but the consumer contract is the one Kafka needs (envelope in, `processed_events` dedup, idempotent handler), so swapping the transport changes no consumer |
+| [036](docs/decisions/ADR-036-kafka-as-the-event-backbone-with-a-versioned-envelope.md) | Kafka (KRaft) as the event backbone, carrying the outbox row as a versioned envelope | Topics per aggregate named from the event type's domain prefix, partition key = aggregate id, additive-only changes within a version; the wire envelope is a separate type from the domain one so a refactor is not a breaking change |
 
 The SDD's Appendix D has a *separate* ADR list using the same numbers for different
 decisions. When citing one, say which source you mean.
@@ -473,7 +495,7 @@ decisions. When citing one, say which source you mean.
 |---|---|
 | [`docs/project-status.md`](docs/project-status.md) | **The pick-up-here document.** What exists, what is verified, what is deliberately unfinished, what comes next, and the open items worst-first |
 | `docs/PayMesh_Payment_as_a_Service_Software_Design_Document.docx` | The SDD: 31 sections plus appendices covering the full ~15-service target platform, per-service API/event/schema catalogs, and end-to-end workflows |
-| [`docs/decisions/`](docs/decisions/) | The eleven ADRs above |
+| [`docs/decisions/`](docs/decisions/) | Thirty-six ADRs; the table above lists the architecture-shaping ones |
 | [`docs/api/rest-api-conventions.md`](docs/api/rest-api-conventions.md) | HTTP/JSON contract: versioning, status codes, error shape, pagination, idempotency, money, timestamps, enum casing |
 | [`docs/development/java-coding-conventions.md`](docs/development/java-coding-conventions.md) | Layering, DI, immutability, exceptions, logging, testing, framework boundaries, no Lombok |
 | [`docs/architecture/package-structure.md`](docs/architecture/package-structure.md) | The package layout in detail |
@@ -509,10 +531,19 @@ The operational half that was called out as missing here has since been built:
 - **Refund callbacks from the simulator**, so the last hand-signed request in the test
   suite can go away.
 
-**Only Audit is left in Phase 2.** Webhook, Risk, the settleable balance, Settlement,
-Notification and Reporting are all built; the last PR adds an append-only `audit_events` log
-of privileged and financial-operational actions, immutability enforced by a trigger exactly
-as the ledger's entries are.
+**Phase 2 is complete.** Webhook, Risk, the settleable balance, Settlement, Notification,
+Reporting and Audit are all built — the last of them an append-only `audit_events` log of
+privileged and financial-operational actions, immutability enforced by a trigger exactly as
+the ledger's entries are.
+
+**Phase 3 has started: the monolith becomes services.**
+[`docs/phase-3-microservices-extraction-plan.md`](docs/phase-3-microservices-extraction-plan.md)
+is the plan of record — nine deployables around a Kafka backbone, schema per service, the
+Ledger extracted last and whole. The first PR (ADR-036) builds the backbone itself: a KRaft
+broker in `docker-compose.yml`, a versioned wire envelope formalized from the outbox row, and
+a publisher with no caller yet. Nothing has been extracted, and 3A is deliberately all
+scaffold — by the end of it the monolith publishes to Kafka, consumes from Kafka and runs on
+nine schemas while still being one process.
 
 The Ledger will still be the last thing extracted into a service (SDD §30.1). It is the
 financial source of truth — double-entry, immutable entries, corrections as reversal

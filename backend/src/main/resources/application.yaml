@@ -72,6 +72,43 @@ spring:
     # set true only for a deliberate one-time adoption of a pre-existing schema.
     baseline-on-migrate: false
 
+  # --- Kafka: the event backbone (ADR-036) ----------------------------------
+  # Nothing produces or consumes yet -- the outbox relay still hands events to the
+  # in-process dispatcher (ADR-016). These settings exist so that when PR 2 points
+  # the relay at Kafka, the delivery guarantees are already the right ones.
+  #
+  # A KafkaTemplate opens no connection until something sends, so the app starts
+  # normally with no broker running. `docker compose up -d kafka` starts one.
+  kafka:
+    # Where the broker is. One broker in dev (docker-compose.yml), three in the
+    # target -- which is a comma-separated list here and no code change anywhere.
+    bootstrap-servers: localhost:9092
+    producer:
+      # THE TWO SETTINGS THE MONEY PATH DEPENDS ON, both stated rather than
+      # inherited, because inheriting a default is not the same as choosing it.
+      #   acks=all           -> the leader answers only once every in-sync replica
+      #                         has the record, so a leader dying after it answered
+      #                         cannot lose an acknowledged event. With one dev
+      #                         broker this is identical to acks=1; it is the
+      #                         three-broker target it is written for.
+      #   idempotence=true   -> the broker de-duplicates the producer's OWN retries
+      #                         by sequence number, so a retried send after a
+      #                         timeout does not append the record twice. This is
+      #                         not exactly-once and does not replace the consumer
+      #                         inbox (ADR-016) -- it only stops the producer being
+      #                         a second, avoidable source of duplicates.
+      acks: all
+      properties:
+        enable.idempotence: true
+    consumer:
+      # earliest, not Kafka's default of latest. A consumer group that has never
+      # committed an offset -- a new service, a renamed group, a restored cluster --
+      # must start at the beginning of the topic, not at "now". Starting at now
+      # silently skips every event published before the group existed, which on this
+      # system means silently skipping committed money movement. Duplicates from
+      # replaying are safe (the inbox); a gap is not.
+      auto-offset-reset: earliest
+
 # --- PayMesh security (Identity and Access) ----------------------------------
 paymesh:
   security:
