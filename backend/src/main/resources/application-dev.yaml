@@ -54,6 +54,14 @@ paymesh:
     # loudly rather than letting anyone forge a callback for any payment.
     callback-secret: dev-only-insecure-provider-callback-secret-change-me
   events:
+    # in-process, not the both default (ADR-037). This is the profile the whole
+    # test suite runs under, so this is what keeps ~450 tests needing no broker:
+    # the relay does not touch Kafka and the Kafka listener bean is not registered,
+    # so no listener container starts. The one test that exercises `both` overrides
+    # this and starts its own broker (DualPathRelayIntegrationTest), exactly as the
+    # round-trip test does -- nothing else pays for a Kafka.
+    delivery:
+      mode: in-process
     outbox-relay:
       # OFF for the same reason as the sweeps, and more sharply: this one moves an
       # order to PAID, so a tick landing between a test's capture and its assertion

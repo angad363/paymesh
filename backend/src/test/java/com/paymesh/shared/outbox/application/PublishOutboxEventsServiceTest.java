@@ -6,6 +6,7 @@ import com.paymesh.shared.outbox.application.Fakes.InMemoryProcessedEvents;
 import com.paymesh.shared.outbox.application.Fakes.RecordingHandler;
 import com.paymesh.shared.outbox.application.PublishOutboxEventsService.RelayResult;
 import com.paymesh.shared.outbox.domain.EventId;
+import com.paymesh.shared.outbox.domain.OutboxEvent;
 import com.paymesh.shared.tenant.MerchantId;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
@@ -13,6 +14,7 @@ import tools.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -393,6 +395,92 @@ class PublishOutboxEventsServiceTest {
             .isInstanceOf(IllegalArgumentException.class);
     }
 
+    // --- THE KAFKA SINK (ADR-037) ---------------------------------------------------------------
+
+    /**
+     * IN {@code both} MODE THE EVENT GOES TO BOTH SINKS AND IS THEN STAMPED. The handler ran (in
+     * process) and the publisher received the same event (Kafka), and only then is {@code published_at}
+     * set -- so {@code published_at} still means "delivered to everyone", now including the broker.
+     */
+    @Test
+    void deliversToBothSinksAndStampsOnlyWhenBothTookIt() {
+        RecordingHandler handler = new RecordingHandler("order.payment", "payment.succeeded");
+        RecordingEventPublisher kafka = new RecordingEventPublisher();
+        UnpublishedEvent row = row("payment.succeeded", "pi_1", NOW.minusSeconds(10));
+        outbox.append(row);
+
+        RelayResult result = dualPathRelayOf(List.of(handler), kafka).publish();
+
+        assertThat(result).isEqualTo(new RelayResult(1, 1, 0, 0, 0));
+        assertThat(handler.handled()).as("the in-process sink").hasSize(1);
+        assertThat(kafka.published()).as("the Kafka sink").hasSize(1);
+        assertThat(outbox.published()).containsEntry(row.eventId(), NOW);
+    }
+
+    /**
+     * A BROKER OUTAGE DOES NOT SPEND THE DEAD-LETTER BUDGET. This is the decision ADR-036 deferred to
+     * ADR-037: a Kafka-sink failure is global and self-healing, not a poisoned event, so the row is
+     * left unpublished to retry but the budget is untouched. With {@code maxAttempts = 1}, a failure
+     * that DID count would dead-letter here on the first attempt; it must not.
+     * <p>
+     * <b>Sabotage that must turn this red:</b> move the {@code kafkaPublisher.publish} call inside the
+     * first try-block in {@code PublishOutboxEventsService}, so a Kafka failure runs {@code recordFailure}.
+     * The event is then dead-lettered on its first broker hiccup and {@code deadLettered} below is 1.
+     */
+    @Test
+    void doesNotSpendTheRetryBudgetWhenOnlyTheKafkaSinkFails() {
+        RecordingHandler handler = new RecordingHandler("order.payment", "payment.succeeded");
+        RecordingEventPublisher kafka = new RecordingEventPublisher();
+        kafka.startFailing();
+        UnpublishedEvent row = row("payment.succeeded", "pi_1", NOW.minusSeconds(10));
+        outbox.append(row);
+
+        RelayResult result = dualPathRelayOf(List.of(handler), kafka).publish();
+
+        assertThat(result.failed()).isEqualTo(1);
+        assertThat(result.deadLettered())
+            .as("a broker being down is not a poison and must not consume the budget")
+            .isZero();
+        assertThat(handler.handled())
+            .as("in-process delivered before the Kafka sink was even tried")
+            .hasSize(1);
+        assertThat(outbox.isDeadLettered(row.eventId())).isFalse();
+        assertThat(outbox.attemptsFor(row.eventId()))
+            .as("no failed attempt is recorded, so the budget did not move at all")
+            .isZero();
+        assertThat(outbox.isPublished(row.eventId()))
+            .as("left unpublished so the next pass retries the broker")
+            .isFalse();
+    }
+
+    /**
+     * THE RETRY IS SAFE BECAUSE THE IN-PROCESS DISPATCH IS DEDUPED ON THE SECOND PASS. The broker
+     * returns, the row is published, and the handler is NOT invoked a second time -- the inbox row from
+     * the first pass makes the re-dispatch a no-op. This is what makes "retry the Kafka sink forever"
+     * safe where it was the bug for a poisoned handler.
+     */
+    @Test
+    void retriesTheKafkaSinkWithoutReapplyingTheInProcessHandler() {
+        RecordingHandler handler = new RecordingHandler("order.payment", "payment.succeeded");
+        RecordingEventPublisher kafka = new RecordingEventPublisher();
+        kafka.startFailing();
+        UnpublishedEvent row = row("payment.succeeded", "pi_1", NOW.minusSeconds(10));
+        outbox.append(row);
+
+        PublishOutboxEventsService relay = dualPathRelayOf(List.of(handler), kafka);
+
+        assertThat(relay.publish().published()).as("the broker is down").isZero();
+
+        kafka.stopFailing();
+
+        assertThat(relay.publish().published()).as("the broker is back").isEqualTo(1);
+        assertThat(handler.handled())
+            .as("delivered in process once, on the first pass; the retry deduped it")
+            .hasSize(1);
+        assertThat(kafka.published()).hasSize(1);
+        assertThat(outbox.isPublished(row.eventId())).isTrue();
+    }
+
     // --- helpers ---------------------------------------------------------------------------------
 
     /**
@@ -407,9 +495,13 @@ class PublishOutboxEventsServiceTest {
     private PublishOutboxEventsService relayOf(
         List<EventHandler> handlers, int batchSize, int maxAttempts
     ) {
+        // in-process only: the no-op publisher is never called, so these tests are the pre-ADR-037
+        // relay exactly. The dual-path tests below construct their own with publishToKafka on.
         return new PublishOutboxEventsService(
             outbox,
             new EventDispatcher(handlers, inbox, transactions, CLOCK),
+            NO_OP_PUBLISHER,
+            false,
             transactions,
             JSON,
             CLOCK,
@@ -417,6 +509,28 @@ class PublishOutboxEventsServiceTest {
             maxAttempts
         );
     }
+
+    /** A relay in {@code both} mode, with maxAttempts 1 so a budget-consuming failure would
+     * dead-letter on its first attempt -- which is exactly what the Kafka-sink tests assert does NOT
+     * happen. */
+    private PublishOutboxEventsService dualPathRelayOf(
+        List<EventHandler> handlers, EventPublisher publisher
+    ) {
+        return new PublishOutboxEventsService(
+            outbox,
+            new EventDispatcher(handlers, inbox, transactions, CLOCK),
+            publisher,
+            true,
+            transactions,
+            JSON,
+            CLOCK,
+            100,
+            1
+        );
+    }
+
+    private static final EventPublisher NO_OP_PUBLISHER = event -> {
+    };
 
     /** Fails every delivery, so a test can drive the budget to exhaustion without contriving data. */
     private static RecordingHandler alwaysFailingHandler() {
@@ -446,5 +560,34 @@ class PublishOutboxEventsServiceTest {
             occurredAt,
             0
         );
+    }
+
+    /** The Kafka sink as a fake: records what it took, or throws while {@code failing} to stand in for
+     * an unreachable broker. */
+    private static final class RecordingEventPublisher implements EventPublisher {
+
+        private final List<OutboxEvent> published = new ArrayList<>();
+        private boolean failing;
+
+        void startFailing() {
+            failing = true;
+        }
+
+        void stopFailing() {
+            failing = false;
+        }
+
+        List<OutboxEvent> published() {
+            return published;
+        }
+
+        @Override
+        public void publish(OutboxEvent event) {
+            if (failing) {
+                throw new IllegalStateException("broker unreachable");
+            }
+
+            published.add(event);
+        }
     }
 }

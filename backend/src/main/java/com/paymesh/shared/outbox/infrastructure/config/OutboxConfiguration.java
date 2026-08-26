@@ -11,6 +11,7 @@ import com.paymesh.shared.outbox.infrastructure.persistence.jpa.JpaOutboxWriter;
 import com.paymesh.shared.outbox.infrastructure.persistence.jpa.JpaProcessedEventRepository;
 import com.paymesh.shared.outbox.infrastructure.persistence.jpa.SpringDataOutboxRepository;
 import com.paymesh.shared.outbox.infrastructure.health.OutboxBacklogHealthIndicator;
+import com.paymesh.shared.outbox.infrastructure.kafka.KafkaEventListener;
 import com.paymesh.shared.outbox.infrastructure.kafka.KafkaEventPublisher;
 import com.paymesh.shared.outbox.infrastructure.persistence.jpa.SpringDataProcessedEventRepository;
 import com.paymesh.shared.outbox.infrastructure.schedule.OutboxRelay;
@@ -39,7 +40,7 @@ import java.util.List;
  * capability-agnostic while the wiring stays explicit.
  */
 @Configuration
-@EnableConfigurationProperties(OutboxRelayProperties.class)
+@EnableConfigurationProperties({OutboxRelayProperties.class, EventDeliveryProperties.class})
 public class OutboxConfiguration {
 
     @Bean
@@ -95,6 +96,26 @@ public class OutboxConfiguration {
     }
 
     /**
+     * The consumer half of the dual path (ADR-037), and the ONLY bean here gated on the delivery mode.
+     * <p>
+     * Present only in {@code both} mode ({@code matchIfMissing = true} so a missing property is
+     * {@code both}, matching {@link EventDeliveryProperties}'s own default). With the bean absent —
+     * {@code in-process} mode, which is the {@code dev} profile the whole suite runs under — no
+     * {@code @KafkaListener} endpoint is registered, so no listener container starts and no broker is
+     * needed: exactly PR 1's "the suite passes with no broker" property, preserved. The producer side
+     * is switched by the {@code publishToKafka} boolean instead, because the
+     * {@link KafkaEventPublisher} bean must stay unconditional (its {@link KafkaTemplate} opens no
+     * connection until something sends).
+     */
+    @Bean
+    @ConditionalOnProperty(
+        name = "paymesh.events.delivery.mode", havingValue = "both", matchIfMissing = true
+    )
+    KafkaEventListener kafkaEventListener(EventDispatcher eventDispatcher, ObjectMapper objectMapper) {
+        return new KafkaEventListener(eventDispatcher, objectMapper);
+    }
+
+    /**
      * The relay logic. Declared unconditionally, even when the timer below is switched off: it is an
      * ordinary object, it starts nothing on its own, and a test or an operator draining the backlog
      * by hand should not have to enable a scheduler to do it. Every integration test in this branch
@@ -104,14 +125,16 @@ public class OutboxConfiguration {
     PublishOutboxEventsService publishOutboxEventsService(
         OutboxReader outboxReader,
         EventDispatcher eventDispatcher,
+        KafkaEventPublisher kafkaEventPublisher,
+        EventDeliveryProperties deliveryProperties,
         TransactionTemplate transactionTemplate,
         ObjectMapper objectMapper,
         Clock clock,
         OutboxRelayProperties properties
     ) {
         return new PublishOutboxEventsService(
-            outboxReader, eventDispatcher, transactionTemplate, objectMapper, clock,
-            properties.batchSize(), properties.maxAttempts()
+            outboxReader, eventDispatcher, kafkaEventPublisher, deliveryProperties.publishesToKafka(),
+            transactionTemplate, objectMapper, clock, properties.batchSize(), properties.maxAttempts()
         );
     }
 

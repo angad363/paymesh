@@ -1,5 +1,6 @@
 package com.paymesh.shared.outbox.infrastructure.kafka;
 
+import com.paymesh.shared.outbox.application.EventPublisher;
 import com.paymesh.shared.outbox.domain.OutboxEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,9 +23,9 @@ import java.util.concurrent.TimeUnit;
  * because the relay's contract is already "throw and I will retry you" ({@code PublishOutboxEvents},
  * ADR-025). At-least-once is bought here, by being willing to block.
  * <p>
- * Nothing calls this yet. PR 2 (the dual-path relay) is what hands it events.
+ * The dual-path relay (ADR-037) is what hands it events, through the {@link EventPublisher} port.
  */
-public final class KafkaEventPublisher {
+public final class KafkaEventPublisher implements EventPublisher {
 
     private static final Logger log = LoggerFactory.getLogger(KafkaEventPublisher.class);
 
@@ -50,6 +51,7 @@ public final class KafkaEventPublisher {
      *     expected to leave the outbox row unpublished so the next pass tries again; a duplicate
      *     from a send that actually succeeded is a no-op at the consumer's inbox.
      */
+    @Override
     public void publish(OutboxEvent event) {
         EventEnvelope envelope = EventEnvelope.from(event);
         String topic = envelope.topic();

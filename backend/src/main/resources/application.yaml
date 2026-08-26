@@ -72,13 +72,15 @@ spring:
     # set true only for a deliberate one-time adoption of a pre-existing schema.
     baseline-on-migrate: false
 
-  # --- Kafka: the event backbone (ADR-036) ----------------------------------
-  # Nothing produces or consumes yet -- the outbox relay still hands events to the
-  # in-process dispatcher (ADR-016). These settings exist so that when PR 2 points
-  # the relay at Kafka, the delivery guarantees are already the right ones.
-  #
-  # A KafkaTemplate opens no connection until something sends, so the app starts
-  # normally with no broker running. `docker compose up -d kafka` starts one.
+  # --- Kafka: the event backbone (ADR-036, ADR-037) -------------------------
+  # From PR 2 the relay publishes here AND to the in-process dispatcher (the
+  # dual path), and one listener consumes back, deduped by the same inbox --
+  # governed by paymesh.events.delivery.mode below. In `both` mode (the default)
+  # a broker is needed to be fully delivering; a KafkaTemplate opens no connection
+  # until something sends and a listener container retries a down broker, so the
+  # app still STARTS with no broker, it just ages the Kafka half of the backlog
+  # until one is up (ADR-037 section 3). `docker compose up -d kafka` starts one.
+  # The dev profile sets the mode to in-process, so the test suite needs none.
   kafka:
     # Where the broker is. One broker in dev (docker-compose.yml), three in the
     # target -- which is a comma-separated list here and no code change anywhere.
@@ -108,6 +110,14 @@ spring:
       # system means silently skipping committed money movement. Duplicates from
       # replaying are safe (the inbox); a gap is not.
       auto-offset-reset: earliest
+      properties:
+        # THE LISTENER SUBSCRIBES BY PATTERN (.+-events, ADR-037), so this is how
+        # quickly it discovers a topic that did not exist when it started -- a
+        # brand-new aggregate type's first-ever event. Kafka's default is five
+        # minutes, which would strand that event's Kafka delivery for that long;
+        # five seconds is a negligible metadata refresh on a handful of topics and
+        # keeps a new aggregate's stream from waiting. Existing topics are unaffected.
+        metadata.max.age.ms: 5000
 
 # --- PayMesh security (Identity and Access) ----------------------------------
 paymesh:
@@ -193,6 +203,18 @@ paymesh:
   # reached PAID even when its payment succeeded. This is the job that reads the
   # table, hands each event to the in-process dispatcher, and stamps published_at.
   events:
+    # --- Dual-path delivery (ADR-037) ---------------------------------------
+    # Which sinks the relay delivers to, and whether the Kafka listener runs.
+    #   both       -> in-process dispatch AND Kafka, deduped by the same inbox.
+    #                 The default: the whole point of PR 2. Needs a broker to be
+    #                 fully delivering (see the kafka block above).
+    #   in-process -> in-process only, exactly the pre-ADR-036 behaviour. This is
+    #                 the ROLLBACK and it is a behavioural no-op -- `both` changed
+    #                 nothing about the in-process path.
+    # THE dev PROFILE SETS THIS TO in-process (application-dev.yaml), so the test
+    # suite -- which runs under dev -- needs no broker, exactly as in PR 1.
+    delivery:
+      mode: both
     outbox-relay:
       # true: register the scheduled bean. Off -> the timer does not exist at all
       # (the bean is @ConditionalOnProperty), rather than running and doing nothing.

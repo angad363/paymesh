@@ -70,15 +70,27 @@ public final class PublishOutboxEventsService {
 
     private final OutboxReader reader;
     private final EventDispatcher dispatcher;
+    private final EventPublisher kafkaPublisher;
+    private final boolean publishToKafka;
     private final TransactionTemplate transactions;
     private final ObjectMapper json;
     private final Clock clock;
     private final int batchSize;
     private final int maxAttempts;
 
+    /**
+     * @param kafkaPublisher the second sink (ADR-037). Always injected; whether it is called is
+     *                       {@code publishToKafka}, so the {@code KafkaEventPublisher} bean can stay
+     *                       unconditional (ADR-036) while the mode flag decides the behaviour.
+     * @param publishToKafka {@code true} in {@code both} mode, {@code false} in {@code in-process}
+     *                       mode. When false this class is byte-for-byte the pre-ADR-037 relay, which
+     *                       is what makes the rollback a behavioural no-op.
+     */
     public PublishOutboxEventsService(
         OutboxReader reader,
         EventDispatcher dispatcher,
+        EventPublisher kafkaPublisher,
+        boolean publishToKafka,
         TransactionTemplate transactions,
         ObjectMapper json,
         Clock clock,
@@ -97,6 +109,8 @@ public final class PublishOutboxEventsService {
 
         this.reader = reader;
         this.dispatcher = dispatcher;
+        this.kafkaPublisher = kafkaPublisher;
+        this.publishToKafka = publishToKafka;
         this.transactions = transactions;
         this.json = json;
         this.clock = clock;
@@ -127,23 +141,16 @@ public final class PublishOutboxEventsService {
                 continue;
             }
 
+            OutboxEvent event;
             try {
-                // INSIDE THE TRY. A row that cannot form a legal envelope fails here, alone -- and
-                // that now includes a payload the mapper cannot read, which used to throw one layer
-                // out in the repository and take the whole pass with it.
-                OutboxEvent event = row.toEvent(json);
-
+                // THE IN-PROCESS SINK, AND ITS FAILURES ARE THE ONES THE BUDGET IS FOR. A row that
+                // cannot form a legal envelope fails here too (INSIDE THE TRY -- that now includes a
+                // payload the mapper cannot read, which used to throw one layer out in the repository
+                // and take the whole pass with it), and so does a handler that cannot apply the event.
+                // Both are poisons: content the consumer can never accept, so they consume the
+                // dead-letter budget exactly as before ADR-037.
+                event = row.toEvent(json);
                 dispatcher.dispatch(event);
-
-                // AFTER every handler has committed, and in its own transaction. If this fails the
-                // event is redelivered and each consumer's inbox row makes that a no-op.
-                Instant now = Instant.now(clock);
-                transactions.execute(status -> {
-                    reader.markPublished(event.eventId(), now);
-                    return null;
-                });
-
-                published++;
             } catch (RuntimeException failure) {
                 failed++;
                 poisonedAggregates.add(row.aggregateId());
@@ -151,7 +158,42 @@ public final class PublishOutboxEventsService {
                 if (recordFailure(row, failure)) {
                     deadLettered++;
                 }
+
+                continue;
             }
+
+            // THE KAFKA SINK, AND ITS FAILURES ARE A DIFFERENT KIND (ADR-037 section 3). A broker
+            // being down fails every event equally and heals itself when it returns, so it is NOT a
+            // poison and must NOT burn the budget: the row is left unpublished and retried next pass
+            // (where the in-process dispatch above is a deduped no-op), and the age-based backlog
+            // health indicator is what surfaces a broker that stays down. In-process has already
+            // delivered, so nothing on the money path waits on this.
+            if (publishToKafka) {
+                try {
+                    kafkaPublisher.publish(event);
+                } catch (RuntimeException kafkaFailure) {
+                    failed++;
+                    poisonedAggregates.add(row.aggregateId());
+                    log.warn(
+                        "Could not publish to the Kafka sink; in-process delivery already applied, "
+                            + "retrying the broker next pass without spending the retry budget. "
+                            + "eventId={} eventType={} aggregateId={}",
+                        row.eventId(), row.eventType(), row.aggregateId(), kafkaFailure
+                    );
+
+                    continue;
+                }
+            }
+
+            // AFTER both sinks have taken it, and in its own transaction. If this fails the event is
+            // redelivered and each consumer's inbox row makes that a no-op.
+            Instant now = Instant.now(clock);
+            transactions.execute(status -> {
+                reader.markPublished(event.eventId(), now);
+                return null;
+            });
+
+            published++;
         }
 
         return new RelayResult(backlog.size(), published, failed, deferred, deadLettered);
@@ -230,8 +272,11 @@ public final class PublishOutboxEventsService {
      *
      * @param examined  how many rows the claim query returned
      * @param published how many were delivered and stamped
-     * @param failed    how many threw and were logged. Non-zero here is worth an alert; the events
-     *                  are retried on the next pass
+     * @param failed    how many threw and were logged, across BOTH sinks (ADR-037). Non-zero here is
+     *                  worth an alert; the events are retried on the next pass. A Kafka-sink failure
+     *                  is counted here but never feeds {@code deadLettered} -- so the invariant
+     *                  {@code deadLettered <= failed} still holds and only in-process poisons ever
+     *                  exhaust the budget
      * @param deferred  how many were skipped because an earlier event of the SAME aggregate failed
      *                  in this pass. Not an error -- it is the ordering guarantee doing its job --
      *                  but a number that stays non-zero across passes means an aggregate is stuck
