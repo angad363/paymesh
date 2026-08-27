@@ -38,8 +38,20 @@ public final class JpaOutboxReader implements OutboxReader {
     }
 
     @Override
+    public List<UnpublishedEvent> findUnpublishedToKafka(int limit) {
+        return events.findUnpublishedToKafka(limit).stream()
+            .map(JpaOutboxReader::toRow)
+            .toList();
+    }
+
+    @Override
     public void markPublished(EventId eventId, Instant publishedAt) {
         events.markPublished(eventId.value(), publishedAt);
+    }
+
+    @Override
+    public void markKafkaPublished(EventId eventId, Instant kafkaPublishedAt) {
+        events.markKafkaPublished(eventId.value(), kafkaPublishedAt);
     }
 
     @Override
@@ -49,7 +61,11 @@ public final class JpaOutboxReader implements OutboxReader {
 
     @Override
     public BacklogHealth backlogHealth() {
-        return new BacklogHealth(events.oldestUnpublishedOccurredAt(), events.countDeadLettered());
+        return new BacklogHealth(
+            events.oldestUnpublishedOccurredAt(),
+            events.oldestUnpublishedToKafkaOccurredAt(),
+            events.countDeadLettered()
+        );
     }
 
     /**

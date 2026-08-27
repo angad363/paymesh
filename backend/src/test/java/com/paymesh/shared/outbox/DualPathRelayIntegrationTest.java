@@ -143,23 +143,24 @@ class DualPathRelayIntegrationTest {
     // --- PRODUCER LEG -----------------------------------------------------------------------------
 
     /**
-     * BOTH PATHS ON: the relay delivers in process (the order reaches PAID) and the same event is on
-     * its Kafka topic, keyed by the aggregate.
+     * THE PRODUCER LEG: the relay's Kafka pass ({@code relayToKafka}) puts each event on its topic,
+     * keyed by the aggregate.
      * <p>
-     * <b>Sabotage that must turn this red:</b> delete the {@code kafkaPublisher.publish(event)} step
-     * in {@code PublishOutboxEventsService.publish}. The order still reaches PAID (in-process is
-     * untouched) but nothing is ever consumed off the topic and the await below times out.
+     * <b>Sabotage that must turn this red:</b> make {@code relayToKafka} skip the
+     * {@code kafkaPublisher.publish(event)} call. Nothing is ever consumed off the topic and the poll
+     * below times out.
      */
     @Test
     void theRelayAlsoPublishesEachEventToKafka() {
+        // The suite shares one database, so by now the Kafka backlog holds every other test's events
+        // (they ran in in-process mode, so their kafka_published_at is null). Neutralize it, so the
+        // pass below publishes only THIS test's fresh events rather than draining thousands onto the
+        // broker. This is the Kafka-track twin of EventDeliveryIntegrationTest's drain-to-fixpoint.
+        markExistingKafkaBacklogDone();
+
         Fixture fixture = paymentSucceededFor(existingMerchant());
 
-        // Drain: in both mode this is the in-process dispatch AND the Kafka publish.
-        drain();
-
-        assertThat(status(fixture))
-            .as("the in-process path delivered as it always did")
-            .isEqualTo(OrderStatus.PAID);
+        drainKafka();
 
         // The topic carries every PAYMENT_INTENT event (created, confirmed, ...succeeded), so match on
         // the one this test produced rather than the first that arrives.
@@ -289,13 +290,19 @@ class DualPathRelayIntegrationTest {
 
     // --- helpers ----------------------------------------------------------------------------------
 
-    private void drain() {
-        // Drain to a fixed point, like EventDeliveryIntegrationTest: the suite shares one database, so
-        // a bounded pass can be entirely other tests' events, and Order appends order.paid inside its
-        // own transaction, so a second pass is genuinely needed to stamp it published.
-        while (relay.publish().published() > 0) {
+    private void drainKafka() {
+        // The Kafka pass to a fixed point. Bounded per pass, so a few iterations clear this test's
+        // handful of fresh events once the shared backlog has been neutralized.
+        while (relay.relayToKafka().published() > 0) {
             // keep going
         }
+    }
+
+    /** Marks every currently Kafka-unpublished row as done, so {@link #drainKafka} publishes only the
+     * events created after this call. Uses occurred_at as a harmless non-null stamp. */
+    private void markExistingKafkaBacklogDone() {
+        jdbc.sql("update outbox_events set kafka_published_at = occurred_at where kafka_published_at is null")
+            .update();
     }
 
     private void awaitOrderPaid(Fixture fixture) {

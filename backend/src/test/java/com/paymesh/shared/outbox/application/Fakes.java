@@ -194,6 +194,7 @@ final class Fakes {
 
         private final List<UnpublishedEvent> rows = new ArrayList<>();
         private final Map<String, Instant> published = new HashMap<>();
+        private final Map<String, Instant> kafkaPublished = new HashMap<>();
         private final Map<String, Integer> attempts = new HashMap<>();
         private final Map<String, String> lastErrors = new HashMap<>();
         private final Map<String, Instant> deadLettered = new HashMap<>();
@@ -232,6 +233,10 @@ final class Fakes {
             return published.containsKey(eventId);
         }
 
+        boolean isKafkaPublished(String eventId) {
+            return kafkaPublished.containsKey(eventId);
+        }
+
         /**
          * Mirrors the real claim query on both exclusions, and the dead-letter one matters: a double
          * that kept returning abandoned rows would let a relay that never actually unblocks an
@@ -256,9 +261,30 @@ final class Fakes {
                 .toList();
         }
 
+        /** The Kafka claim, mirroring {@link #findUnpublished} but keyed on the Kafka column. */
+        @Override
+        public List<UnpublishedEvent> findUnpublishedToKafka(int limit) {
+            return rows.stream()
+                .filter(row -> !kafkaPublished.containsKey(row.eventId()))
+                .filter(row -> !deadLettered.containsKey(row.eventId()))
+                .sorted(Comparator.comparing(UnpublishedEvent::occurredAt))
+                .limit(limit)
+                .map(row -> new UnpublishedEvent(
+                    row.eventId(), row.merchantId(), row.aggregateType(), row.aggregateId(),
+                    row.eventType(), row.eventVersion(), row.payloadJson(), row.occurredAt(),
+                    attempts.getOrDefault(row.eventId(), 0)
+                ))
+                .toList();
+        }
+
         @Override
         public void markPublished(EventId eventId, Instant publishedAt) {
             published.putIfAbsent(eventId.value(), publishedAt);
+        }
+
+        @Override
+        public void markKafkaPublished(EventId eventId, Instant kafkaPublishedAt) {
+            kafkaPublished.putIfAbsent(eventId.value(), kafkaPublishedAt);
         }
 
         /** The same {@code count + 1 >= maxAttempts} rule the native UPDATE applies. */
@@ -291,7 +317,14 @@ final class Fakes {
                 .min(Comparator.naturalOrder())
                 .orElse(null);
 
-            return new BacklogHealth(oldest, deadLettered.size());
+            Instant oldestToKafka = rows.stream()
+                .filter(row -> !kafkaPublished.containsKey(row.eventId()))
+                .filter(row -> !deadLettered.containsKey(row.eventId()))
+                .map(UnpublishedEvent::occurredAt)
+                .min(Comparator.naturalOrder())
+                .orElse(null);
+
+            return new BacklogHealth(oldest, oldestToKafka, deadLettered.size());
         }
     }
 }

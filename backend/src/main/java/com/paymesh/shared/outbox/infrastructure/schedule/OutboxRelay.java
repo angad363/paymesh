@@ -32,9 +32,15 @@ public final class OutboxRelay {
     }
 
     /**
-     * Logged at INFO only when there was something to do. The interval is short -- this is delivery
-     * latency a merchant sees, not catch-up work -- so an idle platform would otherwise write a line
-     * every couple of seconds and bury the pass that mattered.
+     * The in-process pass, then the Kafka pass (ADR-037). Both logged at INFO only when there was
+     * something to do -- the interval is short (delivery latency a merchant sees), so an idle platform
+     * would otherwise write a line every couple of seconds and bury the pass that mattered.
+     * <p>
+     * The Kafka pass self-gates: under {@code in-process} mode it returns empty without touching the
+     * database, so this method is byte-for-byte the pre-ADR-037 relay there. The two passes run on the
+     * same scheduler thread -- see {@link PublishOutboxEventsService#relayToKafka} for the one cost of
+     * that (a broker outage can delay the next in-process tick) and why it is a latency ceiling, never
+     * a loss.
      */
     @Scheduled(
         fixedDelayString = "${paymesh.events.outbox-relay.interval}",
@@ -48,6 +54,15 @@ public final class OutboxRelay {
                 "Outbox relay examined={} published={} failed={} deferred={} deadLettered={}",
                 result.examined(), result.published(), result.failed(), result.deferred(),
                 result.deadLettered()
+            );
+        }
+
+        PublishOutboxEventsService.KafkaRelayResult kafka = publishOutboxEvents.relayToKafka();
+
+        if (kafka.examined() > 0) {
+            log.info(
+                "Outbox Kafka relay examined={} published={} failed={} deferred={}",
+                kafka.examined(), kafka.published(), kafka.failed(), kafka.deferred()
             );
         }
     }

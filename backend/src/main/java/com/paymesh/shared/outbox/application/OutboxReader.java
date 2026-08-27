@@ -31,6 +31,17 @@ public interface OutboxReader {
     List<UnpublishedEvent> findUnpublished(int limit);
 
     /**
+     * The Kafka sink's own backlog (ADR-037): the oldest events not yet on the broker,
+     * {@code occurred_at} ascending, at most {@code limit}. Keyed on {@code kafka_published_at IS NULL}
+     * (V37), independently of {@code published_at}, so the two sinks progress and retry on their own
+     * clocks and a broker outage never holds an in-process-delivered event in the in-process claim.
+     * <p>
+     * Excludes dead-lettered rows exactly as {@link #findUnpublished} does: a row the in-process track
+     * has abandoned (an unmappable payload) can never form a Kafka record either.
+     */
+    List<UnpublishedEvent> findUnpublishedToKafka(int limit);
+
+    /**
      * Stamps {@code published_at}, which is the entire status model (V7): NULL means unpublished and
      * there is no status column to disagree with it.
      * <p>
@@ -42,6 +53,14 @@ public interface OutboxReader {
      * relay instance cannot rewrite the first one's delivery time.
      */
     void markPublished(EventId eventId, Instant publishedAt);
+
+    /**
+     * Stamps {@code kafka_published_at} (V37) once the broker has acknowledged the event. The Kafka
+     * sink's counterpart to {@link #markPublished}, and idempotent for the same reason: an
+     * already-stamped row is left alone so a duplicate pass cannot rewrite its time. There is no retry
+     * budget on this sink (ADR-037 §3), so no dead-letter bookkeeping travels with it.
+     */
+    void markKafkaPublished(EventId eventId, Instant kafkaPublishedAt);
 
     /**
      * Records one failed delivery attempt, and gives up on the attempt that reaches
@@ -72,12 +91,17 @@ public interface OutboxReader {
     BacklogHealth backlogHealth();
 
     /**
-     * @param oldestUnpublished when the oldest STILL-DELIVERABLE unpublished event happened, or null
-     *     when there is no backlog. Dead-lettered rows are excluded: their age only grows, so
-     *     counting them would pin this past any threshold forever and make the signal worthless.
-     * @param deadLettered how many events the relay has permanently given up on. Any non-zero value
-     *     means a committed state change was never announced to its consumers.
+     * @param oldestUnpublished when the oldest STILL-DELIVERABLE in-process-unpublished event
+     *     happened, or null when there is no in-process backlog. Dead-lettered rows are excluded:
+     *     their age only grows, so counting them would pin this past any threshold forever and make
+     *     the signal worthless.
+     * @param oldestUnpublishedToKafka the same age for the KAFKA sink (ADR-037): the oldest event not
+     *     yet on the broker, or null. Reported separately because the two sinks fail independently --
+     *     a broker outage ages this while {@code oldestUnpublished} stays healthy, which is exactly
+     *     the distinction the two columns exist to draw.
+     * @param deadLettered how many events the in-process relay has permanently given up on. Any
+     *     non-zero value means a committed state change was never announced to its consumers.
      */
-    record BacklogHealth(Instant oldestUnpublished, long deadLettered) {
+    record BacklogHealth(Instant oldestUnpublished, Instant oldestUnpublishedToKafka, long deadLettered) {
     }
 }

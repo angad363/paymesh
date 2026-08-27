@@ -30,7 +30,7 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1526 tests, 0 failures.** Thirty-six Flyway migrations (V1–V36). Thirty-seven ADRs. The Postman
+**1528 tests, 0 failures.** Thirty-seven Flyway migrations (V1–V37). Thirty-seven ADRs. The Postman
 collection runs **nineteen folders green** — the newest a self-contained Reporting folder (17
 requests, 30 assertions, verified with newman against the running app) covering the two summary
 reads, the async export lifecycle, tenant isolation and every error path.
@@ -544,11 +544,11 @@ did not exist until this session.
 
 | Piece | What it does |
 |---|---|
-| `PublishOutboxEventsService` | One pass: claims `published_at IS NULL` oldest-first (bounded), dispatches, stamps. A plain object; `OutboxRelay` is the `@Scheduled` bean and holds one call and one log line |
+| `PublishOutboxEventsService` | Two passes (ADR-037): `publish()` claims `published_at IS NULL` oldest-first, dispatches in-process, stamps `published_at`; `relayToKafka()` claims `kafka_published_at IS NULL`, publishes to the broker, stamps `kafka_published_at`. Independent columns, so a Kafka outage never stalls in-process. A plain object; `OutboxRelay` is the `@Scheduled` bean and runs both passes |
 | `EventDispatcher` | Handlers indexed by event type. **One transaction per (handler, event)**, holding the inbox claim and everything the handler writes |
 | `ProcessedEventRepository` | `INSERT … ON CONFLICT DO NOTHING`; the row count is the answer. No read, so there is no read-then-write window |
 | `EventHandler` | The consumer contract: envelope in, `Map` payload, must be idempotent, must throw to retry, **must not open a transaction** |
-| `EventEnvelope`, `KafkaEventPublisher` | ADR-036, `…outbox.infrastructure.kafka`. The wire contract and the Kafka sink (`KafkaEventPublisher` implements the `EventPublisher` port). In `both` mode the relay publishes here after the in-process dispatch (ADR-037) |
+| `EventEnvelope`, `KafkaEventPublisher` | ADR-036, `…outbox.infrastructure.kafka`. The wire contract and the Kafka sink (`KafkaEventPublisher` implements the `EventPublisher` port). Driven by the relay's separate `relayToKafka()` pass in `both` mode (ADR-037) |
 | `KafkaEventListener` | ADR-037, `…outbox.infrastructure.kafka`. One `@KafkaListener(topicPattern = ".+-events")` feeding the existing `EventDispatcher`, so every handler is reachable from Kafka with no per-handler adapter. Registered only in `both` mode |
 
 Properties worth not breaking:
@@ -614,7 +614,7 @@ no financial effect.
 
 ```bash
 cd backend
-./mvnw test                     # 1526 tests; needs Docker, no local database
+./mvnw test                     # 1528 tests; needs Docker, no local database
 ./mvnw spring-boot:run          # port 8080, activates the dev profile via the pom
 
 # API contract, end to end, including cross-tenant isolation and idempotency
@@ -688,7 +688,7 @@ The collection is not decorative: dropping the tenant predicate in
 | 034 | Project one fact per event into an append-only table, aggregate on read; export async |
 | 035 | An append-only audit log recorded in-process inside the acting transaction (its subjects emit no event), immutable by trigger like `ledger_entries` |
 | 036 | Kafka (KRaft) is the event backbone; the wire envelope is the outbox row formalized as a separate published type, one topic per aggregate type with the aggregate id as the partition key (so one aggregate's causally-chained events cannot be reordered), and changes are additive within a version |
-| 037 | The dual-path relay: the relay publishes to Kafka *and* the in-process dispatcher and one listener consumes back through the same inbox, behind `paymesh.events.delivery.mode` (`both` default, `in-process` rollback). The dead-letter budget governs the in-process sink only — a broker outage is global and self-healing, so a Kafka-sink failure retries without spending the budget and is surfaced by the age-based backlog health indicator |
+| 037 | The dual-path relay: two INDEPENDENT passes over two columns (`published_at` in-process, `kafka_published_at` on Kafka, V37) plus one listener consuming back through the same inbox, behind `paymesh.events.delivery.mode` (`both` default, `in-process` rollback). Two columns because a single shared gate let a Kafka outage stall in-process money-path delivery; the dead-letter budget governs the in-process sink only, and the Kafka sink retries without a budget, surfaced by its own backlog age |
 
 Note that the SDD's Appendix D has its own ADR list with the same numbers and
 different decisions. When citing one, say which source you mean.
@@ -1169,7 +1169,7 @@ string and skips every value it does not recognise rather than defaulting.
 ### PICK UP HERE — Phase 3, after the dual-path relay (PR 2)
 
 Phase 2 is closed. **PR 1 (ADR-036) is merged; PR 2 (the dual-path relay, ADR-037) is built on
-`feature/dual-path-relay`** and **1526 tests are green**. The plan of record is
+`feature/dual-path-relay`** and **1528 tests are green**. The plan of record is
 `docs/phase-3-microservices-extraction-plan.md`; work it **one PR at a time, in table order**. The
 next PR is **PR 3, schema-per-service** (`feature/schema-per-service`, **ADR-038**) — the big,
 hard-to-reverse one, done behind a backup and a tested down-path, still one process.
@@ -1181,44 +1181,49 @@ What PR 2 actually put in the tree, and what it deliberately did not:
   producer (whether the relay also publishes to Kafka) and the consumer (whether the listener bean
   is registered) from one property so the two halves can never disagree. **The `dev` profile sets
   it to `in-process`**, so the whole suite still needs no broker — exactly PR 1's property.
-- **Producer:** `PublishOutboxEventsService` gained the `KafkaEventPublisher` (behind a new
-  `EventPublisher` application port) as a second sink. In `both` mode it dispatches in process,
-  *then* publishes to Kafka, and stamps `published_at` only when both took it — so the column still
-  means "delivered to everyone" and **there is no new schema** (`DB: none`).
+- **Producer: TWO INDEPENDENT PASSES OVER TWO COLUMNS, and this is the load-bearing decision.**
+  `publish()` is the in-process pass, unchanged: it claims `published_at IS NULL`, dispatches,
+  stamps `published_at`. `relayToKafka()` is a separate pass claiming `kafka_published_at IS NULL`
+  (V37), publishing through the `EventPublisher` port, stamping `kafka_published_at`. The timer runs
+  both. **The first cut of this PR gated ONE column on both sinks — and code review found it stalls
+  the money path:** during a broker outage a Kafka failure keeps an already-in-process-delivered row
+  in the oldest-first in-process claim, the bounded batch saturates with Kafka-pending rows, and new
+  events are never claimed for in-process. Two columns decouple the sinks so in-process never waits
+  on the broker. This is why PR 2 takes a migration (V37) despite the plan's "DB: none".
 - **Consumer:** one `KafkaEventListener` with `@KafkaListener(topicPattern = ".+-events")` feeding
   the existing `EventDispatcher`. The dispatcher is already the fan-out, so one listener reaches
   every handler through the same `processed_events` inbox — no per-handler adapter, despite the
   plan's wording (ADR-037 §4). Registered only in `both` mode.
-- **The dead-letter budget decision ADR-036 deferred is made (ADR-037 §3).** The budget governs
-  the in-process sink only. A broker outage is global and self-healing, not a poisoned event, so a
-  Kafka-sink failure leaves the row unpublished to retry **without spending the budget** and never
-  dead-letters; the age-based backlog health indicator (ADR-025) is what surfaces a broker that
-  stays down. So the "an outage dead-letters the backlog in under a minute" hazard PR 1 flagged is
-  answered, not inherited.
-- **Verified by breaking the implementation.** The producer leg (`DualPathRelayIntegrationTest`,
-  its own `KafkaContainer`) goes red if the Kafka sink is removed; the consumer leg — an event put
-  on Kafka with no in-process delivery, applied by Order — goes red if the listener is
-  unregistered, and its second delivery double-applies if the inbox guard is removed. The
-  budget rule has three unit tests in `PublishOutboxEventsServiceTest`: a Kafka failure at
-  `maxAttempts = 1` must not dead-letter.
+- **The dead-letter budget decision ADR-036 deferred is made (ADR-037 §3).** The budget governs the
+  in-process sink only. A broker outage is global and self-healing, not a poisoned event, so the
+  Kafka pass has **no budget at all**: a send failure leaves `kafka_published_at` NULL, is retried
+  next tick, and never dead-letters. Surfaced by a second age on the backlog health indicator
+  (`oldestUnpublishedToKafka`), which is reported but does NOT flip `/actuator/health` to DOWN —
+  Kafka has no dependent consumer yet, so an outage must not page like a stalled money path.
+- **Verified by breaking the implementation.** `DualPathRelayIntegrationTest` (own `KafkaContainer`):
+  the producer leg goes red if `relayToKafka` stops sending; the consumer leg — an event put on Kafka
+  with no in-process delivery, applied by Order — goes red if the listener is unregistered, and its
+  second delivery double-applies if the inbox guard is removed. `PublishOutboxEventsServiceTest`
+  proves the money-path fix directly: a Kafka outage delivers BOTH events of an aggregate in process
+  (the stall regression), the two passes stamp only their own column, and the Kafka sink retries at
+  `maxAttempts = 1` without dead-lettering.
 - **Only the one new test starts a broker**, like `KafkaEventRoundTripTest` — the suite still pays
   for Kafka exactly twice.
 - **No HTTP surface changed, so the Postman collection is untouched** — deliberately, not by
   omission. `docker-compose.yml`'s Kafka service is unchanged (PR 1 added it).
 
-Two things to carry into PR 3 and beyond, still open from PR 1:
+Three ceilings to carry into PR 3 and beyond, all money-safe and marked in the code:
 
 - **In `both` mode every event is delivered twice and applied once**, the extra work a second
-  inbox-claim per (handler, event) that reads "already processed". That is the measured cost of the
-  safety net, paid only during the transition; PR 16 removes the in-process path and the flag.
-- Topics are auto-created with **one partition and replication factor 1**, marked with a
-  `ponytail:` note in `docker-compose.yml`. RF=1 makes the producer's `acks=all` identical to
-  `acks=1`, so the durability setting is void on any auto-created topic. Declaring topics with a
-  real partition count and RF=3, and turning auto-creation off, is a later decision — a real
-  ceiling, not a cosmetic one.
-- **Consumer-side error handling is Spring's default** (bounded retry, then advance). Fine while
-  in-process stays authoritative under `both`; a real dead-letter topic belongs to a capability
-  once it is Kafka-*only*, built per service at extraction.
+  inbox-claim per (handler, event) that reads "already processed". Paid only during the transition;
+  PR 16 removes the in-process path and the flag.
+- **The Kafka pass blocks on the shared relay thread.** It ends at the first send failure and retries
+  next tick, but a broker outage can still delay the next in-process *tick* — a latency degradation,
+  never a loss or reorder. A dedicated Kafka relay thread is the upgrade path, deferred to extraction.
+- Topics are auto-created with **one partition and replication factor 1** (`ponytail:` note in
+  `docker-compose.yml`). RF=1 makes `acks=all` identical to `acks=1`. And consumer-side error
+  handling is Spring's default (bounded retry, then advance) — fine while in-process stays
+  authoritative; a real consumer dead-letter topic belongs to a Kafka-only capability at extraction.
 
 ### Working method that has been effective
 

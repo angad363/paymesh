@@ -395,90 +395,117 @@ class PublishOutboxEventsServiceTest {
             .isInstanceOf(IllegalArgumentException.class);
     }
 
-    // --- THE KAFKA SINK (ADR-037) ---------------------------------------------------------------
+    // --- THE KAFKA SINK, A SEPARATE PASS OVER A SEPARATE COLUMN (ADR-037) -----------------------
 
     /**
-     * IN {@code both} MODE THE EVENT GOES TO BOTH SINKS AND IS THEN STAMPED. The handler ran (in
-     * process) and the publisher received the same event (Kafka), and only then is {@code published_at}
-     * set -- so {@code published_at} still means "delivered to everyone", now including the broker.
-     */
-    @Test
-    void deliversToBothSinksAndStampsOnlyWhenBothTookIt() {
-        RecordingHandler handler = new RecordingHandler("order.payment", "payment.succeeded");
-        RecordingEventPublisher kafka = new RecordingEventPublisher();
-        UnpublishedEvent row = row("payment.succeeded", "pi_1", NOW.minusSeconds(10));
-        outbox.append(row);
-
-        RelayResult result = dualPathRelayOf(List.of(handler), kafka).publish();
-
-        assertThat(result).isEqualTo(new RelayResult(1, 1, 0, 0, 0));
-        assertThat(handler.handled()).as("the in-process sink").hasSize(1);
-        assertThat(kafka.published()).as("the Kafka sink").hasSize(1);
-        assertThat(outbox.published()).containsEntry(row.eventId(), NOW);
-    }
-
-    /**
-     * A BROKER OUTAGE DOES NOT SPEND THE DEAD-LETTER BUDGET. This is the decision ADR-036 deferred to
-     * ADR-037: a Kafka-sink failure is global and self-healing, not a poisoned event, so the row is
-     * left unpublished to retry but the budget is untouched. With {@code maxAttempts = 1}, a failure
-     * that DID count would dead-letter here on the first attempt; it must not.
+     * THE MONEY-PATH FIX, AND THE ONE FINDING-1 IS ABOUT: a Kafka outage NEVER stalls in-process
+     * delivery, not even of a later event of the same aggregate.
      * <p>
-     * <b>Sabotage that must turn this red:</b> move the {@code kafkaPublisher.publish} call inside the
-     * first try-block in {@code PublishOutboxEventsService}, so a Kafka failure runs {@code recordFailure}.
-     * The event is then dead-lettered on its first broker hiccup and {@code deadLettered} below is 1.
+     * {@code publish()} is the in-process pass and does not touch Kafka at all, so both events of
+     * {@code pi_1} are delivered in process and stamped {@code published_at} while the broker is down.
+     * The earlier design gated one column on both sinks and poisoned the aggregate on a Kafka failure,
+     * which deferred A2's in-process dispatch for the whole outage -- the Ledger never posting a
+     * captured payment while Kafka was unreachable.
+     * <p>
+     * <b>Sabotage that must turn this red:</b> call {@code kafkaPublisher.publish} inside
+     * {@code publish()} and poison the aggregate on its failure. A2 is then deferred and
+     * {@code handler.handled()} has one element, not two.
      */
     @Test
-    void doesNotSpendTheRetryBudgetWhenOnlyTheKafkaSinkFails() {
+    void aKafkaOutageNeverStallsInProcessDelivery() {
         RecordingHandler handler = new RecordingHandler("order.payment", "payment.succeeded");
         RecordingEventPublisher kafka = new RecordingEventPublisher();
         kafka.startFailing();
-        UnpublishedEvent row = row("payment.succeeded", "pi_1", NOW.minusSeconds(10));
-        outbox.append(row);
+        UnpublishedEvent earlier = row("payment.succeeded", "pi_1", NOW.minusSeconds(30));
+        UnpublishedEvent later = row("payment.succeeded", "pi_1", NOW.minusSeconds(10));
+        outbox.append(earlier);
+        outbox.append(later);
 
-        RelayResult result = dualPathRelayOf(List.of(handler), kafka).publish();
+        PublishOutboxEventsService relay = dualPathRelayOf(List.of(handler), kafka);
 
-        assertThat(result.failed()).isEqualTo(1);
-        assertThat(result.deadLettered())
-            .as("a broker being down is not a poison and must not consume the budget")
-            .isZero();
+        RelayResult inProcess = relay.publish();
+        relay.relayToKafka();
+
+        assertThat(inProcess).isEqualTo(new RelayResult(2, 2, 0, 0, 0));
         assertThat(handler.handled())
-            .as("in-process delivered before the Kafka sink was even tried")
-            .hasSize(1);
-        assertThat(outbox.isDeadLettered(row.eventId())).isFalse();
-        assertThat(outbox.attemptsFor(row.eventId()))
-            .as("no failed attempt is recorded, so the budget did not move at all")
-            .isZero();
-        assertThat(outbox.isPublished(row.eventId()))
-            .as("left unpublished so the next pass retries the broker")
+            .as("BOTH events of the aggregate were delivered in process, broker down")
+            .hasSize(2);
+        assertThat(outbox.isPublished(earlier.eventId())).isTrue();
+        assertThat(outbox.isPublished(later.eventId())).isTrue();
+        assertThat(outbox.isKafkaPublished(earlier.eventId()))
+            .as("Kafka is a separate track and the broker refused it")
             .isFalse();
     }
 
-    /**
-     * THE RETRY IS SAFE BECAUSE THE IN-PROCESS DISPATCH IS DEDUPED ON THE SECOND PASS. The broker
-     * returns, the row is published, and the handler is NOT invoked a second time -- the inbox row from
-     * the first pass makes the re-dispatch a no-op. This is what makes "retry the Kafka sink forever"
-     * safe where it was the bug for a poisoned handler.
-     */
+    /** The two sinks stamp two independent columns: {@code publish()} the in-process one and never
+     * Kafka, {@code relayToKafka()} the Kafka one and never in-process. */
     @Test
-    void retriesTheKafkaSinkWithoutReapplyingTheInProcessHandler() {
+    void eachPassStampsOnlyItsOwnColumn() {
         RecordingHandler handler = new RecordingHandler("order.payment", "payment.succeeded");
         RecordingEventPublisher kafka = new RecordingEventPublisher();
-        kafka.startFailing();
         UnpublishedEvent row = row("payment.succeeded", "pi_1", NOW.minusSeconds(10));
         outbox.append(row);
 
         PublishOutboxEventsService relay = dualPathRelayOf(List.of(handler), kafka);
 
-        assertThat(relay.publish().published()).as("the broker is down").isZero();
+        relay.publish();
+        assertThat(outbox.isPublished(row.eventId())).isTrue();
+        assertThat(kafka.published()).as("publish() does not touch Kafka").isEmpty();
+        assertThat(outbox.isKafkaPublished(row.eventId())).isFalse();
+
+        relay.relayToKafka();
+        assertThat(kafka.published()).as("relayToKafka() is the one that sends").hasSize(1);
+        assertThat(outbox.isKafkaPublished(row.eventId())).isTrue();
+    }
+
+    /**
+     * THE KAFKA SINK HAS NO RETRY BUDGET (ADR-037 §3, ADR-036's deferred decision). With
+     * {@code maxAttempts = 1} a failure that consumed the budget would dead-letter on its first
+     * attempt; a broker outage must not, because it is global and self-healing. The row stays
+     * Kafka-unpublished and succeeds once the broker returns.
+     * <p>
+     * <b>Sabotage that must turn this red:</b> call {@code recordFailure} on a broker failure in
+     * {@code relayToKafka}. The row is dead-lettered on the first hiccup and never reaches Kafka.
+     */
+    @Test
+    void theKafkaSinkRetriesWithoutSpendingTheBudget() {
+        RecordingEventPublisher kafka = new RecordingEventPublisher();
+        kafka.startFailing();
+        UnpublishedEvent row = row("payment.succeeded", "pi_1", NOW.minusSeconds(10));
+        outbox.append(row);
+
+        PublishOutboxEventsService relay = dualPathRelayOf(List.of(), kafka);
+
+        assertThat(relay.relayToKafka().failed()).as("the broker is down").isEqualTo(1);
+        assertThat(relay.relayToKafka().failed()).as("still down, retried again").isEqualTo(1);
+        assertThat(outbox.isDeadLettered(row.eventId()))
+            .as("no budget on this sink, so it is never abandoned")
+            .isFalse();
+        assertThat(outbox.attemptsFor(row.eventId()))
+            .as("the in-process budget counter never moves for a Kafka failure")
+            .isZero();
 
         kafka.stopFailing();
 
-        assertThat(relay.publish().published()).as("the broker is back").isEqualTo(1);
-        assertThat(handler.handled())
-            .as("delivered in process once, on the first pass; the retry deduped it")
-            .hasSize(1);
-        assertThat(kafka.published()).hasSize(1);
-        assertThat(outbox.isPublished(row.eventId())).isTrue();
+        assertThat(relay.relayToKafka().published()).as("the broker is back").isEqualTo(1);
+        assertThat(outbox.isKafkaPublished(row.eventId())).isTrue();
+    }
+
+    /** In {@code in-process} mode the Kafka pass is a no-op that does not even query the backlog. */
+    @Test
+    void relayToKafkaDoesNothingInInProcessMode() {
+        RecordingEventPublisher kafka = new RecordingEventPublisher();
+        kafka.startFailing(); // would throw if the pass ever called it
+        outbox.append(row("payment.succeeded", "pi_1", NOW.minusSeconds(10)));
+
+        PublishOutboxEventsService inProcessOnly = new PublishOutboxEventsService(
+            outbox, new EventDispatcher(List.of(), inbox, transactions, CLOCK), kafka, false,
+            transactions, JSON, CLOCK, 100, 1
+        );
+
+        assertThat(inProcessOnly.relayToKafka())
+            .isEqualTo(new PublishOutboxEventsService.KafkaRelayResult(0, 0, 0, 0));
+        assertThat(kafka.published()).isEmpty();
     }
 
     // --- helpers ---------------------------------------------------------------------------------

@@ -119,8 +119,11 @@ public final class PublishOutboxEventsService {
     }
 
     /**
-     * One pass. Returns what it did, so the timer can log it and a test can assert it without
-     * reading the database.
+     * ONE IN-PROCESS PASS, AND IT IS DELIBERATELY UNTOUCHED BY KAFKA (ADR-037). This is the money
+     * path: it dispatches the backlog to the in-process consumers and stamps {@code published_at}. The
+     * Kafka sink is a SEPARATE pass ({@link #relayToKafka}) over a SEPARATE column, so a broker outage
+     * can never hold an in-process-delivered event in this claim query or defer its aggregate's later
+     * events here. That separation is the whole reason the two-column design exists.
      */
     public RelayResult publish() {
         List<UnpublishedEvent> backlog = reader.findUnpublished(batchSize);
@@ -141,16 +144,23 @@ public final class PublishOutboxEventsService {
                 continue;
             }
 
-            OutboxEvent event;
             try {
-                // THE IN-PROCESS SINK, AND ITS FAILURES ARE THE ONES THE BUDGET IS FOR. A row that
-                // cannot form a legal envelope fails here too (INSIDE THE TRY -- that now includes a
-                // payload the mapper cannot read, which used to throw one layer out in the repository
-                // and take the whole pass with it), and so does a handler that cannot apply the event.
-                // Both are poisons: content the consumer can never accept, so they consume the
-                // dead-letter budget exactly as before ADR-037.
-                event = row.toEvent(json);
+                // INSIDE THE TRY. A row that cannot form a legal envelope fails here, alone -- and
+                // that now includes a payload the mapper cannot read, which used to throw one layer
+                // out in the repository and take the whole pass with it.
+                OutboxEvent event = row.toEvent(json);
+
                 dispatcher.dispatch(event);
+
+                // AFTER every handler has committed, and in its own transaction. If this fails the
+                // event is redelivered and each consumer's inbox row makes that a no-op.
+                Instant now = Instant.now(clock);
+                transactions.execute(status -> {
+                    reader.markPublished(event.eventId(), now);
+                    return null;
+                });
+
+                published++;
             } catch (RuntimeException failure) {
                 failed++;
                 poisonedAggregates.add(row.aggregateId());
@@ -158,45 +168,105 @@ public final class PublishOutboxEventsService {
                 if (recordFailure(row, failure)) {
                     deadLettered++;
                 }
+            }
+        }
 
+        return new RelayResult(backlog.size(), published, failed, deferred, deadLettered);
+    }
+
+    /**
+     * ONE KAFKA PASS, THE SECOND SINK, AND ENTIRELY INDEPENDENT OF {@link #publish} (ADR-037).
+     *
+     * <h2>Why it is a separate pass over a separate column, not a step inside {@code publish}</h2>
+     *
+     * If one {@code published_at} gated both sinks, a broker outage -- which leaves a row unpublished
+     * so it retries -- would keep an already-in-process-delivered event in the oldest-first in-process
+     * claim. The bounded batch then fills with in-process-done, Kafka-pending rows and newly committed
+     * events are never claimed: a Kafka outage stalls the money path. Two columns, two claims, two
+     * passes: in-process progresses on {@code published_at}, Kafka on {@code kafka_published_at}, and
+     * neither waits on the other.
+     *
+     * <h2>No retry budget on this sink (ADR-037 §3)</h2>
+     *
+     * A broker being down is global and self-healing, not a poisoned event, so a send failure is not
+     * counted against the dead-letter budget and never dead-letters: the row stays
+     * {@code kafka_published_at IS NULL} and is retried until the broker takes it. It is surfaced by
+     * the Kafka half of the backlog health indicator, not by an alert-worthy failure.
+     *
+     * <h2>ponytail: the blocking send runs on the shared relay thread</h2>
+     *
+     * {@code KafkaEventPublisher.publish} blocks on the broker's acknowledgement, so during an outage
+     * this pass ends at the FIRST send failure (there is no point paying the block for every following
+     * aggregate when the broker is down) and retries next tick. It still shares the scheduler thread
+     * with {@link #publish}, so a broker outage can delay the NEXT in-process tick by one blocked send
+     * -- a latency degradation, never a loss or a reorder. A dedicated Kafka relay thread is the
+     * upgrade path, deferred to when a consumer actually depends on the Kafka stream (extraction).
+     *
+     * @return what the pass did; empty (and no query is run) when the mode is {@code in-process}.
+     */
+    public KafkaRelayResult relayToKafka() {
+        if (!publishToKafka) {
+            return new KafkaRelayResult(0, 0, 0, 0);
+        }
+
+        List<UnpublishedEvent> backlog = reader.findUnpublishedToKafka(batchSize);
+
+        // Only for the rare unmappable row: it holds that aggregate's later events so a Kafka record
+        // is never sent out of order behind one that cannot be formed. A broker failure ends the pass
+        // outright (below) rather than poisoning per aggregate.
+        Set<String> poisonedAggregates = new HashSet<>();
+
+        int published = 0;
+        int failed = 0;
+        int deferred = 0;
+
+        for (UnpublishedEvent row : backlog) {
+            if (poisonedAggregates.contains(row.aggregateId())) {
+                deferred++;
                 continue;
             }
 
-            // THE KAFKA SINK, AND ITS FAILURES ARE A DIFFERENT KIND (ADR-037 section 3). A broker
-            // being down fails every event equally and heals itself when it returns, so it is NOT a
-            // poison and must NOT burn the budget: the row is left unpublished and retried next pass
-            // (where the in-process dispatch above is a deduped no-op), and the age-based backlog
-            // health indicator is what surfaces a broker that stays down. In-process has already
-            // delivered, so nothing on the money path waits on this.
-            if (publishToKafka) {
-                try {
-                    kafkaPublisher.publish(event);
-                } catch (RuntimeException kafkaFailure) {
-                    failed++;
-                    poisonedAggregates.add(row.aggregateId());
-                    log.warn(
-                        "Could not publish to the Kafka sink; in-process delivery already applied, "
-                            + "retrying the broker next pass without spending the retry budget. "
-                            + "eventId={} eventType={} aggregateId={}",
-                        row.eventId(), row.eventType(), row.aggregateId(), kafkaFailure
-                    );
-
-                    continue;
-                }
+            OutboxEvent event;
+            try {
+                event = row.toEvent(json);
+            } catch (RuntimeException mappingFailure) {
+                // Unmappable: the in-process track's budget dead-letters it, which also drops it from
+                // this claim (dead_lettered_at). Until then, hold its aggregate and keep draining the
+                // rest -- a healthy row behind an unmappable one must still reach Kafka.
+                failed++;
+                poisonedAggregates.add(row.aggregateId());
+                log.warn(
+                    "Skipping an unmappable row on the Kafka sink eventId={} aggregateId={}",
+                    row.eventId(), row.aggregateId(), mappingFailure
+                );
+                continue;
             }
 
-            // AFTER both sinks have taken it, and in its own transaction. If this fails the event is
-            // redelivered and each consumer's inbox row makes that a no-op.
+            try {
+                kafkaPublisher.publish(event);
+            } catch (RuntimeException brokerFailure) {
+                // The broker is unreachable. Every remaining send would block the acknowledgement
+                // timeout too, so end the pass here and retry next tick rather than pay that N times
+                // on the relay thread. The row stays kafka-unpublished; the budget is untouched.
+                failed++;
+                log.warn(
+                    "Kafka sink unavailable, ending the pass early after eventId={} aggregateId={}; "
+                        + "in-process delivery is unaffected and the broker is retried next tick",
+                    row.eventId(), row.aggregateId(), brokerFailure
+                );
+                break;
+            }
+
             Instant now = Instant.now(clock);
             transactions.execute(status -> {
-                reader.markPublished(event.eventId(), now);
+                reader.markKafkaPublished(event.eventId(), now);
                 return null;
             });
 
             published++;
         }
 
-        return new RelayResult(backlog.size(), published, failed, deferred, deadLettered);
+        return new KafkaRelayResult(backlog.size(), published, failed, deferred);
     }
 
     /**
@@ -268,15 +338,12 @@ public final class PublishOutboxEventsService {
     }
 
     /**
-     * What one pass did.
+     * What one IN-PROCESS pass did.
      *
      * @param examined  how many rows the claim query returned
      * @param published how many were delivered and stamped
-     * @param failed    how many threw and were logged, across BOTH sinks (ADR-037). Non-zero here is
-     *                  worth an alert; the events are retried on the next pass. A Kafka-sink failure
-     *                  is counted here but never feeds {@code deadLettered} -- so the invariant
-     *                  {@code deadLettered <= failed} still holds and only in-process poisons ever
-     *                  exhaust the budget
+     * @param failed    how many threw and were logged. Non-zero here is worth an alert; the events
+     *                  are retried on the next pass
      * @param deferred  how many were skipped because an earlier event of the SAME aggregate failed
      *                  in this pass. Not an error -- it is the ordering guarantee doing its job --
      *                  but a number that stays non-zero across passes means an aggregate is stuck
@@ -289,5 +356,20 @@ public final class PublishOutboxEventsService {
     public record RelayResult(
         int examined, int published, int failed, int deferred, int deadLettered
     ) {
+    }
+
+    /**
+     * What one KAFKA pass did (ADR-037). No {@code deadLettered}: the Kafka sink has no retry budget,
+     * because a broker outage is not a poison (see {@link #relayToKafka}).
+     *
+     * @param examined  how many rows the Kafka claim query returned
+     * @param published how many reached the broker and were stamped {@code kafka_published_at}
+     * @param failed    how many failed -- an unmappable row, or the one broker failure that ended the
+     *                  pass. Retried next tick; surfaced by the Kafka half of the backlog health
+     *                  indicator rather than by the dead-letter alert
+     * @param deferred  how many were held because an earlier UNMAPPABLE event of the same aggregate is
+     *                  still ahead of them
+     */
+    public record KafkaRelayResult(int examined, int published, int failed, int deferred) {
     }
 }

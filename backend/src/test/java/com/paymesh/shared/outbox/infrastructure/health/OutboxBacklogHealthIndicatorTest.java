@@ -98,9 +98,33 @@ class OutboxBacklogHealthIndicatorTest {
             .containsEntry("eventsAbandoned", true);
     }
 
+    /**
+     * A KAFKA BACKLOG IS REPORTED BUT MUST NOT FLIP THE AGGREGATE TO DOWN (ADR-037). Kafka has no
+     * consumer that depends on it yet, so a broker outage is not a money-path incident: the age is
+     * surfaced for observability, the status stays UP.
+     * <p>
+     * <b>Sabotage that must turn this red:</b> add {@code kafkaStalled} to the DOWN condition in the
+     * indicator. A broker outage then pages as though the in-process relay had stopped.
+     */
+    @Test
+    void reportsTheKafkaBacklogAgeButStaysUpWhenOnlyKafkaIsBehind() {
+        OutboxBacklogHealthIndicator indicator = new OutboxBacklogHealthIndicator(
+            new StubReader(new OutboxReader.BacklogHealth(null, NOW.minus(Duration.ofMinutes(9)), 0)),
+            ALERT_AGE, CLOCK
+        );
+
+        Health health = indicator.health();
+
+        assertThat(health.getStatus()).isEqualTo(Status.UP);
+        assertThat(health.getDetails())
+            .containsEntry("oldestUnpublishedToKafkaAgeSeconds", 540L)
+            .containsEntry("kafkaBacklogStalled", true)
+            .containsEntry("backlogStalled", false);
+    }
+
     private static OutboxBacklogHealthIndicator indicatorFor(Instant oldest, long deadLettered) {
         return new OutboxBacklogHealthIndicator(
-            new StubReader(new OutboxReader.BacklogHealth(oldest, deadLettered)), ALERT_AGE, CLOCK
+            new StubReader(new OutboxReader.BacklogHealth(oldest, null, deadLettered)), ALERT_AGE, CLOCK
         );
     }
 
@@ -113,7 +137,17 @@ class OutboxBacklogHealthIndicatorTest {
         }
 
         @Override
+        public List<UnpublishedEvent> findUnpublishedToKafka(int limit) {
+            throw new UnsupportedOperationException("the health indicator must not claim events");
+        }
+
+        @Override
         public void markPublished(EventId eventId, Instant publishedAt) {
+            throw new UnsupportedOperationException("the health indicator must not publish");
+        }
+
+        @Override
+        public void markKafkaPublished(EventId eventId, Instant kafkaPublishedAt) {
             throw new UnsupportedOperationException("the health indicator must not publish");
         }
 

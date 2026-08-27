@@ -55,22 +55,34 @@ capability) and where PR 16 leaves the whole system, but nothing needs it in thi
 PR and a mode with no caller is configuration debt. `both` and `in-process` are
 the two this PR can actually exercise, and they are the two the rollback needs.
 
-### 2. The producer: in-process first, then Kafka, both before the stamp
+### 2. Two independent sink tracks, one per column — because a shared gate stalls the money path
 
-The relay's per-item loop is unchanged except for one added step. It dispatches
-in process exactly as before, and **then**, in `both` mode, publishes to Kafka;
-only when both sinks have accepted the event does it stamp `published_at`. The
-order matters: in-process stays first so that Kafka being a sink can never delay
-or block the authoritative money-path delivery, and `published_at` still means
-"delivered to everyone" — now including the broker — so there is **no new column**
-(the plan's "DB: none").
+The producer is **two passes over two columns**, not one loop delivering to two
+sinks. `PublishOutboxEventsService.publish()` is the in-process pass, unchanged
+from before this PR: it claims `published_at IS NULL`, dispatches to the handlers,
+stamps `published_at`. `relayToKafka()` is a separate pass: it claims
+`kafka_published_at IS NULL` (V37), publishes to the broker, stamps
+`kafka_published_at`. The timer runs both each tick.
 
-Because both sinks run before the stamp, a redelivery re-runs both: the
-in-process dispatch finds its inbox rows already claimed and is a no-op, and the
-Kafka publish is retried. The producer's own idempotence (`enable.idempotence`,
-ADR-036) collapses a retried send that actually succeeded, and any duplicate that
-still slips through is absorbed by the consumer inbox. At-least-once on both
-sides, exactly-once nowhere — ADR-016's stance, now across a wire.
+**A single shared `published_at` would stall the money path, and this is the
+sharp lesson of the PR.** The first cut of this ADR gated one column on both
+sinks: dispatch in process, then publish to Kafka, then stamp. It has a
+money-path bug. When the broker is down, a Kafka failure leaves the row
+unstamped so it retries — but the row was *already delivered in process*, and it
+now sits at the head of the oldest-first, bounded in-process claim. During a
+sustained outage the batch **saturates** with in-process-done, Kafka-pending
+rows, and newly committed events are never claimed: **a Kafka outage stalls
+in-process delivery** — the Ledger stops posting captured payments while the
+broker is unreachable. The invariant this whole phase protects, broken by the
+safety net meant to protect it.
+
+Two columns are the fix, and they are worth a migration (V37) despite the plan's
+"DB: none": an in-process-delivered row leaves the in-process claim the instant
+`published_at` is stamped, regardless of Kafka, so the money path never waits on
+the broker. The two tracks retry on their own clocks; the inbox (in-process) and
+the idempotent producer + oldest-first order (Kafka) each keep their own
+at-least-once delivery. `published_at` still means exactly what V7 said —
+"delivered in process" — and `kafka_published_at` is its independent twin.
 
 ### 3. The dead-letter budget governs the in-process sink only; a broker outage is not a poison
 
@@ -86,31 +98,42 @@ per-event budget sized at 25 attempts — under a minute at the 2s relay interva
 would dead-letter healthy events for a blip, turning the safety net into the
 fault. So:
 
-- **An in-process dispatch failure consumes the budget and can dead-letter,
-  exactly as today.** That is where a poison manifests, and nothing about it
-  changes.
-- **A Kafka-sink failure does not consume the budget and never dead-letters.**
-  The row is left unpublished and retried on the next pass — indefinitely, until
-  the broker accepts it. What makes "indefinitely" safe here, where it was the
-  ADR-025 bug for handlers, is that a transport failure singles out no aggregate
-  (so it blocks nothing that the outage itself was not already blocking) and
-  resolves without human action (the broker comes back). What makes it *visible*
-  is the age-based backlog health indicator (ADR-025): an unpublished row's age
-  grows past `backlog-alert-age` and `/actuator/health` goes DOWN, whether the
-  cause is a stalled relay or a stalled broker. The alert that already exists is
-  the right alert for this too.
+- **The in-process pass keeps the budget, exactly as today.** That is where a
+  poison manifests — a handler that can never apply an event — and nothing about
+  it changes. It lives on `published_at` and its dead-letter machinery.
+- **The Kafka pass has no budget at all.** A send failure leaves
+  `kafka_published_at` NULL and is retried next tick — indefinitely, until the
+  broker accepts it — and is never dead-lettered. What makes "indefinitely" safe
+  here, where it was the ADR-025 bug for handlers, is that a transport failure
+  singles out no aggregate (its own two-column separation means it blocks nothing
+  in process) and resolves without human action. What makes it *visible* is a
+  second age on the same backlog health indicator: `oldestUnpublishedToKafka`,
+  reported alongside `oldestUnpublished`. It does **not** flip the endpoint to
+  DOWN, deliberately — Kafka has no consumer that depends on it yet, so a broker
+  outage must not page as though the in-process relay had stopped; it is promoted
+  to a DOWN condition when a service is extracted onto the stream.
 
 The consequence, stated plainly: in `both` mode a Kafka outage stops nothing on
-the money path — in-process has already delivered — and it does not corrupt the
-outbox; it only ages the backlog until the broker returns or an operator flips
-the flag to `in-process` (§5). The one failure this rule does *not* cover is an
-event that can never be **addressed** (an `aggregateType` that cannot form a legal
-topic, ADR-036 §3). That is a genuine poison, but it is unreachable by
-construction — every `aggregateType` in the system is an `UPPER_SNAKE` constant
-that forms a legal topic — and if one ever occurred it would age the backlog
-loudly like any other stuck row rather than fail silently. Building a second,
-content-aware budget for a row that cannot exist is exactly the speculative
-machinery this phase is meant to avoid.
+the money path — the two columns are the guarantee — and it does not corrupt the
+outbox; it only ages the Kafka backlog until the broker returns or an operator
+flips the flag to `in-process` (§5).
+
+**Two ceilings this leaves, both money-safe and both marked in the code:**
+
+- **The blocking send runs on the shared relay thread.** `relayToKafka` ends at
+  the first send failure (there is no point paying the acknowledgement block for
+  every following aggregate when the broker is down) and retries next tick, but it
+  still shares the scheduler thread with the in-process pass, so a broker outage
+  can delay the next in-process *tick* — a latency degradation of the money path,
+  never a loss or a reorder. A dedicated Kafka relay thread is the upgrade path,
+  deferred to when a consumer depends on the stream.
+- **A permanently un-sendable event freezes only its Kafka stream.** An
+  `aggregateType` that cannot form a legal topic (ADR-036 §3) is unreachable by
+  construction — every one is an `UPPER_SNAKE` constant — but were it to occur it
+  would retry forever on the Kafka track, ageing `oldestUnpublishedToKafka` loudly
+  while the money path (a separate column) is untouched. A content-aware Kafka
+  dead-letter is deferred for the same reason: it guards a row that cannot exist,
+  and the money path no longer depends on it.
 
 ### 4. The consumer: one listener, the existing dispatcher, the existing inbox
 
@@ -159,16 +182,19 @@ that makes it a safe rollback rather than a second failure mode.
 ## What is deliberately NOT built
 
 - **No `kafka`-only mode.** §1. It arrives with the first extraction that needs it.
-- **No new schema.** §2. `published_at` already means "delivered to all sinks";
-  Kafka is one more sink under the same column.
+- **No shared status column.** §2. The one migration this PR *does* take
+  (`kafka_published_at`, V37) is the whole point — a single `published_at` gating
+  both sinks stalls the money path during a Kafka outage, so the two sinks get two
+  columns and two claims.
 - **No per-handler Kafka adapter, no per-topic listener list.** §4. The dispatcher
   is the fan-out and the topic pattern is the subscription; a hand-maintained topic
   list would be a second place to forget an aggregate.
 - **No consumer-side dead-letter topic, no `spring-retry` topics.** §4. It belongs
   to a Kafka-only capability, built at extraction.
-- **No transport-vs-content taxonomy on the producer.** §3. The one content-poison
-  a Kafka send could raise is unreachable, and a row that ages loudly needs no
-  second budget to be caught.
+- **No dedicated Kafka relay thread, no content-aware Kafka dead-letter.** §3. Both
+  are money-safe ceilings marked in the code — the first a latency degradation
+  during an outage, the second a guard for a row that cannot exist — deferred to
+  when a consumer depends on the Kafka stream.
 
 ## Consequences
 
@@ -186,10 +212,10 @@ that makes it a safe rollback rather than a second failure mode.
   → `in-process` → the pre-existing behaviour, no broker. One new Testcontainers
   test runs `both` and proves the round trip through the relay and back through a
   handler.
-- **`RelayResult.failed` now spans both sinks.** A Kafka-sink failure is counted
-  there (it threw and was logged and will be retried) but never feeds
-  `deadLettered`, so the invariant `deadLettered ⊆ failed` holds and the money-path
-  budget metric still means only what it meant.
+- **The two passes report separately.** `RelayResult` (in-process) is unchanged,
+  so its `failed`/`deadLettered` still mean only what they meant. `relayToKafka`
+  returns its own `KafkaRelayResult`, which has no `deadLettered` at all — the
+  Kafka sink has no budget — and the timer logs the two lines apart.
 
 ## Identifiers
 
