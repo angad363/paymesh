@@ -68,6 +68,27 @@ public interface SpringDataOutboxRepository extends JpaRepository<OutboxEventJpa
     List<Object[]> findUnpublished(@Param("limit") int limit);
 
     /**
+     * The Kafka sink's claim query (ADR-037), the exact shape of {@link #findUnpublished} but keyed on
+     * {@code kafka_published_at IS NULL} and served by {@code idx_outbox_events_unpublished_to_kafka}
+     * (V37). Independent of {@code published_at}, so an in-process-delivered event does not sit here
+     * once the broker has it, and a Kafka-pending event does not sit in the in-process claim. That
+     * independence is the fix for the money-path stall a single shared column caused.
+     */
+    @Query(
+        value = """
+            select event_id, merchant_id, aggregate_type, aggregate_id, event_type,
+                   event_version, payload::text, occurred_at, attempt_count
+              from outbox_events
+             where kafka_published_at is null
+               and dead_lettered_at is null
+             order by occurred_at asc
+             limit :limit
+            """,
+        nativeQuery = true
+    )
+    List<Object[]> findUnpublishedToKafka(@Param("limit") int limit);
+
+    /**
      * Records one failed delivery attempt and, on the attempt that exhausts the budget, gives up.
      *
      * <h2>ONE STATEMENT, AND THE INCREMENT AND THE DECISION ARE THE SAME EXPRESSION</h2>
@@ -144,6 +165,23 @@ public interface SpringDataOutboxRepository extends JpaRepository<OutboxEventJpa
     long countDeadLettered();
 
     /**
+     * The Kafka sink's oldest-backlog age (ADR-037), the counterpart to
+     * {@link #oldestUnpublishedOccurredAt}. Distinct because a broker outage ages THIS while the
+     * in-process backlog stays healthy -- so an operator can tell "the relay stopped" from "the
+     * broker is down", two failures with very different responses.
+     */
+    @Query(
+        value = """
+            select min(occurred_at)
+              from outbox_events
+             where kafka_published_at is null
+               and dead_lettered_at is null
+            """,
+        nativeQuery = true
+    )
+    Instant oldestUnpublishedToKafkaOccurredAt();
+
+    /**
      * Stamps delivery. {@code published_at is null} in the WHERE makes it a compare-and-swap: an
      * event some other pass already published is left with its original timestamp rather than having
      * it rewritten.
@@ -159,4 +197,23 @@ public interface SpringDataOutboxRepository extends JpaRepository<OutboxEventJpa
         nativeQuery = true
     )
     int markPublished(@Param("eventId") String eventId, @Param("publishedAt") Instant publishedAt);
+
+    /**
+     * Stamps {@code kafka_published_at} (ADR-037), the Kafka sink's counterpart to
+     * {@link #markPublished} and a compare-and-swap on {@code kafka_published_at is null} for the same
+     * reason: a duplicate pass leaves the first stamp intact rather than rewriting the broker-ack time.
+     */
+    @Modifying
+    @Query(
+        value = """
+            update outbox_events
+               set kafka_published_at = :kafkaPublishedAt
+             where event_id = :eventId
+               and kafka_published_at is null
+            """,
+        nativeQuery = true
+    )
+    int markKafkaPublished(
+        @Param("eventId") String eventId, @Param("kafkaPublishedAt") Instant kafkaPublishedAt
+    );
 }

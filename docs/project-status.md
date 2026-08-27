@@ -1,13 +1,16 @@
 # PayMesh — Project Status and Roadmap
 
-_Last updated: 24 August 2026, after Phase 3 PR 1 (the Kafka backbone) was built. Update
+_Last updated: 26 August 2026, after Phase 3 PR 2 (the dual-path relay) was built. Update
 this file at the end of a working session, not during one._
 
 **Reading this to resume?** Phase 2 is **complete** — all eight of its capabilities are merged,
 Audit (ADR-035, V36) last. **Phase 3 has started**: `docs/phase-3-microservices-extraction-plan.md`
-is the plan of record, and **PR 1 (the Kafka backbone, ADR-036) is built on
-`feature/kafka-backbone`**. Nothing is extracted and nothing publishes to Kafka yet; read
-"PICK UP HERE — Phase 3, after the Kafka backbone" at the bottom before starting PR 2.
+is the plan of record. **PR 1 (the Kafka backbone, ADR-036) is merged, and PR 2 (the dual-path
+relay, ADR-037) is built on `feature/dual-path-relay`.** The relay now publishes to Kafka *and*
+the in-process dispatcher, and one listener consumes back through the same inbox — behind
+`paymesh.events.delivery.mode` (`both` by default, `in-process` the rollback). Nothing is
+extracted yet; read "PICK UP HERE — Phase 3, after the dual-path relay" at the bottom before
+starting PR 3.
 
 This is the pick-up-here document. It records what exists, what has actually been
 verified, what is deliberately unfinished, and what comes next. For *why* a design
@@ -27,7 +30,7 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1521 tests, 0 failures.** Thirty-six Flyway migrations (V1–V36). Thirty-six ADRs. The Postman
+**1528 tests, 0 failures.** Thirty-seven Flyway migrations (V1–V37). Thirty-seven ADRs. The Postman
 collection runs **nineteen folders green** — the newest a self-contained Reporting folder (17
 requests, 30 assertions, verified with newman against the running app) covering the two summary
 reads, the async export lifecycle, tenant isolation and every error path.
@@ -111,7 +114,7 @@ The SDD describes ~15 services across 31 sections. This is what the code actuall
 | Order | §11.1–§11.4, §11.6 | Built, including `order_state_history`. §11.5's events are written **and now published**. Every status in the enum is reachable. |
 | Payment | §12.1 (partially), §12.2–§12.3, §12.5–§12.6 | Core built. **§12.4 confirm is not implemented**; 2 of the 10 §12.1 states are reachable. |
 | Idempotency & concurrency | §23.1–§23.2 | Built in PostgreSQL. §23.3's Redis accelerator: not built, deliberately. |
-| Events / outbox | §22.1 envelope, §22.3 outbox, §22.4 inbox, §24 durability | Built: in-transaction write, a scheduled relay, an in-process dispatcher, `processed_events`, consumers, and a retry budget with a dead letter (ADR-025). **§22.2 (Kafka topics and partition keys) does not exist, deliberately** — the consumer contract is a broker's, so the transport can be swapped without touching a consumer. **§24's alerting now exists** as a health indicator on oldest-unpublished age and abandoned-event count; it is not metrics, and §26 still has none. |
+| Events / outbox | §22.1 envelope, §22.2 topics, §22.3 outbox, §22.4 inbox, §24 durability | Built: in-transaction write, a scheduled relay, an in-process dispatcher, `processed_events`, consumers, and a retry budget with a dead letter (ADR-025). **§22.2 (Kafka topics and partition keys) now exists** — the relay publishes to Kafka alongside the in-process dispatcher and one listener consumes back through the same inbox (ADR-037, dual path, `paymesh.events.delivery.mode`); topic per aggregate, partition key the aggregate id. **§24's alerting** is a health indicator on oldest-unpublished age and abandoned-event count; it is not metrics, and §26 still has none. |
 | API Gateway / Edge | §7 | Partial. API keys exist (ADR-022) and HMAC guards both callback routes; rate limiting is absent. |
 | Provider Simulator | §13.1–§13.3, §13.5–§13.6 | Built, and §13.1's reconciliation export is now **read** (ADR-026). **§13.3's payouts and §13.4's `provider_payouts` now exist** (ADR-032): `POST /sim/v1/payouts` accepts a payout and posts a signed callback, Settlement being the first consumer. Percentage-based injection is deliberately absent (ADR-017 §5). |
 | Reconciliation | §21.4 | Built (ADR-026). Fetches the provider's daily record over HTTP and replays every terminal row through the ordinary callback path, so ADR-015's and ADR-023's timeout *guesses* are revisable by the provider's own word. No settlement reconciliation and no fee reconciliation — neither exists to reconcile. |
@@ -541,11 +544,12 @@ did not exist until this session.
 
 | Piece | What it does |
 |---|---|
-| `PublishOutboxEventsService` | One pass: claims `published_at IS NULL` oldest-first (bounded), dispatches, stamps. A plain object; `OutboxRelay` is the `@Scheduled` bean and holds one call and one log line |
+| `PublishOutboxEventsService` | Two passes (ADR-037): `publish()` claims `published_at IS NULL` oldest-first, dispatches in-process, stamps `published_at`; `relayToKafka()` claims `kafka_published_at IS NULL`, publishes to the broker, stamps `kafka_published_at`. Independent columns, so a Kafka outage never stalls in-process. A plain object; `OutboxRelay` is the `@Scheduled` bean and runs both passes |
 | `EventDispatcher` | Handlers indexed by event type. **One transaction per (handler, event)**, holding the inbox claim and everything the handler writes |
 | `ProcessedEventRepository` | `INSERT … ON CONFLICT DO NOTHING`; the row count is the answer. No read, so there is no read-then-write window |
 | `EventHandler` | The consumer contract: envelope in, `Map` payload, must be idempotent, must throw to retry, **must not open a transaction** |
-| `EventEnvelope`, `KafkaEventPublisher` | ADR-036, `…outbox.infrastructure.kafka`. The wire contract and the Kafka sink. **No caller yet** — the relay still dispatches in-process, so this is dormant code that the suite proves round-trips |
+| `EventEnvelope`, `KafkaEventPublisher` | ADR-036, `…outbox.infrastructure.kafka`. The wire contract and the Kafka sink (`KafkaEventPublisher` implements the `EventPublisher` port). Driven by the relay's separate `relayToKafka()` pass in `both` mode (ADR-037) |
+| `KafkaEventListener` | ADR-037, `…outbox.infrastructure.kafka`. One `@KafkaListener(topicPattern = ".+-events")` feeding the existing `EventDispatcher`, so every handler is reachable from Kafka with no per-handler adapter. Registered only in `both` mode |
 
 Properties worth not breaking:
 
@@ -610,7 +614,7 @@ no financial effect.
 
 ```bash
 cd backend
-./mvnw test                     # 1479 tests; needs Docker, no local database
+./mvnw test                     # 1528 tests; needs Docker, no local database
 ./mvnw spring-boot:run          # port 8080, activates the dev profile via the pom
 
 # API contract, end to end, including cross-tenant isolation and idempotency
@@ -684,6 +688,7 @@ The collection is not decorative: dropping the tenant predicate in
 | 034 | Project one fact per event into an append-only table, aggregate on read; export async |
 | 035 | An append-only audit log recorded in-process inside the acting transaction (its subjects emit no event), immutable by trigger like `ledger_entries` |
 | 036 | Kafka (KRaft) is the event backbone; the wire envelope is the outbox row formalized as a separate published type, one topic per aggregate type with the aggregate id as the partition key (so one aggregate's causally-chained events cannot be reordered), and changes are additive within a version |
+| 037 | The dual-path relay: two INDEPENDENT passes over two columns (`published_at` in-process, `kafka_published_at` on Kafka, V37) plus one listener consuming back through the same inbox, behind `paymesh.events.delivery.mode` (`both` default, `in-process` rollback). Two columns because a single shared gate let a Kafka outage stall in-process money-path delivery; the dead-letter budget governs the in-process sink only, and the Kafka sink retries without a budget, surfaced by its own backlog age |
 
 Note that the SDD's Appendix D has its own ADR list with the same numbers and
 different decisions. When citing one, say which source you mean.
@@ -1161,64 +1166,64 @@ not yet know, and a file meaning "unknown" must never be read as "nothing moved"
 belongs in the provider's adapter — which is why the job carries the provider's status as a raw
 string and skips every value it does not recognise rather than defaulting.
 
-### PICK UP HERE — Phase 3, after the Kafka backbone (PR 1)
+### PICK UP HERE — Phase 3, after the dual-path relay (PR 2)
 
-Phase 2 is closed. **Phase 3 PR 1 (ADR-036) is built on `feature/kafka-backbone`** and 1521
-tests are green. The plan of record is `docs/phase-3-microservices-extraction-plan.md`; work it
-**one PR at a time, in table order**. The next PR is **PR 2, the dual-path relay**
-(`feature/dual-path-relay`, **ADR-037**).
+Phase 2 is closed. **PR 1 (ADR-036) is merged; PR 2 (the dual-path relay, ADR-037) is built on
+`feature/dual-path-relay`** and **1528 tests are green**. The plan of record is
+`docs/phase-3-microservices-extraction-plan.md`; work it **one PR at a time, in table order**. The
+next PR is **PR 3, schema-per-service** (`feature/schema-per-service`, **ADR-038**) — the big,
+hard-to-reverse one, done behind a backup and a tested down-path, still one process.
 
-What PR 1 actually put in the tree, and what it deliberately did not:
+What PR 2 actually put in the tree, and what it deliberately did not:
 
-- **A single-broker KRaft Kafka in `docker-compose.yml`** (repository root; there was no compose
-  file before this). No `postgres` service in it on purpose — a second Postgres on 5432 would
-  shadow the one the app connects to.
-- **`com.paymesh.shared.outbox.infrastructure.kafka`** — `EventEnvelope` (the wire contract, and
-  the only place the topic-naming rule lives) and `KafkaEventPublisher` (blocks on the broker's
-  acknowledgement, throws otherwise). Wired as a bean in `OutboxConfiguration`.
-- **Nothing calls the publisher.** The relay is untouched and still hands events to the
-  in-process `EventDispatcher`. The app starts and the whole suite passes with **no broker
-  running**, because a `KafkaTemplate` opens no connection until something sends. That is also
-  the rollback: it is the current state.
-- **The envelope adds no field to the outbox row.** Same seven facts since V7. It is a separate
-  *type* only so that renaming a field of `OutboxEvent` is not a breaking change to nine
-  consumers, and so `{"value":"evt_..."}` does not end up on the wire.
-- **Topic = the aggregate type, hyphenated, + `-events`** (`SETTLEMENT_BATCH` →
-  `settlement-batch-events`), derived rather than configured. **Partition key = `aggregateId`**,
-  because per-aggregate ordering is the only ordering the money path needs (ADR-012) and keying by
-  merchant would serialize a whole tenant for no invariant. **The topic is derived from the
-  aggregate and not from the event type's prefix** — code review caught that the prefix rule split
-  `SETTLEMENT_BATCH`'s stream across `settlement-events` and `payout-events`, where the shared
-  `stl_` key orders nothing, and the Ledger consumes both halves of a causal chain. The topic names
-  therefore differ from the illustrative list in the Phase 3 plan, deliberately.
-- **`acks=all`, `enable.idempotence=true`, `auto-offset-reset=earliest`** are set explicitly in
-  `application.yaml`, each with the reason in a comment. None of them is exactly-once and none
-  replaces the consumer inbox — ADR-016's refusal stands.
-- **Only one test starts a broker.** `KafkaEventRoundTripTest` declares its own `KafkaContainer`
-  rather than adding one to the shared `TestcontainersConfiguration`, where it would have started
-  a Kafka for every context in the suite.
-- **Both new assertions were proved by breaking the implementation**: pointing `topic()` at
-  `aggregateType` reds `EventEnvelopeTest`, and pointing `partitionKey()` at `merchantId` reds
-  the round trip on the real broker.
+- **One flag, `paymesh.events.delivery.mode`** — `both` (default) or `in-process` (the rollback,
+  and a behavioural no-op because `both` changed nothing about the in-process path). It governs the
+  producer (whether the relay also publishes to Kafka) and the consumer (whether the listener bean
+  is registered) from one property so the two halves can never disagree. **The `dev` profile sets
+  it to `in-process`**, so the whole suite still needs no broker — exactly PR 1's property.
+- **Producer: TWO INDEPENDENT PASSES OVER TWO COLUMNS, and this is the load-bearing decision.**
+  `publish()` is the in-process pass, unchanged: it claims `published_at IS NULL`, dispatches,
+  stamps `published_at`. `relayToKafka()` is a separate pass claiming `kafka_published_at IS NULL`
+  (V37), publishing through the `EventPublisher` port, stamping `kafka_published_at`. The timer runs
+  both. **The first cut of this PR gated ONE column on both sinks — and code review found it stalls
+  the money path:** during a broker outage a Kafka failure keeps an already-in-process-delivered row
+  in the oldest-first in-process claim, the bounded batch saturates with Kafka-pending rows, and new
+  events are never claimed for in-process. Two columns decouple the sinks so in-process never waits
+  on the broker. This is why PR 2 takes a migration (V37) despite the plan's "DB: none".
+- **Consumer:** one `KafkaEventListener` with `@KafkaListener(topicPattern = ".+-events")` feeding
+  the existing `EventDispatcher`. The dispatcher is already the fan-out, so one listener reaches
+  every handler through the same `processed_events` inbox — no per-handler adapter, despite the
+  plan's wording (ADR-037 §4). Registered only in `both` mode.
+- **The dead-letter budget decision ADR-036 deferred is made (ADR-037 §3).** The budget governs the
+  in-process sink only. A broker outage is global and self-healing, not a poisoned event, so the
+  Kafka pass has **no budget at all**: a send failure leaves `kafka_published_at` NULL, is retried
+  next tick, and never dead-letters. Surfaced by a second age on the backlog health indicator
+  (`oldestUnpublishedToKafka`), which is reported but does NOT flip `/actuator/health` to DOWN —
+  Kafka has no dependent consumer yet, so an outage must not page like a stalled money path.
+- **Verified by breaking the implementation.** `DualPathRelayIntegrationTest` (own `KafkaContainer`):
+  the producer leg goes red if `relayToKafka` stops sending; the consumer leg — an event put on Kafka
+  with no in-process delivery, applied by Order — goes red if the listener is unregistered, and its
+  second delivery double-applies if the inbox guard is removed. `PublishOutboxEventsServiceTest`
+  proves the money-path fix directly: a Kafka outage delivers BOTH events of an aggregate in process
+  (the stall regression), the two passes stamp only their own column, and the Kafka sink retries at
+  `maxAttempts = 1` without dead-lettering.
+- **Only the one new test starts a broker**, like `KafkaEventRoundTripTest` — the suite still pays
+  for Kafka exactly twice.
 - **No HTTP surface changed, so the Postman collection is untouched** — deliberately, not by
-  omission.
+  omission. `docker-compose.yml`'s Kafka service is unchanged (PR 1 added it).
 
-Three things to carry into PR 2, all raised by `/code-review` on this branch:
+Three ceilings to carry into PR 3 and beyond, all money-safe and marked in the code:
 
-- **The retry budget is sized for the wrong failure, and PR 2 is where it bites.** The relay runs
-  every 2s and dead-letters at 25 failed attempts, so once it publishes to Kafka an unreachable
-  broker burns a row's whole budget in under a minute and dead-letters the backlog — for an outage
-  nobody would call long. That budget was sized for a handler failing on its own state, where 25
-  attempts means a real defect; a dependency being down needs a longer or backing-off budget, or
-  not to count against that budget at all. Decide it in ADR-037 before the sink has a caller.
-- The dual path is safe *because* the inbox already makes redelivery a no-op. That property is
-  tested (the guard-free handler that counts invocations, above); do not weaken it to make the
-  two paths easier to run together.
-- Topics are auto-created with **one partition and replication factor 1**, marked with a
-  `ponytail:` note in `docker-compose.yml`. RF=1 is the one that lies: it makes the producer's
-  `acks=all` identical to `acks=1`, so the durability setting is void on any auto-created topic.
-  Declaring topics with a real partition count and RF=3, and turning auto-creation off, is a
-  later decision — but it is a real ceiling, not a cosmetic one.
+- **In `both` mode every event is delivered twice and applied once**, the extra work a second
+  inbox-claim per (handler, event) that reads "already processed". Paid only during the transition;
+  PR 16 removes the in-process path and the flag.
+- **The Kafka pass blocks on the shared relay thread.** It ends at the first send failure and retries
+  next tick, but a broker outage can still delay the next in-process *tick* — a latency degradation,
+  never a loss or reorder. A dedicated Kafka relay thread is the upgrade path, deferred to extraction.
+- Topics are auto-created with **one partition and replication factor 1** (`ponytail:` note in
+  `docker-compose.yml`). RF=1 makes `acks=all` identical to `acks=1`. And consumer-side error
+  handling is Spring's default (bounded retry, then advance) — fine while in-process stays
+  authoritative; a real consumer dead-letter topic belongs to a Kafka-only capability at extraction.
 
 ### Working method that has been effective
 

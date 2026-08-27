@@ -97,7 +97,7 @@ Platform pieces, honestly:
 | Idempotency | Working, on four registered routes |
 | Outbox + relay + inbox | Working. Events are written in-transaction, polled by a scheduled relay, dispatched in-process, and deduplicated per consumer in `processed_events`. **Two** consumers now read one event — Order and the Ledger — each with its own inbox row |
 | Double-entry ledger | Working for captures, refund reversals, releases **and settlement** — beyond the release job, Settlement moves cleared funds `available → SETTLEMENT_IN_TRANSIT → BANK_CASH`, the last step posted only on the provider's signed payout callback ([ADR-031](docs/decisions/ADR-031-release-funds-from-the-ledger-itself.md), [ADR-032](docs/decisions/ADR-032-settlement-cuts-and-the-provider-posts-cash.md)). Debits equal credits, entries are immutable, and both rules are enforced by PostgreSQL triggers rather than by application code. A correction is a new journal, never an edit |
-| Kafka | None, deliberately — the **consumer contract** is the one a broker needs (envelope in, inbox dedup, idempotent handler), so the transport can be swapped without touching a consumer ([ADR-016](docs/decisions/ADR-016-in-process-event-dispatch-before-kafka.md)) |
+| Kafka | Single-broker KRaft (`docker-compose.yml`). The **dual path** ([ADR-037](docs/decisions/ADR-037-dual-path-relay-kafka-alongside-the-in-process-dispatcher.md)): in `both` mode the relay publishes to Kafka *and* the in-process dispatcher, and one listener consumes back through the same inbox — the consumer contract was always the one a broker needs (envelope in, inbox dedup, idempotent handler, [ADR-016](docs/decisions/ADR-016-in-process-event-dispatch-before-kafka.md)), so the listener changed no consumer. `dev` runs `in-process`, so the suite needs no broker |
 | API keys | Working. `Authorization: ApiKey ak_…`, hashed secrets returned once, revocable, and subject to the same role and merchant-status rules as a human caller |
 | HMAC webhooks | Working. Merchant endpoints, `pmsec_` signing secrets derived per endpoint and never stored, an event-to-wire translator, and a scheduled dispatcher with SSRF guards and its own retry budget ([ADR-028](docs/decisions/ADR-028-sign-webhooks-with-a-secret-that-is-never-stored.md)) |
 | Redis, rate limiting | None |
@@ -339,11 +339,17 @@ docker compose up -d kafka      # from the repository root
 docker compose down -v          # stop it and discard its log
 ```
 
-**It is optional today, and the application does not need it.** Domain events still go
-to the in-process dispatcher (ADR-016); the Kafka publisher is wired and has no caller,
-and a `KafkaTemplate` opens no connection until something sends. The app starts and the
-whole suite passes with no broker running. `KafkaEventRoundTripTest` starts its own
-throwaway broker, as every other integration test starts its own PostgreSQL.
+**From PR 2 the relay uses it — the dual path
+([ADR-037](docs/decisions/ADR-037-dual-path-relay-kafka-alongside-the-in-process-dispatcher.md)).**
+In `both` mode (the default) domain events go to the in-process dispatcher *and* to Kafka,
+and one `KafkaEventListener` consumes back through the same `processed_events` inbox, so an
+event is delivered twice and applied once. The switch is `paymesh.events.delivery.mode`;
+`in-process` is the rollback. A missing broker does not stop startup — a `KafkaTemplate`
+opens no connection until something sends and a listener container retries — it only ages
+the Kafka half of the backlog until one is up. **The `dev` profile runs `in-process`, so the
+whole suite still passes with no broker;** `DualPathRelayIntegrationTest` and
+`KafkaEventRoundTripTest` each start their own throwaway broker, as every other integration
+test starts its own PostgreSQL.
 
 There is deliberately **no `postgres` service in that compose file**: the app connects
 to a PostgreSQL you already run, and a second one on 5432 would shadow it — you would
@@ -485,6 +491,7 @@ uses it.
 | [011](docs/decisions/ADR-011-one-live-payment-intent-per-order.md) | One live payment intent per order, enforced by a partial unique index | Reconciling several intents against an order needs a running total that is correct under concurrency, and there is no Ledger yet to hold one |
 | [016](docs/decisions/ADR-016-in-process-event-dispatch-before-kafka.md) | Deliver events in-process, on a broker-shaped consumer contract, before Kafka | A broker between two packages in one JVM buys nothing — but the consumer contract is the one Kafka needs (envelope in, `processed_events` dedup, idempotent handler), so swapping the transport changes no consumer |
 | [036](docs/decisions/ADR-036-kafka-as-the-event-backbone-with-a-versioned-envelope.md) | Kafka (KRaft) as the event backbone, carrying the outbox row as a versioned envelope | One topic per aggregate type and the partition key is the aggregate id, so an aggregate's whole causally-ordered stream shares one key space; additive-only changes within a version; the wire envelope is a separate type from the domain one so a refactor is not a breaking change |
+| [037](docs/decisions/ADR-037-dual-path-relay-kafka-alongside-the-in-process-dispatcher.md) | The dual-path relay: publish to Kafka *and* the in-process dispatcher, consume back through the same inbox, behind `paymesh.events.delivery.mode` | Running both paths is safe because the inbox already makes redelivery a no-op; the rollback is a flag flip and a behavioural no-op. One listener feeds the existing dispatcher, so no consumer changed. The dead-letter budget governs the in-process sink only — a broker outage is global and self-healing, so a Kafka-sink failure retries without spending it |
 
 The SDD's Appendix D has a *separate* ADR list using the same numbers for different
 decisions. When citing one, say which source you mean.
@@ -539,11 +546,13 @@ the ledger's entries are.
 **Phase 3 has started: the monolith becomes services.**
 [`docs/phase-3-microservices-extraction-plan.md`](docs/phase-3-microservices-extraction-plan.md)
 is the plan of record — nine deployables around a Kafka backbone, schema per service, the
-Ledger extracted last and whole. The first PR (ADR-036) builds the backbone itself: a KRaft
-broker in `docker-compose.yml`, a versioned wire envelope formalized from the outbox row, and
-a publisher with no caller yet. Nothing has been extracted, and 3A is deliberately all
-scaffold — by the end of it the monolith publishes to Kafka, consumes from Kafka and runs on
-nine schemas while still being one process.
+Ledger extracted last and whole. PR 1 (ADR-036) built the backbone: a KRaft broker in
+`docker-compose.yml` and a versioned wire envelope formalized from the outbox row. PR 2
+(ADR-037) gave it a caller — the **dual path**: in `both` mode the relay publishes to Kafka
+alongside the in-process dispatcher and one listener consumes back through the same inbox,
+reversible by a flag. Nothing has been extracted, and 3A is deliberately all scaffold — by the
+end of it the monolith publishes to Kafka, consumes from Kafka and runs on nine schemas while
+still being one process.
 
 The Ledger will still be the last thing extracted into a service (SDD §30.1). It is the
 financial source of truth — double-entry, immutable entries, corrections as reversal

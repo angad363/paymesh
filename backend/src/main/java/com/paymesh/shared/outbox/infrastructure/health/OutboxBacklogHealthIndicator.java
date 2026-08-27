@@ -73,15 +73,28 @@ public final class OutboxBacklogHealthIndicator implements HealthIndicator {
     @Override
     public Health health() {
         OutboxReader.BacklogHealth backlog = reader.backlogHealth();
+        Instant now = Instant.now(clock);
 
         Instant oldest = backlog.oldestUnpublished();
-        Duration age = oldest == null ? Duration.ZERO : Duration.between(oldest, Instant.now(clock));
+        Duration age = oldest == null ? Duration.ZERO : Duration.between(oldest, now);
+
+        Instant oldestToKafka = backlog.oldestUnpublishedToKafka();
+        Duration kafkaAge =
+            oldestToKafka == null ? Duration.ZERO : Duration.between(oldestToKafka, now);
 
         // A backlog younger than the threshold is not merely tolerated, it is the NORMAL state:
         // delivery is asynchronous, so at any instant there are usually a few seconds of events in
         // flight. Reporting those as degraded would make the healthy state red.
         boolean stalled = oldest != null && age.compareTo(alertAge) > 0;
         boolean abandoned = backlog.deadLettered() > 0;
+
+        // The KAFKA backlog is reported but does NOT flip the aggregate to DOWN (ADR-037). Kafka has
+        // no consumer that depends on it yet -- the only reader is the monolith's own listener, which
+        // dedups through the same inbox -- so a broker outage is not a money-path incident and must
+        // not page anyone as though the in-process relay had stopped. It is surfaced so an operator
+        // can SEE the mirror falling behind (and, via finding-2, a permanently un-sendable event that
+        // retries forever). Promote it to a DOWN condition when a service is extracted onto Kafka.
+        boolean kafkaStalled = oldestToKafka != null && kafkaAge.compareTo(alertAge) > 0;
 
         Health.Builder health = stalled || abandoned ? Health.down() : Health.up();
 
@@ -95,6 +108,10 @@ public final class OutboxBacklogHealthIndicator implements HealthIndicator {
             // consumer", and confusing them wastes the first ten minutes of an incident.
             .withDetail("backlogStalled", stalled)
             .withDetail("eventsAbandoned", abandoned)
+            // The Kafka sink's own age (ADR-037), separate because a broker outage ages this while
+            // the in-process backlog above stays healthy -- two failures, two responses.
+            .withDetail("oldestUnpublishedToKafkaAgeSeconds", kafkaAge.toSeconds())
+            .withDetail("kafkaBacklogStalled", kafkaStalled)
             .build();
     }
 }
