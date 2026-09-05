@@ -5,10 +5,12 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtTimestampValidator;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 
 /**
  * The edge verifier. It reconstructs the SAME HS256 decoder the monolith verifies with, from the
@@ -33,9 +35,19 @@ public class JwtConfiguration {
             throw new IllegalStateException(
                 "JWT secret must be at least " + MINIMUM_SECRET_BYTES + " bytes for HS256");
         }
-        return NimbusJwtDecoder
+        NimbusJwtDecoder decoder = NimbusJwtDecoder
             .withSecretKey(new SecretKeySpec(keyBytes, "HmacSHA256"))
             .macAlgorithm(MacAlgorithm.HS256)
             .build();
+
+        // Match the monolith's decoder (JwtAccessTokenService) exactly, so "the same check moved to
+        // the front" is literally true and the two authorities never disagree on timing: zero clock
+        // skew, and a token missing the exp claim is rejected rather than treated as non-expiring.
+        // Nimbus's default validator allows 60s of skew and an empty exp -- both looser than the
+        // monolith, which would let a token the monolith rejects pass the edge.
+        JwtTimestampValidator timestamps = new JwtTimestampValidator(Duration.ZERO);
+        timestamps.setAllowEmptyExpiryClaim(false);
+        decoder.setJwtValidator(timestamps);
+        return decoder;
     }
 }

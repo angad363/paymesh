@@ -65,7 +65,13 @@ public class SecurityConfiguration {
                 // bearer token. The gateway carries no secret for them and must not demand one -- it
                 // forwards and lets the monolith's signature filter decide. A merchant token must not
                 // reach them either, which the monolith enforces by keeping them off /api.
-                .requestMatchers(POST, "/internal/v1/**").permitAll()
+                //
+                // The three EXACT paths the monolith permits, not a blanket /internal/v1/** -- so the
+                // edge mirrors the monolith's boundary rather than forwarding /internal traffic the
+                // monolith itself default-denies.
+                .requestMatchers(POST, "/internal/v1/provider-callbacks/**").permitAll()
+                .requestMatchers(POST, "/internal/v1/refund-callbacks/**").permitAll()
+                .requestMatchers(POST, "/internal/v1/payout-callbacks/**").permitAll()
                 // The provider simulator authenticates by a shared key at the monolith, same reasoning.
                 .requestMatchers("/sim/v1/**").permitAll()
                 // Everything else under the API needs a valid token, proven here at the edge.

@@ -72,13 +72,21 @@ abstract class GatewayIntegrationTestBase {
 
     /** A valid, unexpired HS256 token signed with the dev secret. The gateway checks only that. */
     protected static String validToken() {
+        return tokenExpiring(Instant.now().plus(Duration.ofMinutes(15)));
+    }
+
+    /** A well-signed token that already expired -- the edge must reject it, like the monolith does. */
+    protected static String expiredToken() {
+        return tokenExpiring(Instant.now().minus(Duration.ofMinutes(1)));
+    }
+
+    private static String tokenExpiring(Instant expiresAt) {
         SecretKeySpec key = new SecretKeySpec(DEV_SECRET.getBytes(StandardCharsets.UTF_8), "HmacSHA256");
         NimbusJwtEncoder encoder = new NimbusJwtEncoder(new ImmutableSecret<>(key));
-        Instant now = Instant.now();
         JwtClaimsSet claims = JwtClaimsSet.builder()
             .subject("usr_11111111-1111-4111-8111-111111111111")
-            .issuedAt(now)
-            .expiresAt(now.plus(Duration.ofMinutes(15)))
+            .issuedAt(expiresAt.minus(Duration.ofMinutes(15)))
+            .expiresAt(expiresAt)
             .claim("roles", List.of("MERCHANT_ADMIN:mrc_00000000-0000-4000-8000-000000000001"))
             .build();
         JwsHeader header = JwsHeader.with(MacAlgorithm.HS256).build();

@@ -56,7 +56,7 @@ second deployable and optional until 3B; the monolith does not need it. To run o
 
 ```bash
 cd gateway
-./mvnw test                                            # 6 tests; needs Docker (Testcontainers Redis)
+./mvnw test                                            # 9 tests; needs Docker (Testcontainers Redis + WireMock)
 ./mvnw spring-boot:run                                 # gateway on 8081 → monolith on 8080
 ```
 
@@ -129,3 +129,24 @@ Several capabilities own a timer (order expiry, abandoned checkout, payment and 
 - Branches: `feature/…`, `fix/…`, `test/…`, `docs/…`, `chore/…`. Commits: `type(scope): summary` (e.g. `feat(merchant): add merchant registration`). One focused change per PR. (See `CONTRIBUTING.md`.)
 - Prefer records for immutable carriers (requests, responses, commands, value objects). Aggregates are mutable only through intent-revealing methods (`merchant.activate()`), never public setters. No Lombok.
 - Test naming states behavior (`rejectsRegistrationWhenBusinessNameIsBlank`), not `test1`. Keep domain/application tests context-free (plain JUnit); reserve `@SpringBootTest`/`MockMvc` for the API layer.
+
+
+## Agent efficiency
+
+Default to direct tool use. Do not spawn subagents unless explicitly
+requested by the user.
+
+For a scoped PR:
+
+- Read the assigned Phase 3 PR section first.
+- Read project-status.md.
+- Use git/grep/find to locate relevant code before opening whole files.
+- Do not scan unrelated modules.
+- Do not reread files already inspected unless they changed.
+- Prefer targeted tests during implementation.
+- Run the broad suite once after the implementation stabilizes.
+- Do not independently re-derive architecture already established by an ADR.
+- Do not explore alternative designs unless the specified design is
+  demonstrably incompatible with the code.
+- Keep intermediate explanations short.
+- Stop when the stated PR acceptance criteria are satisfied.

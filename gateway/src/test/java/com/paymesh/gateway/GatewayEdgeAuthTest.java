@@ -18,6 +18,7 @@ import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.any;
 import static com.github.tomakehurst.wiremock.client.WireMock.anyUrl;
 import static com.github.tomakehurst.wiremock.client.WireMock.getRequestedFor;
+import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -58,6 +59,26 @@ class GatewayEdgeAuthTest extends GatewayIntegrationTestBase {
 
         assertThat(response.statusCode()).isEqualTo(HttpStatus.UNAUTHORIZED.value());
         WireMock.verify(0, getRequestedFor(urlPathEqualTo("/api/v1/orders")));
+    }
+
+    @Test
+    void refusesAnExpiredTokenAtTheEdgeLikeTheMonolith() throws Exception {
+        // A well-signed but expired token: the edge decoder mirrors the monolith's zero-skew,
+        // exp-required validator, so it rejects rather than forwarding a token the monolith would 401.
+        HttpResponse<String> response = send("GET", "/api/v1/orders", "Bearer " + expiredToken(), null);
+
+        assertThat(response.statusCode()).isEqualTo(HttpStatus.UNAUTHORIZED.value());
+        WireMock.verify(0, getRequestedFor(urlPathEqualTo("/api/v1/orders")));
+    }
+
+    @Test
+    void refusesAnUnknownInternalPathRatherThanForwardingIt() throws Exception {
+        // The edge permits only the three exact callback paths, mirroring the monolith's boundary; an
+        // unknown /internal path is refused here rather than forwarded for the monolith to deny.
+        HttpResponse<String> response = send("POST", "/internal/v1/not-a-callback", null, "{}");
+
+        assertThat(response.statusCode()).isEqualTo(HttpStatus.UNAUTHORIZED.value());
+        WireMock.verify(0, postRequestedFor(urlPathEqualTo("/internal/v1/not-a-callback")));
     }
 
     @Test

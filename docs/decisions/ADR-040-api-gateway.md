@@ -116,10 +116,35 @@ pom:
   `builderFor(RedisClient)` would build a `byte[]`-keyed manager and the String
   key would fail to encode.
 
+**Fails open, and returns the house error shape.** Redis is a throwaway counter
+store, not an authority (the graceful-degradation rule: it may fail without
+corrupting payments). If it is unreachable the filter throws *before* it forwards,
+and `RoutesConfiguration#rateLimitGuard` catches that — narrowed to a Lettuce
+`RedisException` in the cause chain, so a *backend* failure is never mistaken for a
+limiter failure and a non-idempotent write is never re-forwarded — and forwards
+the request unlimited rather than 500-ing all `/api`. The Lettuce client is set to
+`REJECT_COMMANDS` on disconnect with a 2s timeout, so the outage fails *fast* into
+that open path instead of hanging gateway threads. The same guard rewrites
+bucket4j's bare `429` into the `{code:"RATE_LIMITED", message}` body, so a throttled
+client parses the same shape as a `401`.
+
 **Accepted ceiling.** The key is `getRemoteAddr()` — correct while the gateway is
-the edge. Put a real load balancer in front and it must read the leftmost
-`X-Forwarded-For` hop instead, or every client shares the LB's IP and one noisy
-tenant limits everyone. Flagged in code; not built, because there is no LB yet.
+the edge, and deliberately so: trusting a client-supplied `X-Forwarded-For` here
+would let anyone spoof their IP and dodge the limit. Put a *trusted* load balancer
+in front and the switch is one property, `server.forward-headers-strategy=framework`;
+do not set it while the gateway is directly reachable. Flagged in code; not built,
+because there is no LB yet.
+
+### 6. The edge decoder matches the monolith's exactly
+
+The gateway's `JwtDecoder` mirrors `JwtAccessTokenService`'s validators — zero clock
+skew (`JwtTimestampValidator(Duration.ZERO)`) and `setAllowEmptyExpiryClaim(false)`
+— not Nimbus's laxer defaults (60s skew, empty `exp` allowed). Otherwise "the same
+check moved to the front" would not be true: a token up to a minute stale, or one
+missing `exp`, would pass the edge and be rejected only by the monolith. And the
+`/internal/**` permit is the **three exact callback paths** the monolith permits
+(`provider-`, `refund-`, `payout-callbacks`), not a blanket prefix, so the edge
+mirrors the boundary rather than forwarding traffic the monolith default-denies.
 
 ## Consequences
 

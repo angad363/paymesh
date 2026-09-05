@@ -3,6 +3,7 @@ package com.paymesh.gateway.config;
 import io.github.bucket4j.distributed.ExpirationAfterWriteStrategy;
 import io.github.bucket4j.distributed.proxy.AsyncProxyManager;
 import io.github.bucket4j.redis.lettuce.cas.LettuceBasedProxyManager;
+import io.lettuce.core.ClientOptions;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.api.StatefulRedisConnection;
 import io.lettuce.core.codec.ByteArrayCodec;
@@ -28,7 +29,16 @@ public class RateLimitConfiguration {
 
     @Bean(destroyMethod = "shutdown")
     RedisClient rateLimitRedisClient(@Value("${paymesh.gateway.redis-uri}") String redisUri) {
-        return RedisClient.create(redisUri);
+        RedisClient client = RedisClient.create(redisUri);
+        // Fail FAST, not slow, when Redis is down: reject commands the moment the connection is lost
+        // rather than queueing them until a 60s default timeout, and cap any single call at 2s. This
+        // is what turns a Redis outage into a prompt fail-open (RoutesConfiguration#rateLimitGuard)
+        // instead of blocked gateway threads -- the difference between degrading and hanging.
+        client.setOptions(ClientOptions.builder()
+            .disconnectedBehavior(ClientOptions.DisconnectedBehavior.REJECT_COMMANDS)
+            .build());
+        client.setDefaultTimeout(Duration.ofSeconds(2));
+        return client;
     }
 
     @Bean

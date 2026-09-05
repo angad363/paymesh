@@ -35,7 +35,7 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1533 backend tests + 6 gateway tests, 0 failures.** Thirty-nine Flyway migrations (V1–V39; the
+**1533 backend tests + 9 gateway tests, 0 failures.** Thirty-nine Flyway migrations (V1–V39; the
 gateway adds none). Forty ADRs. The Postman
 collection runs **nineteen folders green** — the newest a self-contained Reporting folder (17
 requests, 30 assertions, verified with newman against the running app) covering the two summary
@@ -1178,7 +1178,9 @@ string and skips every value it does not recognise rather than defaulting.
 ### PICK UP HERE — Phase 3, after the API gateway (PR 5)
 
 **PR 1–PR 4 are merged; PR 5 (API gateway, ADR-040) is built on `feature/api-gateway`** — 1533
-backend tests still green, plus 6 new gateway tests. PR 5 is the last 3A foundation step. The next PR
+backend tests still green, plus 9 new gateway tests (edge auth incl. expired-token/unknown-internal
+refusals, Redis-backed rate limit → 429 with the house body, and rate-limiter fail-open when Redis is
+down). PR 5 is the last 3A foundation step. The next PR
 is **PR 6, the provider-sim extraction pilot** (`service/provider-sim`, **ADR-041**), which begins 3B
 — the first time code actually leaves the process. Read the plan of record's §3B "strangler recipe"
 before starting it.

@@ -44,10 +44,11 @@ class GatewayRateLimitTest extends GatewayIntegrationTestBase {
     @Test
     void refusesTheBurstOnceCapacityIsSpent() throws Exception {
         String token = validToken();
-        List<Integer> statuses = new ArrayList<>();
+        List<HttpResponse<String>> responses = new ArrayList<>();
         for (int i = 0; i < 8; i++) {
-            statuses.add(get("/api/v1/orders", token));
+            responses.add(get("/api/v1/orders", token));
         }
+        List<Integer> statuses = responses.stream().map(HttpResponse::statusCode).toList();
 
         // The first request is admitted...
         assertThat(statuses.get(0)).isEqualTo(200);
@@ -55,13 +56,18 @@ class GatewayRateLimitTest extends GatewayIntegrationTestBase {
         assertThat(statuses).contains(HttpStatus.TOO_MANY_REQUESTS.value());
         // The bucket admits no more than its capacity.
         assertThat(statuses.stream().filter(s -> s == 200).count()).isLessThanOrEqualTo(3);
+        // A 429 carries the house {code,message} body, not a bare status -- one error shape everywhere.
+        HttpResponse<String> throttled = responses.stream()
+            .filter(r -> r.statusCode() == HttpStatus.TOO_MANY_REQUESTS.value())
+            .findFirst().orElseThrow();
+        assertThat(throttled.body()).contains("RATE_LIMITED");
     }
 
-    private int get(String path, String token) throws Exception {
+    private HttpResponse<String> get(String path, String token) throws Exception {
         HttpRequest request = HttpRequest.newBuilder(URI.create(gatewayUrl(path)))
             .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
             .GET()
             .build();
-        return http.send(request, HttpResponse.BodyHandlers.ofString()).statusCode();
+        return http.send(request, HttpResponse.BodyHandlers.ofString());
     }
 }
