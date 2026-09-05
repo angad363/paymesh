@@ -141,6 +141,22 @@ BEGIN
         EXECUTE format(
             'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO %I',
             svc_schema, svc);
+        -- SEQUENCES too, or the "adopt verbatim at extraction" promise is a lie: a
+        -- service connecting as its own role would fail its first INSERT into any
+        -- BIGSERIAL-backed table (e.g. ledger_entries -- the money path) with
+        -- "permission denied for sequence", because nextval() needs USAGE.
+        EXECUTE format('GRANT USAGE ON ALL SEQUENCES IN SCHEMA %I TO %I', svc_schema, svc);
+        -- ON ALL ... is a point-in-time snapshot; without this, a table (or sequence)
+        -- a LATER migration adds to this schema -- PR 4's merchant_ref, say -- would
+        -- silently get no grant. ALTER DEFAULT PRIVILEGES covers future objects the
+        -- migrating role creates, so the fence stays complete without every migration
+        -- remembering to re-grant.
+        EXECUTE format(
+            'ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I',
+            svc_schema, svc);
+        EXECUTE format(
+            'ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT USAGE, SELECT ON SEQUENCES TO %I',
+            svc_schema, svc);
     END LOOP;
 EXCEPTION
     WHEN insufficient_privilege THEN

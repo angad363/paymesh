@@ -349,7 +349,10 @@ psql -d paymesh -c "ALTER ROLE paymesh_app CREATEROLE;"
 ```
 
 Without `CREATEROLE`, V38 skips the `*_svc` roles with a notice rather than failing — they are
-extraction-prep, not needed for the single process to run.
+extraction-prep, not needed for the single process to run. (A future deployment that runs
+migrations as a *separate* role from the runtime app role must also `GRANT USAGE ON SCHEMA … TO
+<runtime role>`; in dev and tests the two roles are the same, so the schemas are visible
+implicitly. This belongs to the not-yet-started IaC work — ADR-038 §4.)
 
 ### Kafka
 

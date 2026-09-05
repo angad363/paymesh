@@ -57,13 +57,9 @@ class SchemaIsolationTest {
     @Test
     void eachServiceRoleCanReadOnlyItsOwnSchema() throws SQLException {
         List<String> schemas = List.copyOf(OWN_TABLE.keySet());
-        for (int i = 0; i < schemas.size(); i++) {
-            String schema = schemas.get(i);
+        for (String schema : schemas) {
             String role = schema + "_svc";
             String ownTable = schema + "." + OWN_TABLE.get(schema);
-            // Round-robin to a guaranteed-different schema, so every pair is exercised across the run.
-            String otherSchema = schemas.get((i + 1) % schemas.size());
-            String otherTable = otherSchema + "." + OWN_TABLE.get(otherSchema);
 
             try (Connection c = dataSource.getConnection()) {
                 try {
@@ -73,10 +69,19 @@ class SchemaIsolationTest {
                             .as("%s may read its own %s", role, ownTable)
                             .doesNotThrowAnyException();
 
-                    assertThatThrownBy(() -> select(c, otherTable))
-                            .as("%s may NOT read %s in another schema", role, otherTable)
-                            .isInstanceOf(SQLException.class)
-                            .hasMessageContaining("permission denied");
+                    // EVERY other schema, not just the next one -- an accidentally widened grant
+                    // to any schema, adjacent or not, must fail this test (as the class docstring
+                    // promises).
+                    for (String other : schemas) {
+                        if (other.equals(schema)) {
+                            continue;
+                        }
+                        String otherTable = other + "." + OWN_TABLE.get(other);
+                        assertThatThrownBy(() -> select(c, otherTable))
+                                .as("%s may NOT read %s in another schema", role, otherTable)
+                                .isInstanceOf(SQLException.class)
+                                .hasMessageContaining("permission denied");
+                    }
                 } finally {
                     // Never hand a SET ROLE back to the pool, even if an assertion above failed.
                     exec(c, "RESET ROLE");

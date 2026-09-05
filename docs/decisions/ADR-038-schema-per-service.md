@@ -120,6 +120,16 @@ needed for the single process to run. The schema creation and table moves are
 exercise the roles locally, `ALTER ROLE paymesh_app CREATEROLE;`. Testcontainers
 runs as superuser and needs neither.)
 
+One deployment caveat, out of scope to fix here because no such deployment exists
+yet (`infrastructure/` is empty, SDD §27 not started): the grants above make each
+schema readable by its *owner* and by its `*_svc` role. Under Testcontainers and
+dev the migrating role and the app role are the same (superuser; `paymesh_app`,
+which owns what it created), so the app sees every schema implicitly. A future
+deployment that runs migrations as a *separate* migrator role from the runtime app
+role must additionally `GRANT USAGE ON SCHEMA … TO <runtime role>` (or run the app
+as one of the `*_svc` roles). That belongs to the deployment/IaC work, not to this
+single-process carve.
+
 ### 5. Lean carve: Flyway history and the platform tables stay single, for now
 
 Two pieces the plan lists under PR 3 are **deferred to each service's extraction**,
