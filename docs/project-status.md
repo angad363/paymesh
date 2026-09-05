@@ -1,22 +1,21 @@
 # PayMesh — Project Status and Roadmap
 
-_Last updated: 5 September 2026, after Phase 3 PR 4 (merchant reference projection) was built.
+_Last updated: 5 September 2026, after Phase 3 PR 5 (API gateway) was built.
 Update this file at the end of a working session, not during one._
 
 **Reading this to resume?** Phase 2 is **complete** — all eight of its capabilities are merged,
 Audit (ADR-035, V36) last. **Phase 3 has started**: `docs/phase-3-microservices-extraction-plan.md`
-is the plan of record. **PR 1 (Kafka backbone, ADR-036) and PR 2 (dual-path relay, ADR-037) are
-merged; PR 3 (schema-per-service, ADR-038) is merged; PR 4 (merchant reference projection, ADR-039)
-is built on `feature/merchant-ref-projection`.** The 46 tables live in **ten schemas** with nine
-fenced `*_svc` roles (`SchemaIsolationTest`). PR 4 closes the one boundary-crossing FK PR 3 left
-standing: the merchant capability now emits lifecycle events, a `merchant_ref` projection in each of
-the six consuming schemas is fed from them through the inbox, and the platform `MerchantStatusGate`
-reads that projection instead of the `merchants` table. The 17 cross-capability `* → merchants` FKs
-are dropped (V39); the two `platform` ones are kept (nothing replaces them yet). The gate is now
-eventually consistent — absent-from-projection → **503 `MERCHANT_NOT_YET_AVAILABLE` (retryable)**,
-and a suspension takes one relay cycle to bite (a deliberate, documented walk-back of ADR-021's "no
-cache"). Still **one process, one datasource**. Nothing is extracted yet; read "PICK UP HERE" at the
-bottom before starting PR 5 (API gateway, ADR-040 — depends on PR 2, not PR 4).
+is the plan of record. **PR 1–PR 4 are merged** (Kafka backbone ADR-036, dual-path relay ADR-037,
+schema-per-service ADR-038, merchant reference projection ADR-039); **PR 5 (API gateway, ADR-040) is
+built on `feature/api-gateway`.** The 46 tables live in **ten schemas** with nine fenced `*_svc`
+roles; no consumer reads the `merchants` table (PR 4's `merchant_ref` projection replaced it). **PR 5
+stands up a second deployable** in front of the monolith: a new `gateway/` Maven module (Spring Cloud
+Gateway Server WebMVC 5.0.0) on port 8081 that validates the same HS256 tokens at the edge (mirroring
+the monolith's public/authenticated split exactly), routes all north-south traffic to the monolith,
+and rate-limits `/api/**` per client IP with a **Redis-backed** bucket4j limiter (new `redis` service
+in compose). Nothing is extracted and the monolith is untouched; the gateway is **optional** until 3B
+(a client may still address 8080 directly). Still **one process** for all business logic. Read "PICK
+UP HERE" at the bottom before starting PR 6 (the provider-sim extraction pilot, ADR-041).
 
 This is the pick-up-here document. It records what exists, what has actually been
 verified, what is deliberately unfinished, and what comes next. For *why* a design
@@ -36,7 +35,8 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1533 tests, 0 failures.** Thirty-nine Flyway migrations (V1–V39). Thirty-nine ADRs. The Postman
+**1533 backend tests + 9 gateway tests, 0 failures.** Thirty-nine Flyway migrations (V1–V39; the
+gateway adds none). Forty ADRs. The Postman
 collection runs **nineteen folders green** — the newest a self-contained Reporting folder (17
 requests, 30 assertions, verified with newman against the running app) covering the two summary
 reads, the async export lifecycle, tenant isolation and every error path.
@@ -697,6 +697,7 @@ The collection is not decorative: dropping the tenant predicate in
 | 037 | The dual-path relay: two INDEPENDENT passes over two columns (`published_at` in-process, `kafka_published_at` on Kafka, V37) plus one listener consuming back through the same inbox, behind `paymesh.events.delivery.mode` (`both` default, `in-process` rollback). Two columns because a single shared gate let a Kafka outage stall in-process money-path delivery; the dead-letter budget governs the in-process sink only, and the Kafka sink retries without a budget, surfaced by its own backlog age |
 | 038 | Schema-per-service (V38): the 46 tables move into ten schemas (nine services + a `platform` schema for outbox/inbox/idempotency) by `ALTER TABLE … SET SCHEMA`, keeping every trigger, index and FK intact. Nine `NOLOGIN` `*_svc` roles are fenced to their own schema and proven so. Lean carve — still one process, one datasource, one Flyway history; no FK dropped (the `* → merchants` FK is kept for PR 4 to replace). Schema follows the code package, so three of the plan's mappings are corrected. Per-service Flyway histories and splitting the platform tables are deferred to each service's extraction |
 | 039 | The merchant reference projection (V39): the merchant capability emits `merchant.registered/activated/suspended/closed` from its own outbox in the acting transaction; a `merchant_ref` read model (`merchant_id, status, updated_at`) in each of the six consuming schemas is fed by one `MerchantRefProjector` through the inbox; the platform `MerchantStatusGate` reads that projection (`MerchantRefStore`, schema-qualified JDBC — six same-named tables defeat a bare JPA entity) instead of the `merchants` table. The 17 cross-capability `* → merchants` FKs are dropped; the two `platform` ones are kept (no projection replaces them; they go when the platform tables split per-service). The gate gains a third outcome — absent → 503 `MERCHANT_NOT_YET_AVAILABLE` (retryable), distinct from present-but-inactive → 403 — so the gate is now eventually consistent, a documented partial walk-back of ADR-021's no-cache stance (suspension bites after one relay cycle; acceptable because it is policy, not money integrity) |
+| 040 | The API gateway (no migration): a new standalone `gateway/` module — Spring Cloud Gateway Server WebMVC 5.0.0, port 8081 — is the one north-south front door. It validates the same HS256 tokens at the edge from the same shared secret (`MerchantStatusFilter`-style mirror of the monolith's public/authenticated split: `/api/**` needs a token, but `/api/v1/auth`, `POST /api/v1/merchants`, `/internal/**` HMAC callbacks and `/sim/**` pass through), routes every prefix to the monolith (`backend-uri`, re-pointed per service in 3B), and rate-limits `/api/**` per client IP with a **Redis-backed bucket4j** limiter → `429`. Proxy hop pinned to HTTP/1.1; Lettuce pinned to 6.3.2 (bucket4j 8.15's CAS path predates Lettuce 7); Spring Cloud's Boot-4.0-only compatibility check waived for Boot 4.1. Optional until 3B — rollback is addressing the monolith on 8080 directly. Verified against Testcontainers Redis + a WireMock backend: unauthenticated → refused at the edge, authenticated → forwarded, burst → 429 |
 
 Note that the SDD's Appendix D has its own ADR list with the same numbers and
 different decisions. When citing one, say which source you mean.
@@ -1174,12 +1175,54 @@ not yet know, and a file meaning "unknown" must never be read as "nothing moved"
 belongs in the provider's adapter — which is why the job carries the provider's status as a raw
 string and skips every value it does not recognise rather than defaulting.
 
-### PICK UP HERE — Phase 3, after merchant-ref projection (PR 4)
+### PICK UP HERE — Phase 3, after the API gateway (PR 5)
 
-**PR 1–PR 3 are merged; PR 4 (merchant reference projection, ADR-039, V39) is built on
-`feature/merchant-ref-projection` with 1533 tests green.** The next PR is **PR 5, the API gateway**
-(`feature/api-gateway`, **ADR-040**) — which depends on PR 2, not PR 4, and is the last 3A
-foundation step before extraction (3B) begins with the provider-sim pilot.
+**PR 1–PR 4 are merged; PR 5 (API gateway, ADR-040) is built on `feature/api-gateway`** — 1533
+backend tests still green, plus 9 new gateway tests (edge auth incl. expired-token/unknown-internal
+refusals, Redis-backed rate limit → 429 with the house body, and rate-limiter fail-open when Redis is
+down). PR 5 is the last 3A foundation step. The next PR
+is **PR 6, the provider-sim extraction pilot** (`service/provider-sim`, **ADR-041**), which begins 3B
+— the first time code actually leaves the process. Read the plan of record's §3B "strangler recipe"
+before starting it.
+
+What PR 5 actually put in the tree (all under a NEW top-level `gateway/` module, nothing touched in
+`backend/`):
+
+- **A standalone `gateway/` Maven module**, its own pom + wrapper + port (8081), NOT a reactor
+  conversion of the repo (ADR-040 §1). Build it with `cd gateway && ./mvnw test`. It is Spring Cloud
+  Gateway Server WebMVC 5.0.0 (servlet stack, matching the platform).
+- **Edge auth = a Spring Security resource server mirroring the monolith's split.** Same HS256
+  decoder from the same `paymesh.security.jwt.secret` (`JwtConfiguration`), and a permit list copied
+  from `shared.security.SecurityConfiguration`: `/api/**` needs a token at the edge, but
+  `/api/v1/auth/**`, `POST /api/v1/merchants`, `/internal/v1/**` (HMAC callbacks) and `/sim/v1/**`
+  (shared-key) pass through — demanding a JWT on those would 401 them before the monolith's own filter
+  ran. 401 body is the monolith's `{code:"UNAUTHENTICATED"}` shape.
+- **Routes all point at `paymesh.gateway.backend-uri` (the monolith)**, re-pointed per service in 3B.
+  `/api/**` is rate-limited; `/internal/**` and `/sim/**` are forwarded unthrottled (a provider
+  retrying a required callback must not be throttled into stranding money). The proxy hop is pinned to
+  HTTP/1.1 (`ProxyClientConfiguration`) — the JDK client's h2c POST upgrade to the plaintext monolith
+  gets `RST_STREAM` otherwise.
+- **Redis-backed rate limiting** (`RateLimitConfiguration`): the webmvc gateway's `rateLimit()` filter
+  pulls an `AsyncProxyManager` bean; we back it with Redis via bucket4j's Lettuce module, keyed by
+  client IP → `429`. New `redis` service in `docker-compose.yml`. Two pins, both in the gateway pom:
+  **Lettuce 6.3.2** (bucket4j 8.15's CAS path predates Lettuce 7), and a **String-keyed** proxy
+  manager codec (the filter passes a String IP key). `spring.cloud.compatibility-verifier.enabled=false`
+  because Spring Cloud 2025.1.0 whitelists Boot 4.0.x and the platform runs 4.1.0.
+
+Two gotchas for whoever runs it: the gateway needs **Redis up** (`docker compose up -d redis`) and the
+**JWT secret** (the `dev` profile supplies the throwaway one matching the monolith) to start; the
+monolith need not be running for the gateway to boot (routes resolve lazily). Full end-to-end
+pass-through of every Postman request stays the Postman/newman job — the Java suite proves the edge
+decisions (401/pass-through/429) against Testcontainers Redis + a WireMock backend, not the whole
+collection.
+
+---
+
+### PICK UP HERE — Phase 3, after merchant-ref projection (PR 4) [merged]
+
+**PR 1–PR 4 are merged.** PR 4 (merchant reference projection, ADR-039, V39) landed on
+`feature/merchant-ref-projection`. The section below is kept for the detail on what PR 4 put in the
+tree; the current front is PR 5 (above).
 
 What PR 4 actually put in the tree:
 

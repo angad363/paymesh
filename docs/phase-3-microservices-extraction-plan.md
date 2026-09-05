@@ -720,24 +720,18 @@ Follow it literally; it is the process, not a suggestion.
 Work **one PR at a time, in the table order**, and never start the next before the
 current one is merged. For each PR:
 
-1. **Invoke `/office-hours`** to plan and implement that PR. Use it to write the
-   ADR spec first (the branch's assigned ADR number is in the PR table), get the
-   design straight, then build against it. Do not skip the spec — the ADR is the
-   contract the review checks against.
-2. **Branch** with the name in the PR table (`feature/…`, `service/…`, `chore/…`).
-   One PR = one focused change. Never bundle two table rows into one branch.
-3. **Build and test locally.** Docker must be running (Testcontainers). Run the
-   relevant suite green before opening the PR. For a schema or money-path PR,
-   verify live on a populated dev DB, not just the suite.
-4. **Open the PR** with a body that states the goal, what it includes, the DB
-   changes, the comms changes, and how it was verified — the same five headings
-   this document uses per PR.
-5. **Run `/code-review`** on the PR. Act on the findings: fix real defects,
-   record a one-line reason where a finding is deliberately kept. Re-run the
-   suite after any fix.
-6. **Merge to `main`** only after the review is clean (or its findings are
-   consciously resolved) and the suite is green. Use a merge PR, as in Phase 1/2.
-7. **Move to the next PR.** Do not batch.
+For each PR:
+
+1. Read the PR section and relevant existing ADR.
+2. Inspect only the affected capability and direct dependencies.
+3. Produce a <=10-line implementation plan.
+4. Implement directly.
+5. Run targeted tests.
+6. Run the full relevant suite once before completion.
+7. Use /code-review once after implementation.
+
+Never spawn subagents unless explicitly requested.
+Do not use /office-hours by default.
 
 ### Keep the living docs current — every PR, not at the end
 

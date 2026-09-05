@@ -55,3 +55,17 @@ services:
     # No named volume: the log lives in the container and a `down` discards it.
     # Dev events are replayable from the outbox, and a stale local Kafka log that
     # outlives the database it was produced from is worth less than the disk.
+
+  # The gateway's rate-limit store (ADR-040). Redis, not the app database: a rate
+  # limit is throwaway counter state shared across gateway instances, not money,
+  # and it must survive neither a restart nor outlive the window it counts. Only
+  # the gateway talks to it; the monolith needs nothing here. No volume, for the
+  # same reason as Kafka above -- a stale bucket count is worth less than the disk.
+  redis:
+    image: redis:7-alpine
+    container_name: paymesh-redis
+    ports:
+      # The gateway runs on the host (./mvnw spring-boot:run in gateway/), so this
+      # is the port paymesh.gateway.redis-uri names.
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
