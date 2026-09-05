@@ -28,9 +28,13 @@ class RegisterMerchantServiceTest {
         );
 
         FakeMerchantRepository repository = new FakeMerchantRepository();
+        Fakes.ImmediateTransactions transactions = new Fakes.ImmediateTransactions();
+        Fakes.RecordingOutbox outbox = new Fakes.RecordingOutbox(transactions);
 
         RegisterMerchantService service = new RegisterMerchantService(
                 repository,
+                outbox,
+                transactions,
                 fixedClock
             );
 
@@ -47,6 +51,20 @@ class RegisterMerchantServiceTest {
             MerchantStatus.PENDING_VERIFICATION,
             registeredMerchant.status()
         );
+
+        // ADR-039: registration emits merchant.registered, in the same transaction as the save, so
+        // consumers' merchant_ref projections learn the merchant exists.
+        assertEquals(1, outbox.events().size());
+        assertEquals("merchant.registered", outbox.events().get(0).eventType());
+        assertEquals(
+            registeredMerchant.merchantId().value(),
+            outbox.events().get(0).payload().get("merchantId")
+        );
+        assertEquals(
+            MerchantStatus.PENDING_VERIFICATION.name(),
+            outbox.events().get(0).payload().get("status")
+        );
+        org.junit.jupiter.api.Assertions.assertTrue(outbox.appendedInsideATransaction());
 
         assertEquals(
             registrationTime,
@@ -108,8 +126,12 @@ class RegisterMerchantServiceTest {
         );
 
         FakeMerchantRepository repository = new FakeMerchantRepository();
+        Fakes.ImmediateTransactions transactions = new Fakes.ImmediateTransactions();
+        Fakes.RecordingOutbox outbox = new Fakes.RecordingOutbox(transactions);
         RegisterMerchantService service = new RegisterMerchantService(
             repository,
+            outbox,
+            transactions,
             fixedClock
         );
 
@@ -144,8 +166,11 @@ class RegisterMerchantServiceTest {
         Clock fixedClock = Clock.fixed(Instant.parse("2026-07-18T10:15:30Z"), ZoneOffset.UTC);
 
         FakeMerchantRepository repository = new FakeMerchantRepository();
+        Fakes.ImmediateTransactions transactions = new Fakes.ImmediateTransactions();
+        Fakes.RecordingOutbox outbox = new Fakes.RecordingOutbox(transactions);
 
-        RegisterMerchantService service = new RegisterMerchantService(repository, fixedClock);
+        RegisterMerchantService service =
+            new RegisterMerchantService(repository, outbox, transactions, fixedClock);
 
         assertThrows(
             IllegalArgumentException.class,

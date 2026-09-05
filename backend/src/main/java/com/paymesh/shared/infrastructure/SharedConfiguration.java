@@ -1,7 +1,10 @@
 package com.paymesh.shared.infrastructure;
 
+import com.paymesh.shared.outbox.application.EventHandler;
 import com.paymesh.shared.security.ApiKeyAuthenticationFilter;
 import com.paymesh.shared.security.ApiKeyAuthenticator;
+import com.paymesh.shared.tenant.MerchantRefProjector;
+import com.paymesh.shared.tenant.MerchantRefStore;
 import com.paymesh.shared.tenant.MerchantStatusFilter;
 import com.paymesh.shared.tenant.MerchantStatusGate;
 import org.springframework.boot.security.autoconfigure.web.servlet.SecurityFilterProperties;
@@ -9,9 +12,11 @@ import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import tools.jackson.databind.ObjectMapper;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import javax.sql.DataSource;
 import java.time.Clock;
 
 /**
@@ -46,6 +51,54 @@ public class SharedConfiguration {
     @Bean
     TransactionTemplate transactionTemplate(PlatformTransactionManager transactionManager) {
         return new TransactionTemplate(transactionManager);
+    }
+
+    /**
+     * THE MERCHANT REFERENCE PROJECTION (ADR-039), both sides of it.
+     * <p>
+     * It answers the platform's {@link MerchantStatusGate} from the event-fed {@code merchant_ref}
+     * copies instead of the {@code merchants} table -- the last thing that made a consumer read the
+     * merchant's authoritative table -- and it is what {@link MerchantRefProjector} writes. Reached
+     * by schema-qualified SQL through a {@link JdbcTemplate} rather than JPA, because six tables share
+     * the name {@code merchant_ref} and a bare-named entity could not resolve them (see the class).
+     * <p>
+     * It lives in {@code shared}, not {@code merchant}: it is platform infrastructure that spans
+     * every service's schema, and the merchant module is now only the EMITTER of the events that feed
+     * it. At extraction each service keeps its own copy, fed from Kafka.
+     */
+    // One bean, both roles: MerchantRefStore implements MerchantStatusGate, so the filter's
+    // MerchantStatusGate dependency resolves to this by type and the projectors inject it directly.
+    // A second bean returning the same instance as the interface would make MerchantRefStore
+    // ambiguous, so there is deliberately only this one.
+    @Bean
+    MerchantRefStore merchantRefStore(DataSource dataSource) {
+        return new MerchantRefStore(new JdbcTemplate(dataSource));
+    }
+
+    /**
+     * One projector per merchant lifecycle event, registered here as {@link EventHandler}s the
+     * dispatcher collects -- the same registration shape every capability uses for its consumers.
+     * Four beans, one class, differing only in the event type (the {@code NotificationEventHandler}
+     * pattern).
+     */
+    @Bean
+    EventHandler merchantRegisteredProjector(MerchantRefStore store) {
+        return new MerchantRefProjector("merchant.registered", store);
+    }
+
+    @Bean
+    EventHandler merchantActivatedProjector(MerchantRefStore store) {
+        return new MerchantRefProjector("merchant.activated", store);
+    }
+
+    @Bean
+    EventHandler merchantSuspendedProjector(MerchantRefStore store) {
+        return new MerchantRefProjector("merchant.suspended", store);
+    }
+
+    @Bean
+    EventHandler merchantClosedProjector(MerchantRefStore store) {
+        return new MerchantRefProjector("merchant.closed", store);
     }
 
     /**

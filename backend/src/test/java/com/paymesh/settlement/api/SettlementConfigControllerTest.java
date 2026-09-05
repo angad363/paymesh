@@ -49,6 +49,9 @@ class SettlementConfigControllerTest {
     @Autowired
     private RegisterMerchantService merchants;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.paymesh.shared.outbox.application.PublishOutboxEventsService relay;
+
     @Autowired
     private ChangeMerchantStatusService changeMerchantStatus;
 
@@ -154,6 +157,10 @@ class SettlementConfigControllerTest {
         )).merchantId();
 
         changeMerchantStatus.activate(merchantId, PLATFORM_OPERATOR, "Activated for test");
+
+        // ADR-039: gate reads the event-fed merchant_ref projection; relay is off under `dev`, so
+        // propagate register+activate before any authenticated write (else 503).
+        relay.publish();
 
         return merchantId;
     }

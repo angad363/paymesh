@@ -42,6 +42,7 @@ class CustomerControllerTest {
     private final RegisterMerchantService merchants;
 
     private final ChangeMerchantStatusService changeMerchantStatus;
+    private final com.paymesh.shared.outbox.application.PublishOutboxEventsService relay;
 
     private String merchantId;
     private String otherMerchantId;
@@ -50,11 +51,13 @@ class CustomerControllerTest {
     CustomerControllerTest(
         MockMvc mockMvc,
         RegisterMerchantService merchants,
-        ChangeMerchantStatusService changeMerchantStatus
+        ChangeMerchantStatusService changeMerchantStatus,
+        com.paymesh.shared.outbox.application.PublishOutboxEventsService relay
     ) {
         this.mockMvc = mockMvc;
         this.merchants = merchants;
         this.changeMerchantStatus = changeMerchantStatus;
+        this.relay = relay;
     }
 
     @BeforeEach
@@ -257,6 +260,10 @@ class CustomerControllerTest {
         ).merchantId();
 
         changeMerchantStatus.activate(merchantId, PLATFORM_OPERATOR, "Activated for test");
+
+        // ADR-039: gate reads the event-fed merchant_ref projection; relay is off under `dev`, so
+        // propagate register+activate before any authenticated write (else 503).
+        relay.publish();
 
         return merchantId.value();
     }

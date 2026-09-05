@@ -75,6 +75,7 @@ class IdempotencyIntegrationTest {
     private final ChangeMerchantStatusService changeMerchantStatus;
     private final IdempotencyRepository records;
     private final CountingHandler handler;
+    private final com.paymesh.shared.outbox.application.PublishOutboxEventsService relay;
 
     private String merchantId;
 
@@ -84,13 +85,15 @@ class IdempotencyIntegrationTest {
         RegisterMerchantService merchants,
         ChangeMerchantStatusService changeMerchantStatus,
         IdempotencyRepository records,
-        CountingHandler handler
+        CountingHandler handler,
+        com.paymesh.shared.outbox.application.PublishOutboxEventsService relay
     ) {
         this.mockMvc = mockMvc;
         this.merchants = merchants;
         this.changeMerchantStatus = changeMerchantStatus;
         this.records = records;
         this.handler = handler;
+        this.relay = relay;
     }
 
     @BeforeEach
@@ -101,6 +104,10 @@ class IdempotencyIntegrationTest {
         )).merchantId();
 
         activate(registered);
+
+        // ADR-039: gate reads the event-fed merchant_ref projection; relay is off under `dev`, so
+        // propagate register+activate before any authenticated write (else 503).
+        relay.publish();
 
         merchantId = registered.value();
     }

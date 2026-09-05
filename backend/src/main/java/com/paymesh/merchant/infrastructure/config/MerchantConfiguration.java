@@ -10,7 +10,6 @@ import com.paymesh.merchant.application.MerchantStatusHistoryRepository;
 import com.paymesh.merchant.application.ReviewKycSubmissionService;
 import com.paymesh.merchant.application.RegisterMerchantService;
 import com.paymesh.merchant.application.UpdateMerchantService;
-import com.paymesh.merchant.infrastructure.MerchantStatusGateAdapter;
 import com.paymesh.merchant.infrastructure.persistence.jpa.JpaApiCredentialRepository;
 import com.paymesh.merchant.infrastructure.persistence.jpa.SpringDataApiCredentialRepository;
 import com.paymesh.merchant.infrastructure.security.ApiCredentialAuthenticator;
@@ -19,7 +18,6 @@ import com.paymesh.merchant.infrastructure.persistence.jpa.JpaKycSubmissionRepos
 import com.paymesh.merchant.infrastructure.persistence.jpa.JpaMerchantStatusHistoryRepository;
 import com.paymesh.merchant.infrastructure.persistence.jpa.SpringDataKycSubmissionRepository;
 import com.paymesh.merchant.infrastructure.persistence.jpa.SpringDataMerchantStatusHistoryRepository;
-import com.paymesh.shared.tenant.MerchantStatusGate;
 import org.springframework.transaction.support.TransactionTemplate;
 import com.paymesh.merchant.infrastructure.persistence.jpa.JpaMerchantRepository;
 import com.paymesh.merchant.infrastructure.persistence.jpa.SpringDataMerchantRepository;
@@ -38,8 +36,13 @@ public class MerchantConfiguration {
     }
 
     @Bean
-    RegisterMerchantService registerMerchantService(MerchantRepository merchantRepository, Clock clock) {
-        return new RegisterMerchantService(merchantRepository, clock);
+    RegisterMerchantService registerMerchantService(
+        MerchantRepository merchantRepository,
+        com.paymesh.shared.outbox.application.OutboxWriter outbox,
+        TransactionTemplate transactionTemplate,
+        Clock clock
+    ) {
+        return new RegisterMerchantService(merchantRepository, outbox, transactionTemplate, clock);
     }
 
     @Bean
@@ -69,27 +72,19 @@ public class MerchantConfiguration {
         MerchantStatusHistoryRepository merchantStatusHistoryRepository,
         GetMerchantService getMerchantService,
         com.paymesh.shared.audit.AuditRecorder auditRecorder,
+        com.paymesh.shared.outbox.application.OutboxWriter outbox,
         TransactionTemplate transactionTemplate,
         Clock clock
     ) {
         return new ChangeMerchantStatusService(
             merchantRepository, merchantStatusHistoryRepository, getMerchantService,
-            auditRecorder, transactionTemplate, clock
+            auditRecorder, outbox, transactionTemplate, clock
         );
     }
 
-    /**
-     * THE MERCHANT MODULE ANSWERING THE PLATFORM'S QUESTION.
-     * <p>
-     * {@code shared} declares {@link MerchantStatusGate} and this implements it, so the arrow keeps
-     * pointing the way it already points -- a capability may see {@code shared}, and {@code shared}
-     * still names no capability. Same shape as Payment implementing Order's
-     * {@code PaymentActivityLookup} (ADR-008).
-     */
-    @Bean
-    MerchantStatusGate merchantStatusGate(MerchantRepository merchantRepository) {
-        return new MerchantStatusGateAdapter(merchantRepository);
-    }
+    // The MerchantStatusGate bean moved to SharedConfiguration in ADR-039: it is now answered from
+    // the event-fed merchant_ref projection (MerchantRefStore), not the merchants table, so the
+    // merchant module no longer implements it -- it only EMITS the lifecycle events that feed it.
 
     @Bean
     KycSubmissionRepository kycSubmissionRepository(SpringDataKycSubmissionRepository submissions) {

@@ -77,6 +77,9 @@ class PlatformAdminIntegrationTest {
     private RegisterMerchantService merchants;
 
     @Autowired
+    private com.paymesh.shared.outbox.application.PublishOutboxEventsService relay;
+
+    @Autowired
     private ManageUserAccessService manageUserAccess;
 
     @Autowired
@@ -382,6 +385,10 @@ class PlatformAdminIntegrationTest {
         MerchantId merchantId = merchant();
 
         changeMerchantStatus.activate(merchantId, "usr_test-operator", "Activated for test");
+
+        // ADR-039: gate reads the event-fed merchant_ref projection; relay is off under `dev`, so
+        // propagate register+activate before any authenticated write (else 503).
+        relay.publish();
 
         return merchantId;
     }

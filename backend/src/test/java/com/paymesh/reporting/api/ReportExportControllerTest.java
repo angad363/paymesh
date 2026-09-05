@@ -50,18 +50,21 @@ class ReportExportControllerTest {
     private final MerchantRepository merchants;
     private final RecordReportFactService record;
     private final GenerateReportExportsService generate;
+    private final com.paymesh.shared.tenant.MerchantRefStore merchantRef;
 
     @Autowired
     ReportExportControllerTest(
         MockMvc mockMvc,
         MerchantRepository merchants,
         RecordReportFactService record,
-        GenerateReportExportsService generate
+        GenerateReportExportsService generate,
+        com.paymesh.shared.tenant.MerchantRefStore merchantRef
     ) {
         this.mockMvc = mockMvc;
         this.merchants = merchants;
         this.record = record;
         this.generate = generate;
+        this.merchantRef = merchantRef;
     }
 
     @Test
@@ -208,10 +211,17 @@ class ReportExportControllerTest {
     }
 
     private MerchantId seedMerchant() {
-        return merchants.save(Merchant.register(
+        MerchantId merchantId = merchants.save(Merchant.register(
             MerchantId.generate(), "Paymesh Export Co",
             UUID.randomUUID() + "@paymesh.test", "US", "USD", OCCURRED
         ).activate(OCCURRED)).merchantId();
+
+        // ADR-039: this fixture saves the merchant directly (not via the service), so no lifecycle
+        // event is emitted -- seed the merchant_ref projection the gate reads, exactly as the
+        // projector would, so the authenticated export write is not refused with 503.
+        merchantRef.upsert(merchantId, "ACTIVE", OCCURRED);
+
+        return merchantId;
     }
 
     private static RequestPostProcessor merchant(String merchantId) {

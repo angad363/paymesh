@@ -1,18 +1,22 @@
 # PayMesh — Project Status and Roadmap
 
-_Last updated: 5 September 2026, after Phase 3 PR 3 (schema-per-service) was built. Update
-this file at the end of a working session, not during one._
+_Last updated: 5 September 2026, after Phase 3 PR 4 (merchant reference projection) was built.
+Update this file at the end of a working session, not during one._
 
 **Reading this to resume?** Phase 2 is **complete** — all eight of its capabilities are merged,
 Audit (ADR-035, V36) last. **Phase 3 has started**: `docs/phase-3-microservices-extraction-plan.md`
 is the plan of record. **PR 1 (Kafka backbone, ADR-036) and PR 2 (dual-path relay, ADR-037) are
-merged; PR 3 (schema-per-service, ADR-038) is built on `feature/schema-per-service`.** The 46
-tables now live in **ten schemas** — nine service schemas plus a `platform` schema for the shared
-outbox/inbox/idempotency tables — with nine fenced `*_svc` roles proving a service cannot read
-another's tables (`SchemaIsolationTest`). Still **one process, one datasource** spanning all
-schemas via `search_path`; no FK dropped (the `* → merchants` FK is kept, PR 4 replaces it with the
-`merchant_ref` projection). Nothing is extracted yet; read "PICK UP HERE — Phase 3, after
-schema-per-service" at the bottom before starting PR 4.
+merged; PR 3 (schema-per-service, ADR-038) is merged; PR 4 (merchant reference projection, ADR-039)
+is built on `feature/merchant-ref-projection`.** The 46 tables live in **ten schemas** with nine
+fenced `*_svc` roles (`SchemaIsolationTest`). PR 4 closes the one boundary-crossing FK PR 3 left
+standing: the merchant capability now emits lifecycle events, a `merchant_ref` projection in each of
+the six consuming schemas is fed from them through the inbox, and the platform `MerchantStatusGate`
+reads that projection instead of the `merchants` table. The 17 cross-capability `* → merchants` FKs
+are dropped (V39); the two `platform` ones are kept (nothing replaces them yet). The gate is now
+eventually consistent — absent-from-projection → **503 `MERCHANT_NOT_YET_AVAILABLE` (retryable)**,
+and a suspension takes one relay cycle to bite (a deliberate, documented walk-back of ADR-021's "no
+cache"). Still **one process, one datasource**. Nothing is extracted yet; read "PICK UP HERE" at the
+bottom before starting PR 5 (API gateway, ADR-040 — depends on PR 2, not PR 4).
 
 This is the pick-up-here document. It records what exists, what has actually been
 verified, what is deliberately unfinished, and what comes next. For *why* a design
@@ -32,7 +36,7 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1529 tests, 0 failures.** Thirty-eight Flyway migrations (V1–V38). Thirty-eight ADRs. The Postman
+**1533 tests, 0 failures.** Thirty-nine Flyway migrations (V1–V39). Thirty-nine ADRs. The Postman
 collection runs **nineteen folders green** — the newest a self-contained Reporting folder (17
 requests, 30 assertions, verified with newman against the running app) covering the two summary
 reads, the async export lifecycle, tenant isolation and every error path.
@@ -692,6 +696,7 @@ The collection is not decorative: dropping the tenant predicate in
 | 036 | Kafka (KRaft) is the event backbone; the wire envelope is the outbox row formalized as a separate published type, one topic per aggregate type with the aggregate id as the partition key (so one aggregate's causally-chained events cannot be reordered), and changes are additive within a version |
 | 037 | The dual-path relay: two INDEPENDENT passes over two columns (`published_at` in-process, `kafka_published_at` on Kafka, V37) plus one listener consuming back through the same inbox, behind `paymesh.events.delivery.mode` (`both` default, `in-process` rollback). Two columns because a single shared gate let a Kafka outage stall in-process money-path delivery; the dead-letter budget governs the in-process sink only, and the Kafka sink retries without a budget, surfaced by its own backlog age |
 | 038 | Schema-per-service (V38): the 46 tables move into ten schemas (nine services + a `platform` schema for outbox/inbox/idempotency) by `ALTER TABLE … SET SCHEMA`, keeping every trigger, index and FK intact. Nine `NOLOGIN` `*_svc` roles are fenced to their own schema and proven so. Lean carve — still one process, one datasource, one Flyway history; no FK dropped (the `* → merchants` FK is kept for PR 4 to replace). Schema follows the code package, so three of the plan's mappings are corrected. Per-service Flyway histories and splitting the platform tables are deferred to each service's extraction |
+| 039 | The merchant reference projection (V39): the merchant capability emits `merchant.registered/activated/suspended/closed` from its own outbox in the acting transaction; a `merchant_ref` read model (`merchant_id, status, updated_at`) in each of the six consuming schemas is fed by one `MerchantRefProjector` through the inbox; the platform `MerchantStatusGate` reads that projection (`MerchantRefStore`, schema-qualified JDBC — six same-named tables defeat a bare JPA entity) instead of the `merchants` table. The 17 cross-capability `* → merchants` FKs are dropped; the two `platform` ones are kept (no projection replaces them; they go when the platform tables split per-service). The gate gains a third outcome — absent → 503 `MERCHANT_NOT_YET_AVAILABLE` (retryable), distinct from present-but-inactive → 403 — so the gate is now eventually consistent, a documented partial walk-back of ADR-021's no-cache stance (suspension bites after one relay cycle; acceptable because it is policy, not money integrity) |
 
 Note that the SDD's Appendix D has its own ADR list with the same numbers and
 different decisions. When citing one, say which source you mean.
@@ -1168,6 +1173,52 @@ those rows carry `capturedAmountMinor = 0`. A real acquirer may report an outcom
 not yet know, and a file meaning "unknown" must never be read as "nothing moved". That judgement
 belongs in the provider's adapter — which is why the job carries the provider's status as a raw
 string and skips every value it does not recognise rather than defaulting.
+
+### PICK UP HERE — Phase 3, after merchant-ref projection (PR 4)
+
+**PR 1–PR 3 are merged; PR 4 (merchant reference projection, ADR-039, V39) is built on
+`feature/merchant-ref-projection` with 1533 tests green.** The next PR is **PR 5, the API gateway**
+(`feature/api-gateway`, **ADR-040**) — which depends on PR 2, not PR 4, and is the last 3A
+foundation step before extraction (3B) begins with the provider-sim pilot.
+
+What PR 4 actually put in the tree:
+
+- **The merchant capability got an outbox.** It had none. `RegisterMerchantService` (now wrapped in
+  a `TransactionTemplate`) emits `merchant.registered`; `ChangeMerchantStatusService` emits
+  `merchant.activated/suspended/closed` alongside the audit event it already wrote — both in the
+  acting transaction (`MerchantLifecycleEvents.of`). Events, not a `merchant_status_history` scan (a
+  divergence from the plan's prose, recorded in ADR-039 §2).
+- **A `merchant_ref` read model in each of the six consuming schemas** (payment, ledger, settlement,
+  risk, webhook, engagement) — `merchant_id, status, updated_at`, same `is_prefixed_id` CHECK, fed by
+  one `MerchantRefProjector` (four `EventHandler` beans, one class) through the existing inbox.
+  Reached by **schema-qualified JDBC** (`MerchantRefStore`), not JPA: six tables share the name
+  `merchant_ref`, which defeats the bare-`@Table` + `search_path` resolution ADR-038 relies on. One
+  projector writes all six copies (a monolith-era fan-out that collapses to one per service at
+  extraction, marked `ponytail:`).
+- **The gate reads the projection, not `merchants`.** `MerchantStatusGate` moved from the merchant
+  module to `shared` (`MerchantRefStore` implements it), so the merchant capability is now purely an
+  emitter. The gate returns `MerchantTransactability` — `ALLOWED` / `DENIED` (403) / `UNKNOWN` (503
+  `MERCHANT_NOT_YET_AVAILABLE`, retryable, `Retry-After: 1`). `MerchantStatusGateAdapter` is deleted.
+- **The 17 cross-capability `* → merchants` FKs dropped (V39); the two `platform` ones KEPT.** The
+  platform outbox/idempotency FKs have no projection to replace them (they are not consumers reading
+  status), so dropping them would be an unguarded interval (ADR-038 §3); they go when the platform
+  tables split per-service. Composite `→ customers` FKs and the format CHECKs stay.
+- **The gate is now eventually consistent — a documented partial walk-back of ADR-021.** The old
+  adapter read `merchants` synchronously and was deliberately not cached, so a suspended merchant
+  could not trade. The projection is relay-fed, so a suspension bites after one relay cycle. Accepted
+  because suspension is policy, not money integrity (a few seconds of trading loses no money); if a
+  zero window is ever needed, the answer is a synchronous call to the merchant service for that
+  action, not un-caching. Flagged in ADR-039 for reviewers.
+- **Test impact, and the pattern to know.** The relay is off under `dev`, so any test that changes
+  merchant status and then asserts the gate must drive it: `relay.publish()`
+  (`PublishOutboxEventsService`) between the change and the assertion. Twelve fixtures were updated
+  this way; `MerchantRefProjectionIntegrationTest` exercises the not-yet-propagated → 503 path on
+  purpose (the plan's headline verification). **No new HTTP route or request/response shape**, only a
+  new 503 outcome on existing merchant-scoped writes, so the Postman collection is untouched.
+
+Dev bootstrap note: V39's `merchant_ref` tables land in the six service schemas and inherit V38's
+`ALTER DEFAULT PRIVILEGES` grant to each `*_svc` role automatically (V38 named this table when it set
+that up), so `SchemaIsolationTest`'s fence stays complete with no new grants.
 
 ### PICK UP HERE — Phase 3, after schema-per-service (PR 3)
 

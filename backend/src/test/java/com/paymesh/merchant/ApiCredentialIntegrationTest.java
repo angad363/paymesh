@@ -52,6 +52,9 @@ class ApiCredentialIntegrationTest {
     @Autowired
     private ChangeMerchantStatusService changeMerchantStatus;
 
+    @Autowired
+    private com.paymesh.shared.outbox.application.PublishOutboxEventsService relay;
+
     // --- the point ------------------------------------------------------------------------------
 
     /**
@@ -107,6 +110,10 @@ class ApiCredentialIntegrationTest {
         mockMvc.perform(orderWithKey(key)).andExpect(status().isCreated());
 
         changeMerchantStatus.suspend(merchantId, OPERATOR, "Suspected fraud");
+
+        // ADR-039: propagate the suspension to the merchant_ref projection the gate reads before
+        // asserting the key is refused.
+        relay.publish();
 
         mockMvc.perform(orderWithKey(key))
             .andExpect(status().isForbidden())
@@ -321,6 +328,10 @@ class ApiCredentialIntegrationTest {
         )).merchantId();
 
         changeMerchantStatus.activate(merchantId, OPERATOR, "Activated for test");
+
+        // ADR-039: gate reads the event-fed merchant_ref projection; relay is off under `dev`, so
+        // propagate register+activate before any authenticated write (else 503).
+        relay.publish();
 
         return merchantId;
     }

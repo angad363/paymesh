@@ -55,6 +55,9 @@ class MerchantGovernanceIntegrationTest {
     private ChangeMerchantStatusService changeMerchantStatus;
 
     @Autowired
+    private com.paymesh.shared.outbox.application.PublishOutboxEventsService relay;
+
+    @Autowired
     private JdbcClient jdbc;
 
     /**
@@ -96,6 +99,10 @@ class MerchantGovernanceIntegrationTest {
             .andExpect(jsonPath("$.status").value("APPROVED"))
             .andExpect(jsonPath("$.reviewedBy").value(OPERATOR));
 
+        // ADR-039: KYC approval activates in its own transaction and emits merchant.activated;
+        // propagate it to the projection before asserting the merchant can now trade.
+        relay.publish();
+
         // 4. And now it can trade.
         mockMvc.perform(newOrder(merchantId)).andExpect(status().isCreated());
     }
@@ -114,6 +121,11 @@ class MerchantGovernanceIntegrationTest {
                 .content("{ \"reason\": \"Suspected fraud\" }"))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.status").value("SUSPENDED"));
+
+        // ADR-039: suspension emits merchant.suspended; propagate it so the gate sees SUSPENDED and
+        // refuses the next write. (This is the eventual-consistency cost of the projection: in
+        // production the running relay closes this window in seconds.)
+        relay.publish();
 
         mockMvc.perform(newOrder(merchantId))
             .andExpect(status().isForbidden())
@@ -297,14 +309,25 @@ class MerchantGovernanceIntegrationTest {
     }
 
     private MerchantId register() {
-        return merchants.register(new RegisterMerchantCommand(
+        MerchantId merchantId = merchants.register(new RegisterMerchantCommand(
             "Governance Co", "gov-" + UUID.randomUUID() + "@example.test", "IN", "INR"
         )).merchantId();
+
+        // ADR-039: propagate so the projection holds the merchant at PENDING_VERIFICATION -- the gate
+        // then DENIES (403 MERCHANT_NOT_ACTIVE) rather than UNKNOWN (503), which is what a
+        // registered-but-unverified merchant should get.
+        relay.publish();
+
+        return merchantId;
     }
 
     private MerchantId activated() {
         MerchantId merchantId = register();
         changeMerchantStatus.activate(merchantId, OPERATOR, "Activated for test");
+
+        // ADR-039: gate reads the event-fed merchant_ref projection; relay is off under `dev`, so
+        // propagate register+activate before any authenticated write (else 503).
+        relay.publish();
 
         return merchantId;
     }
