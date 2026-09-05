@@ -6,6 +6,7 @@ import com.paymesh.customer.application.CreateCustomerService;
 import com.paymesh.merchant.application.ChangeMerchantStatusService;
 import com.paymesh.merchant.application.RegisterMerchantCommand;
 import com.paymesh.merchant.application.RegisterMerchantService;
+import com.paymesh.shared.outbox.application.PublishOutboxEventsService;
 import com.paymesh.shared.tenant.MerchantId;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -53,6 +54,7 @@ class OrderControllerTest {
 
     private final ChangeMerchantStatusService changeMerchantStatus;
     private final CreateCustomerService customers;
+    private final PublishOutboxEventsService relay;
 
     private String merchantId;
     private String otherMerchantId;
@@ -62,12 +64,14 @@ class OrderControllerTest {
         MockMvc mockMvc,
         RegisterMerchantService merchants,
         ChangeMerchantStatusService changeMerchantStatus,
-        CreateCustomerService customers
+        CreateCustomerService customers,
+        PublishOutboxEventsService relay
     ) {
         this.mockMvc = mockMvc;
         this.merchants = merchants;
         this.changeMerchantStatus = changeMerchantStatus;
         this.customers = customers;
+        this.relay = relay;
     }
 
     @BeforeEach
@@ -567,6 +571,11 @@ class OrderControllerTest {
             "Tenant Co", "tenant-" + UUID.randomUUID() + "@example.test", "IN", "INR"
         )).merchantId();
         activate(merchantId);
+
+        // ADR-039: the merchant status gate now reads the event-fed merchant_ref projection, and the
+        // relay is off under `dev`, so drive it once here to propagate register+activate before any
+        // authenticated write. Without this the write gets 503 MERCHANT_NOT_YET_AVAILABLE.
+        relay.publish();
 
         return merchantId.value();
     }

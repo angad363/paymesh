@@ -19,6 +19,7 @@ import com.paymesh.payment.domain.PaymentIntent;
 import com.paymesh.payment.domain.PaymentMethodType;
 import com.paymesh.payment.domain.ProviderEvent;
 import com.paymesh.payment.domain.ProviderOutcome;
+import com.paymesh.shared.outbox.application.PublishOutboxEventsService;
 import com.paymesh.shared.tenant.MerchantId;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -68,6 +69,9 @@ class RefundControllerTest {
 
     @Autowired
     private RegisterMerchantService merchants;
+
+    @Autowired
+    private PublishOutboxEventsService relay;
 
     @Autowired
     private ChangeMerchantStatusService changeMerchantStatus;
@@ -417,6 +421,10 @@ class RefundControllerTest {
             "Refund Test Co", "refund-" + UUID.randomUUID() + "@example.test", "IN", "INR"
         )).merchantId();
         activate(merchantId);
+
+        // ADR-039: gate reads the event-fed merchant_ref projection; the relay is off under `dev`,
+        // so propagate register+activate before any authenticated write (else 503).
+        relay.publish();
 
         return merchantId;
     }

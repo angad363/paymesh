@@ -62,6 +62,9 @@ class UserLifecycleIntegrationTest {
     private ChangeMerchantStatusService changeMerchantStatus;
 
     @Autowired
+    private com.paymesh.shared.outbox.application.PublishOutboxEventsService relay;
+
+    @Autowired
     private RegisterUserService registerUser;
 
     @Autowired
@@ -373,6 +376,10 @@ class UserLifecycleIntegrationTest {
         )).merchantId();
 
         changeMerchantStatus.activate(merchantId, PLATFORM, "Activated for test");
+
+        // ADR-039: gate reads the event-fed merchant_ref projection; relay is off under `dev`, so
+        // propagate register+activate before any authenticated write (else 503).
+        relay.publish();
 
         return merchantId;
     }

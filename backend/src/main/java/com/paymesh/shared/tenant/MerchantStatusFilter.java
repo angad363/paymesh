@@ -164,12 +164,15 @@ public final class MerchantStatusFilter extends OncePerRequestFilter {
             return;
         }
 
-        if (gate.canTransact(merchantIds.iterator().next())) {
-            chain.doFilter(request, response);
-            return;
+        // Three outcomes, not two, since the gate reads the event-fed projection (ADR-039). ALLOWED
+        // proceeds; DENIED is the old 403; UNKNOWN means the merchant's lifecycle event has not
+        // propagated to the projection yet -- a transient state that must be retryable, not a 403
+        // that reads as permanent and not a 500.
+        switch (gate.verdict(merchantIds.iterator().next())) {
+            case ALLOWED -> chain.doFilter(request, response);
+            case DENIED -> forbidden(response);
+            case UNKNOWN -> notYetAvailable(response);
         }
-
-        forbidden(response);
     }
 
     /**
@@ -186,6 +189,24 @@ public final class MerchantStatusFilter extends OncePerRequestFilter {
         objectMapper.writeValue(response.getWriter(), ApiErrorResponse.of(
             "MERCHANT_NOT_ACTIVE",
             "This merchant cannot perform this action. Contact PayMesh support."
+        ));
+    }
+
+    /**
+     * The merchant is not YET in the projection -- its lifecycle event has not propagated. Retryable,
+     * so 503 with a {@code Retry-After}, not 403 (which reads as a permanent decision) and never 500.
+     * <p>
+     * This is the eventual-consistency edge ADR-039 introduces: reading a projection instead of the
+     * authoritative table trades "read your own write" for a retryable "not yet consistent" error,
+     * the same shape the money path will lean on everywhere once services split.
+     */
+    private void notYetAvailable(HttpServletResponse response) throws IOException {
+        response.setStatus(HttpStatus.SERVICE_UNAVAILABLE.value());
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        response.setHeader("Retry-After", "1");
+        objectMapper.writeValue(response.getWriter(), ApiErrorResponse.of(
+            "MERCHANT_NOT_YET_AVAILABLE",
+            "This merchant is not ready yet. Retry shortly."
         ));
     }
 
