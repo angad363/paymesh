@@ -1,0 +1,54 @@
+# ============================================================================
+#  PayMesh API gateway (ADR-040)
+#
+#  A separate deployable in front of the monolith. It listens on 8081 so it can
+#  run beside the monolith (8080) during the cutover; a client may still address
+#  the monolith directly until 3B, so the gateway is optional for now.
+# ============================================================================
+server:
+  port: 8081
+
+spring:
+  application:
+    name: paymesh-gateway
+  cloud:
+    # Spring Cloud 2025.1.0 pins its compatibility check to Boot 4.0.x, and this
+    # platform runs 4.0's next minor, 4.1.0. The gateway server, the router DSL and
+    # the bucket4j filter all work on 4.1; only the verifier's exact-match table
+    # does not know 4.1 yet. Disable the check rather than hold the whole platform
+    # back a minor. Revisit when a Spring Cloud train lists Boot 4.1 -- then delete
+    # this line and let the check pass on its own.
+    compatibility-verifier:
+      enabled: false
+
+paymesh:
+  gateway:
+    # Where every route forwards today: the one monolith. In 3B each prefix
+    # re-points at its own service and this single value fans out per route.
+    backend-uri: ${PAYMESH_GATEWAY_BACKEND_URI:http://localhost:8080}
+    # Redis backs the distributed rate limiter so N gateway instances share one
+    # limit instead of admitting N times the traffic.
+    redis-uri: ${PAYMESH_GATEWAY_REDIS_URI:redis://localhost:6379}
+    rate-limit:
+      # Tokens per window, per client IP, per route group. A dev-scale default;
+      # tune per environment.
+      capacity: 100
+      period-seconds: 60
+  security:
+    jwt:
+      # The SAME HS256 secret the monolith signs tokens with -- edge validation
+      # needs it. Declared empty and the gateway refuses to start without it
+      # (JwtConfiguration enforces the 32-byte floor), exactly as the monolith
+      # does, so a deployment can never silently fall back to a public default.
+      # Supply PAYMESH_SECURITY_JWT_SECRET, or run the dev profile.
+      secret: ${PAYMESH_SECURITY_JWT_SECRET:}
+
+# Only the gateway's own liveness/readiness. show-details is never.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never

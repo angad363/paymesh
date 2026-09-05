@@ -1,0 +1,14 @@
+# ============================================================================
+#  Local development overrides for the gateway.
+#
+#  The one throwaway secret the gateway needs, matching the monolith's dev value
+#  so a token minted by a dev monolith validates at a dev gateway. As insecure and
+#  as public as the monolith's application-dev.yaml value, and for the same reason:
+#  it is a local convenience, never a deployed credential.
+# ============================================================================
+paymesh:
+  security:
+    jwt:
+      # Byte-for-byte the monolith's application-dev.yaml value. If these drift, a
+      # dev token stops validating at the edge -- they are meant to be identical.
+      secret: dev-only-insecure-jwt-signing-secret-change-me

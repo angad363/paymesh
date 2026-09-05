@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+	<parent>
+		<groupId>org.springframework.boot</groupId>
+		<artifactId>spring-boot-starter-parent</artifactId>
+		<version>4.1.0</version>
+		<relativePath/>
+	</parent>
+
+	<!-- A SEPARATE DEPLOYABLE, NOT A MODULE OF backend (ADR-040). PR 5 stands the
+	     front door up beside the monolith; it does not restructure the monolith's
+	     build. The two poms are independent until 3B has several service modules
+	     worth aggregating into a reactor. Build it with its own `./mvnw` here. -->
+	<groupId>com.paymesh</groupId>
+	<artifactId>gateway</artifactId>
+	<version>0.0.1-SNAPSHOT</version>
+	<name>gateway</name>
+	<description>PayMesh API gateway: north-south auth, routing, rate limiting</description>
+
+	<properties>
+		<java.version>21</java.version>
+		<spring-cloud.version>2025.1.0</spring-cloud.version>
+		<!-- Bucket4j's Redis backing was built and tested against Lettuce 6, not the
+		     7.5.x that Boot 4.1's BOM manages. Pin the client to the version bucket4j
+		     compiled against so the CAS eval path is binary-compatible; the gateway
+		     talks to Lettuce only through bucket4j, never Spring Data Redis, so the
+		     pin is contained to this module. Lift it when bucket4j ships a Lettuce-7
+		     build. -->
+		<lettuce.version>6.3.2.RELEASE</lettuce.version>
+		<bucket4j.version>8.15.0</bucket4j.version>
+	</properties>
+
+	<dependencyManagement>
+		<dependencies>
+			<dependency>
+				<groupId>org.springframework.cloud</groupId>
+				<artifactId>spring-cloud-dependencies</artifactId>
+				<version>${spring-cloud.version}</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
+
+	<dependencies>
+		<!-- The gateway itself: servlet-stack (webmvc) variant, because this platform
+		     is webmvc and the reactive gateway would drag in a second runtime model. -->
+		<dependency>
+			<groupId>org.springframework.cloud</groupId>
+			<artifactId>spring-cloud-starter-gateway-server-webmvc</artifactId>
+		</dependency>
+
+		<!-- Edge authentication. The gateway validates the same HS256 tokens the
+		     monolith issues (shared secret) and rejects unauthenticated calls at the
+		     edge, exactly mirroring the monolith's public/authenticated split. Same
+		     three artifacts the backend uses. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-security</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.security</groupId>
+			<artifactId>spring-security-oauth2-resource-server</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.security</groupId>
+			<artifactId>spring-security-oauth2-jose</artifactId>
+		</dependency>
+
+		<!-- Distributed rate limiting. The webmvc gateway's rateLimit() filter pulls
+		     an AsyncProxyManager bean from the context and builds a distributed bucket
+		     against it; we back that with Redis via bucket4j's Lettuce module, so the
+		     limit is shared across gateway instances rather than per-process. -->
+		<dependency>
+			<groupId>com.bucket4j</groupId>
+			<artifactId>bucket4j_jdk17-lettuce</artifactId>
+			<version>${bucket4j.version}</version>
+		</dependency>
+		<!-- bucket4j marks the Lettuce client optional, so declare it explicitly. Its
+		     version is pinned to 6.3.2 by the lettuce.version property above, not the
+		     7.5.x the Boot BOM would otherwise impose. -->
+		<dependency>
+			<groupId>io.lettuce</groupId>
+			<artifactId>lettuce-core</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-actuator</artifactId>
+		</dependency>
+
+		<!-- Tests: a WireMock stub stands in for the monolith backend, Testcontainers
+		     Redis backs the real rate limiter, and jose mints HS256 tokens at the edge. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.security</groupId>
+			<artifactId>spring-security-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-junit-jupiter</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!-- The standalone (shaded) build bundles its own Jetty, so it does not need one
+		     on a Tomcat-based gateway's classpath or collide with the app's server. -->
+		<dependency>
+			<groupId>org.wiremock</groupId>
+			<artifactId>wiremock-standalone</artifactId>
+			<version>3.13.0</version>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.springframework.boot</groupId>
+				<artifactId>spring-boot-maven-plugin</artifactId>
+			</plugin>
+		</plugins>
+	</build>
+</project>
