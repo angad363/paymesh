@@ -8,10 +8,16 @@ package com.paymesh.shared.tenant;
  *
  * Before ADR-039 the gate read the authoritative {@code merchants} table, which was always current,
  * so the only question was allowed-or-not. The projection is eventually consistent -- and in the
- * monolith the relay is asynchronous and off under {@code dev}, so a just-registered or
- * just-activated merchant is routinely absent for a relay cycle. That absence is NOT a denial; it is
- * "ask again shortly". Collapsing it into {@code DENIED} would turn propagation lag into a permanent
- * 403 for a merchant that is in fact fine.
+ * monolith the relay is asynchronous and off under {@code dev}, so a just-registered merchant is
+ * routinely absent for a relay cycle. That absence is NOT a denial; it is "ask again shortly".
+ * Collapsing it into {@code DENIED} would turn propagation lag into a permanent 403 for a merchant
+ * that is in fact fine.
+ *
+ * <p>Note the one lag this does NOT catch: a just-<em>activated</em> merchant is already present
+ * (from {@code merchant.registered}) with its prior status, so it reads as {@code DENIED} (a brief
+ * 403), not {@code UNKNOWN}, until {@code merchant.activated} propagates. Status alone cannot tell
+ * "genuinely pending" from "activated-but-lagging"; that one-relay-cycle window is the accepted
+ * ceiling of ADR-039 section 4.
  */
 public enum MerchantTransactability {
 

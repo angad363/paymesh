@@ -72,6 +72,18 @@ BEGIN
                     CHECK (status IN ('PENDING_VERIFICATION','ACTIVE','SUSPENDED','CLOSED'))
             )
         $ddl$, s);
+
+        -- BACKFILL. The lifecycle outbox is new in this migration's PR, so a
+        -- merchant that already existed emitted no event and would never appear
+        -- in the projection -- leaving it permanently UNKNOWN, i.e. a forever 503
+        -- from the gate. Seed each copy from the authoritative table (still in the
+        -- process, this migration only drops the FK, not the table). Empty on a
+        -- fresh database; correct on any existing one. status/updated_at columns
+        -- and the status CHECK set are identical to merchant.merchants (V1).
+        EXECUTE format($seed$
+            INSERT INTO %I.merchant_ref (merchant_id, status, updated_at)
+            SELECT merchant_id, status, updated_at FROM merchant.merchants
+        $seed$, s);
     END LOOP;
 END $$;
 

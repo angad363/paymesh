@@ -172,6 +172,10 @@ public final class MerchantStatusFilter extends OncePerRequestFilter {
             case ALLOWED -> chain.doFilter(request, response);
             case DENIED -> forbidden(response);
             case UNKNOWN -> notYetAvailable(response);
+            // Fail closed. A statement switch is not exhaustiveness-checked, so a
+            // future verdict must not fall through to a blank committed response on
+            // a write path -- refuse rather than let it slip past the gate.
+            default -> throw new IllegalStateException("Unhandled merchant verdict");
         }
     }
 
