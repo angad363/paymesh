@@ -24,6 +24,15 @@ spring:
     # when the pool opens, which is the intended outcome of forgetting them.
     username:
     password:
+    hikari:
+      # SCHEMA-PER-SERVICE search_path (ADR-038). Every table moved out of public
+      # into its service schema (V38), but entities keep bare @Table(name=...), so
+      # each app connection must be able to resolve an unqualified name across all
+      # ten schemas. This is safe because all 46 table names are GLOBALLY UNIQUE
+      # (they shared one schema until V38), so nothing a wrong schema could shadow.
+      # public stays last, for the shared functions (is_prefixed_id) and anything
+      # not yet moved. Flyway pins itself to public (below) and is unaffected.
+      connection-init-sql: SET search_path TO identity, merchant, payment, ledger, settlement, risk, simulator, webhook, engagement, platform, public
 
   # --- JPA / Hibernate -------------------------------------------------------
   jpa:
@@ -51,6 +60,13 @@ spring:
         # lines instead of one long string. No effect while show-sql is false; set
         # now so dev logging is readable later.
         format_sql: true
+        hbm2ddl:
+          # individually, not the default grouped extraction (ADR-038). With tables
+          # spread across ten schemas (V38) and entities carrying no explicit schema,
+          # ddl-auto=validate must look each mapped table up on its own, resolving it
+          # through the connection's search_path above, rather than reading one
+          # schema's whole catalogue and failing on everything not in it.
+          jdbc_metadata_extraction_strategy: individually
     # NOTE ON DIALECT: we intentionally do NOT set database-platform / dialect.
     # Hibernate auto-detects PostgreSQLDialect from the live JDBC connection
     # metadata. Hard-coding a versioned dialect is unnecessary in Spring Boot 4
@@ -67,6 +83,13 @@ spring:
     # not exist yet (no migrations this checkpoint) -> Flyway finds zero scripts
     # and does nothing, which is a valid, green state.
     locations: classpath:db/migration
+    # public, pinned (ADR-038). The app connection's search_path (above) lists the
+    # service schemas first, but Flyway's history must stay in public where V1-V37
+    # already recorded it -- otherwise Flyway would look for its history in the first
+    # search_path schema, find none on an existing database, and try to re-run V1.
+    # Pinning it here also means Flyway migrates with public in scope, so V38's
+    # `ALTER TABLE orders SET SCHEMA payment` resolves `orders` (still in public then).
+    schemas: public
     # false: refuse to run against a NON-empty database that has no Flyway history,
     # instead of silently "adopting" it. Fail-loud is the safe production default;
     # set true only for a deliberate one-time adoption of a pre-existing schema.
