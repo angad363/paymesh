@@ -66,7 +66,7 @@ balance, which was not true of this codebase before
 **Refund** closes the loop in the other direction: money goes back out, the Ledger posts a
 reversal, and the payment reaches `REFUNDED`
 ([ADR-019](docs/decisions/ADR-019-refunds-own-their-callback-route-and-guard-over-refund-with-a-lock.md)).
-**1479 tests, 0 failures. Thirty-five Flyway migrations (V1–V35). Thirty-four ADRs.**
+**1529 tests, 0 failures. Thirty-eight Flyway migrations (V1–V38). Thirty-eight ADRs.**
 
 **A merchant can now be stopped.** Three lifecycle enums had exactly one reachable value each —
 no merchant could be suspended, no user disabled, no customer blocked, and nothing anywhere read
@@ -93,7 +93,7 @@ Platform pieces, honestly:
 
 | Piece | State |
 |---|---|
-| PostgreSQL + Flyway | Working; Hibernate runs `ddl-auto=validate`, Flyway owns the schema |
+| PostgreSQL + Flyway | Working; Hibernate runs `ddl-auto=validate`, Flyway owns the schema. **Schema-per-service (ADR-038, V38):** the 46 tables live in ten schemas (nine services + a `platform` schema), each with a fenced `*_svc` role, still one process |
 | Idempotency | Working, on four registered routes |
 | Outbox + relay + inbox | Working. Events are written in-transaction, polled by a scheduled relay, dispatched in-process, and deduplicated per consumer in `processed_events`. **Two** consumers now read one event — Order and the Ledger — each with its own inbox row |
 | Double-entry ledger | Working for captures, refund reversals, releases **and settlement** — beyond the release job, Settlement moves cleared funds `available → SETTLEMENT_IN_TRANSIT → BANK_CASH`, the last step posted only on the provider's signed payout callback ([ADR-031](docs/decisions/ADR-031-release-funds-from-the-ledger-itself.md), [ADR-032](docs/decisions/ADR-032-settlement-cuts-and-the-provider-posts-cash.md)). Debits equal credits, entries are immutable, and both rules are enforced by PostgreSQL triggers rather than by application code. A correction is a new journal, never an edit |
@@ -292,6 +292,14 @@ by default; an unregistered route passes through the filter untouched.
 Flyway owns the schema. Hibernate runs with `ddl-auto=validate` and never creates or
 alters a table.
 
+Since **V38 (schema-per-service, ADR-038)** the 46 tables no longer live in `public`: they are
+carved into ten schemas — `identity`, `merchant`, `payment`, `ledger`, `settlement`, `risk`,
+`simulator`, `webhook`, `engagement`, and a `platform` schema for `outbox_events`,
+`processed_events` and `idempotency_records`. Entities keep bare `@Table(name=…)`; each
+connection resolves them through a `search_path` across all ten schemas (safe because every table
+name is globally unique). Nine `NOLOGIN` `*_svc` roles are fenced to their own schema and proven
+so by `SchemaIsolationTest`. Still one process, one datasource, one Flyway history in `public`.
+
 | Migration | Adds |
 |---|---|
 | `V1__create_merchants.sql` | `merchants`, with `uq_merchants_email` as the real uniqueness guard |
@@ -307,6 +315,8 @@ alters a table.
 | `V11__create_order_state_history.sql` | `order_state_history` (no backfill, and the migration says at length why) plus `idx_orders_expirable`, the first index on `orders` that does not lead with `merchant_id` |
 | `V12__index_processing_payment_intents.sql` | The access path for the `PROCESSING` timeout sweep (ADR-015) |
 | `V14__create_processed_events.sql` | `processed_events`: the inbox. Primary key `(consumer_name, event_id)`, which is the concurrency control rather than an access path — the claim is `INSERT … ON CONFLICT DO NOTHING` and the row count is the answer |
+| … | V15–V37 build the ledger, refunds, webhooks, risk, settlement and the rest (see the migration folder and the ADR table) |
+| `V38__schema_per_service.sql` | Moves all 46 tables into ten schemas by `ALTER TABLE … SET SCHEMA` (every trigger, index and FK kept), and creates nine fenced `*_svc` roles (ADR-038) |
 
 Every merchant-owned table carries `merchant_id`, and every index is composite and
 merchant-leading. **`processed_events` is the one exception and it is argued in the
@@ -327,6 +337,19 @@ cd backend
 ./mvnw clean package            # build the jar
 ./mvnw verify                   # full build + tests
 ```
+
+**One-time dev bootstrap for schema-per-service (ADR-038).** The test suite runs V38 as the
+Testcontainers superuser and needs nothing. To run the app against a **local native PostgreSQL**,
+its app role must be allowed to create the schemas V38 introduces:
+
+```bash
+psql -d paymesh -c "GRANT CREATE ON DATABASE paymesh TO paymesh_app;"
+# optional — only to create the fenced *_svc roles locally as well:
+psql -d paymesh -c "ALTER ROLE paymesh_app CREATEROLE;"
+```
+
+Without `CREATEROLE`, V38 skips the `*_svc` roles with a notice rather than failing — they are
+extraction-prep, not needed for the single process to run.
 
 ### Kafka
 
@@ -502,7 +525,7 @@ decisions. When citing one, say which source you mean.
 |---|---|
 | [`docs/project-status.md`](docs/project-status.md) | **The pick-up-here document.** What exists, what is verified, what is deliberately unfinished, what comes next, and the open items worst-first |
 | `docs/PayMesh_Payment_as_a_Service_Software_Design_Document.docx` | The SDD: 31 sections plus appendices covering the full ~15-service target platform, per-service API/event/schema catalogs, and end-to-end workflows |
-| [`docs/decisions/`](docs/decisions/) | Thirty-six ADRs; the table above lists the architecture-shaping ones |
+| [`docs/decisions/`](docs/decisions/) | Thirty-eight ADRs; the table above lists the architecture-shaping ones |
 | [`docs/api/rest-api-conventions.md`](docs/api/rest-api-conventions.md) | HTTP/JSON contract: versioning, status codes, error shape, pagination, idempotency, money, timestamps, enum casing |
 | [`docs/development/java-coding-conventions.md`](docs/development/java-coding-conventions.md) | Layering, DI, immutability, exceptions, logging, testing, framework boundaries, no Lombok |
 | [`docs/architecture/package-structure.md`](docs/architecture/package-structure.md) | The package layout in detail |
@@ -550,9 +573,12 @@ Ledger extracted last and whole. PR 1 (ADR-036) built the backbone: a KRaft brok
 `docker-compose.yml` and a versioned wire envelope formalized from the outbox row. PR 2
 (ADR-037) gave it a caller — the **dual path**: in `both` mode the relay publishes to Kafka
 alongside the in-process dispatcher and one listener consumes back through the same inbox,
-reversible by a flag. Nothing has been extracted, and 3A is deliberately all scaffold — by the
-end of it the monolith publishes to Kafka, consumes from Kafka and runs on nine schemas while
-still being one process.
+reversible by a flag. PR 3 (ADR-038, V38) carved the database: the 46 tables now live in ten
+schemas — nine service schemas plus a `platform` schema — each with a fenced `*_svc` role, with
+no foreign key dropped (the `* → merchants` FK is kept for PR 4 to replace with a `merchant_ref`
+projection). Nothing has been extracted, and 3A is deliberately all scaffold — by the end of it
+the monolith publishes to Kafka, consumes from Kafka and runs on nine schemas while still being
+one process.
 
 The Ledger will still be the last thing extracted into a service (SDD §30.1). It is the
 financial source of truth — double-entry, immutable entries, corrections as reversal

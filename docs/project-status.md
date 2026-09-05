@@ -1,16 +1,18 @@
 # PayMesh — Project Status and Roadmap
 
-_Last updated: 26 August 2026, after Phase 3 PR 2 (the dual-path relay) was built. Update
+_Last updated: 5 September 2026, after Phase 3 PR 3 (schema-per-service) was built. Update
 this file at the end of a working session, not during one._
 
 **Reading this to resume?** Phase 2 is **complete** — all eight of its capabilities are merged,
 Audit (ADR-035, V36) last. **Phase 3 has started**: `docs/phase-3-microservices-extraction-plan.md`
-is the plan of record. **PR 1 (the Kafka backbone, ADR-036) is merged, and PR 2 (the dual-path
-relay, ADR-037) is built on `feature/dual-path-relay`.** The relay now publishes to Kafka *and*
-the in-process dispatcher, and one listener consumes back through the same inbox — behind
-`paymesh.events.delivery.mode` (`both` by default, `in-process` the rollback). Nothing is
-extracted yet; read "PICK UP HERE — Phase 3, after the dual-path relay" at the bottom before
-starting PR 3.
+is the plan of record. **PR 1 (Kafka backbone, ADR-036) and PR 2 (dual-path relay, ADR-037) are
+merged; PR 3 (schema-per-service, ADR-038) is built on `feature/schema-per-service`.** The 46
+tables now live in **ten schemas** — nine service schemas plus a `platform` schema for the shared
+outbox/inbox/idempotency tables — with nine fenced `*_svc` roles proving a service cannot read
+another's tables (`SchemaIsolationTest`). Still **one process, one datasource** spanning all
+schemas via `search_path`; no FK dropped (the `* → merchants` FK is kept, PR 4 replaces it with the
+`merchant_ref` projection). Nothing is extracted yet; read "PICK UP HERE — Phase 3, after
+schema-per-service" at the bottom before starting PR 4.
 
 This is the pick-up-here document. It records what exists, what has actually been
 verified, what is deliberately unfinished, and what comes next. For *why* a design
@@ -30,7 +32,7 @@ state change and the event announcing it commit together, and **that outbox is f
 A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
 consumers, and Order is the first consumer (ADR-016).
 
-**1528 tests, 0 failures.** Thirty-seven Flyway migrations (V1–V37). Thirty-seven ADRs. The Postman
+**1529 tests, 0 failures.** Thirty-eight Flyway migrations (V1–V38). Thirty-eight ADRs. The Postman
 collection runs **nineteen folders green** — the newest a self-contained Reporting folder (17
 requests, 30 assertions, verified with newman against the running app) covering the two summary
 reads, the async export lifecycle, tenant isolation and every error path.
@@ -614,7 +616,7 @@ no financial effect.
 
 ```bash
 cd backend
-./mvnw test                     # 1528 tests; needs Docker, no local database
+./mvnw test                     # 1529 tests; needs Docker, no local database
 ./mvnw spring-boot:run          # port 8080, activates the dev profile via the pom
 
 # API contract, end to end, including cross-tenant isolation and idempotency
@@ -689,6 +691,7 @@ The collection is not decorative: dropping the tenant predicate in
 | 035 | An append-only audit log recorded in-process inside the acting transaction (its subjects emit no event), immutable by trigger like `ledger_entries` |
 | 036 | Kafka (KRaft) is the event backbone; the wire envelope is the outbox row formalized as a separate published type, one topic per aggregate type with the aggregate id as the partition key (so one aggregate's causally-chained events cannot be reordered), and changes are additive within a version |
 | 037 | The dual-path relay: two INDEPENDENT passes over two columns (`published_at` in-process, `kafka_published_at` on Kafka, V37) plus one listener consuming back through the same inbox, behind `paymesh.events.delivery.mode` (`both` default, `in-process` rollback). Two columns because a single shared gate let a Kafka outage stall in-process money-path delivery; the dead-letter budget governs the in-process sink only, and the Kafka sink retries without a budget, surfaced by its own backlog age |
+| 038 | Schema-per-service (V38): the 46 tables move into ten schemas (nine services + a `platform` schema for outbox/inbox/idempotency) by `ALTER TABLE … SET SCHEMA`, keeping every trigger, index and FK intact. Nine `NOLOGIN` `*_svc` roles are fenced to their own schema and proven so. Lean carve — still one process, one datasource, one Flyway history; no FK dropped (the `* → merchants` FK is kept for PR 4 to replace). Schema follows the code package, so three of the plan's mappings are corrected. Per-service Flyway histories and splitting the platform tables are deferred to each service's extraction |
 
 Note that the SDD's Appendix D has its own ADR list with the same numbers and
 different decisions. When citing one, say which source you mean.
@@ -1166,15 +1169,58 @@ not yet know, and a file meaning "unknown" must never be read as "nothing moved"
 belongs in the provider's adapter — which is why the job carries the provider's status as a raw
 string and skips every value it does not recognise rather than defaulting.
 
-### PICK UP HERE — Phase 3, after the dual-path relay (PR 2)
+### PICK UP HERE — Phase 3, after schema-per-service (PR 3)
 
-Phase 2 is closed. **PR 1 (ADR-036) is merged; PR 2 (the dual-path relay, ADR-037) is built on
-`feature/dual-path-relay`** and **1528 tests are green**. The plan of record is
+Phase 2 is closed. **PR 1 (ADR-036), PR 2 (ADR-037) and PR 3 (schema-per-service, ADR-038) are
+done** and **1529 tests are green**. The plan of record is
 `docs/phase-3-microservices-extraction-plan.md`; work it **one PR at a time, in table order**. The
-next PR is **PR 3, schema-per-service** (`feature/schema-per-service`, **ADR-038**) — the big,
-hard-to-reverse one, done behind a backup and a tested down-path, still one process.
+next PR is **PR 4, the merchant reference projection** (`feature/merchant-ref-projection`,
+**ADR-039**) — consumers stop depending on `merchants` and read a local event-fed `merchant_ref`
+instead, and each `* → merchants` FK is dropped *in the same step* its replacement lands.
 
-What PR 2 actually put in the tree, and what it deliberately did not:
+What PR 3 actually put in the tree, and what it deliberately did not:
+
+- **Ten schemas, one migration (V38).** `ALTER TABLE … SET SCHEMA` moves each of the 46 tables into
+  its service schema — `identity`, `merchant`, `payment`, `ledger`, `settlement`, `risk`,
+  `simulator`, `webhook`, `engagement` — plus a tenth `platform` schema for `outbox_events`,
+  `processed_events`, `idempotency_records`. The move carries every index, owned sequence, constraint
+  and trigger with the table, so the ledger's deferred `debits = credits` trigger and the
+  immutability triggers are now provably wholly inside the `ledger` schema.
+- **Schema follows the CODE PACKAGE, and where the plan's prose table disagreed the code won**
+  (ADR-038 §1): `api_credentials` → `merchant` (its entity is in `com.paymesh.merchant`),
+  `provider_callbacks` and `refund_callbacks` → `payment` (PayMesh's received-callback record and
+  Refund's own route, not the simulator's or settlement's). The plan also lists three tables that do
+  not exist (`payout_attempts`, `refund_attempts`, `refund_reservations`); omitted.
+- **No FK dropped — the `* → merchants` FK is KEPT (ADR-038 §3).** Postgres allows a cross-schema FK
+  within one database, so every FK still enforces. The plan's PR 3 drops it, but dropping it here
+  would leave a money-path integrity guard gone for a whole PR with nothing replacing it; PR 4 drops
+  each FK in the same step it lands `merchant_ref`. The one place PR 3 trades a plan target ("no
+  cross-schema FK left") for the governing invariant.
+- **Nine fenced roles prove the boundary (ADR-038 §4).** V38 creates `NOLOGIN` `identity_svc`,
+  `merchant_svc`, … each granted USAGE on only its own schema; `SchemaIsolationTest` `SET ROLE`s into
+  each and asserts a cross-schema `SELECT` is refused while its own succeeds. **The single-process app
+  does NOT connect as these yet** — one Hibernate over one datasource spans all schemas, so it uses a
+  role that sees them all. Each service adopts its restricted role at extraction.
+- **How unqualified names still resolve.** Entities keep bare `@Table(name=…)`; every app connection
+  sets `search_path` across all ten schemas (Hikari `connection-init-sql`), which is safe because all
+  46 table names are globally unique. Hibernate reads metadata `individually` so `ddl-auto=validate`
+  resolves each table through that path — **the drift guard is intact** (verified by injecting a bogus
+  column: startup failed with `missing column … in table [merchants]`, resolved in the `merchant`
+  schema). Flyway is pinned to `public` so its history placement is independent of `search_path`. No
+  entity and no native-query change.
+- **Lean carve — two plan items deferred, marked in code (ADR-038 §5).** One Flyway history (not
+  nine) and one physical copy of each platform table (not nine): both are machinery that gets
+  rewritten and moved when a service is extracted, so building them now is code with no caller. Each
+  service takes its own at 3B+.
+- **No HTTP surface changed, so the Postman collection is untouched** — deliberately.
+
+Dev bootstrap note: Testcontainers runs V38 as the container superuser and needs nothing. A local
+native Postgres running `./mvnw spring-boot:run` needs its app role able to create the schemas
+(`GRANT CREATE ON DATABASE paymesh TO paymesh_app;`); to also create the fenced roles locally,
+`ALTER ROLE paymesh_app CREATEROLE;`. Without `CREATEROLE` the migration skips the roles with a
+notice rather than failing (the roles are extraction-prep, not needed for one process to run).
+
+What PR 2 put in the tree, and what it deliberately did not:
 
 - **One flag, `paymesh.events.delivery.mode`** — `both` (default) or `in-process` (the rollback,
   and a behavioural no-op because `both` changed nothing about the in-process path). It governs the
