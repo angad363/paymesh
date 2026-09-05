@@ -4,149 +4,267 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-PayMesh is an educational Payment-as-a-Service backend. It processes no real money and claims no PCI/banking compliance. The point is to model a realistic payment platform (merchants, customers, orders, payments, providers, refunds, a double-entry ledger, balances, settlements, webhooks, risk, reporting) while learning Spring Boot, clean architecture, and event-driven / distributed-system patterns.
+PayMesh is an educational Payment-as-a-Service backend. It processes no real money and claims no PCI DSS, banking, or regulatory compliance.
 
-**Phase 1 is complete.** Built and green: **Merchant**, **Identity & Access**, **Customer**, **Order**, **Payment**, the **Provider Simulator**, the **Ledger**, **Refund**, and **Reconciliation** — plus the platform work underneath them (PostgreSQL-backed idempotency, a transactional outbox with a relay, an in-process dispatcher and a `processed_events` inbox, and a retry budget with a dead letter). **Phase 2 is complete**: **Webhook** (ADR-028), **Risk** (ADR-030), the Ledger's settleable balance (ADR-031), **Settlement** (ADR-032), **Notification** (ADR-033), **Reporting** (ADR-034) and **Audit** (ADR-035) are all built. Audit is the last: an append-only `audit_events` log of privileged/operational actions (merchant freezes, role grants, secret rotations), recorded in-process inside the acting transaction through a shared `AuditRecorder` port, immutable by a trigger exactly as `ledger_entries` is.
+The project models a realistic payment platform: merchants, identity, customers, orders, payments, provider simulation, refunds, double-entry ledger, balances, settlements, webhooks, risk, reporting, audit, and event-driven service extraction.
 
-**Phase 3 has started.** `docs/phase-3-microservices-extraction-plan.md` is the plan of record for turning the monolith into nine deployables around a Kafka backbone; it is executed one PR at a time in table order. PR 1 (ADR-036) is merged: a single-broker KRaft Kafka in `docker-compose.yml`, a Testcontainers broker in one test, and `shared.outbox.infrastructure.kafka` — `EventEnvelope` (the wire contract, topic naming and version rule) and `KafkaEventPublisher`. PR 2 (ADR-037, the **dual-path relay**) is built: in `both` mode (the default; `in-process` is the rollback, set under `dev`) the relay runs two INDEPENDENT passes over two columns — `publish()` delivers in-process and stamps `published_at`, `relayToKafka()` publishes to Kafka and stamps `kafka_published_at` (V37) — and one `KafkaEventListener` consumes back through the same `processed_events` inbox, so an event is delivered twice and applied once. Two columns, not one, because a single shared gate let a Kafka outage stall in-process money-path delivery; separate tracks keep in-process immune to the broker. The dead-letter budget governs the in-process sink only — a broker outage retries without spending it. Still nothing is extracted; the app starts and the whole suite passes with no broker because `dev` runs `in-process`. PR 3 (ADR-038, V38, the **schema-per-service** carve) is built: the 46 tables move into ten schemas (nine services + a `platform` schema for outbox/inbox/idempotency) by `ALTER TABLE … SET SCHEMA`, keeping every trigger, index and FK; nine fenced `NOLOGIN` `*_svc` roles prove a service cannot read another's tables (`SchemaIsolationTest`); no FK dropped (the `* → merchants` FK is kept for PR 4). Still one process, one datasource spanning all schemas via `search_path`, one Flyway history in `public`. PR 4 (ADR-039, V39, the **merchant reference projection**) is built: the merchant capability now emits lifecycle events (`merchant.registered/activated/suspended/closed`) from its own outbox, in the acting transaction; a `merchant_ref` read model (`merchant_id, status, updated_at`) lives in each of the six consuming service schemas, fed by one `MerchantRefProjector` through the inbox; and the platform's `MerchantStatusGate` now reads that projection (`MerchantRefStore`, schema-qualified JDBC — six tables share one name, so a bare JPA entity cannot resolve them) instead of the `merchants` table — the last thing that made a consumer read the merchant's authoritative table. The 17 cross-capability `* → merchants` FKs are dropped in the same migration; the two `platform` ones (outbox/idempotency) are kept, having no projection to replace them. The gate gains a third outcome: **absent from the projection → 503 `MERCHANT_NOT_YET_AVAILABLE` (retryable)**, distinct from present-but-inactive → 403. Consequence to know: the gate is now eventually consistent (the projection is relay-fed), so a suspension takes one relay cycle to bite — partially walking back ADR-021's "no cache" stance, acceptable because suspension is policy, not money integrity. PR 5 (ADR-040, the **API gateway**) is built on `feature/api-gateway`: a new standalone `gateway/` Maven module (Spring Cloud Gateway Server WebMVC 5.0.0, port 8081 — its own pom, wrapper, and `./mvnw`; NOT a reactor conversion) is the one north-south front door. It validates the same HS256 tokens at the edge from the same shared secret, mirroring the monolith's public/authenticated split exactly (`/api/**` needs a token; `/api/v1/auth`, `POST /api/v1/merchants`, `/internal/**` HMAC callbacks and `/sim/**` shared-key routes pass through untouched), routes every prefix to the monolith (`backend-uri`, re-pointed per service in 3B), and rate-limits `/api/**` per client IP with a **Redis-backed bucket4j** limiter → 429 (new `redis` service in compose). Three notes that bit: the proxy hop is pinned to HTTP/1.1 (h2c POST to the plaintext monolith gets `RST_STREAM`), Lettuce is pinned to 6.3.2 in the gateway pom (bucket4j 8.15's CAS path predates Lettuce 7), and `spring.cloud.compatibility-verifier.enabled=false` because Spring Cloud 2025.1.0 whitelists only Boot 4.0.x. Nothing is extracted and `backend/` is untouched; the gateway is optional until 3B. Next is PR 6 (`service/provider-sim`, ADR-041), the extraction pilot that begins 3B — the first time code leaves the process.
+## Current state
 
-`docs/project-status.md` is the authoritative pick-up-here document and is kept current; read it before assuming anything about what exists.
+**Do not keep historical PR/status details in this file.**
 
-The full product/architecture vision lives in `docs/PayMesh_Payment_as_a_Service_Software_Design_Document.docx` — the Software Design Document (SDD). Read it before designing a new capability. It is a **target reference and it runs well ahead of the code**: Phase 1 is built, Phase 2 (§14, §17–§20) is not, and several Phase-1 sections are deliberately only partly implemented. `docs/project-status.md` §"What of the SDD is implemented" maps section by section what actually exists. The summary below captures what shapes day-to-day code decisions.
+`docs/project-status.md` is the authoritative pick-up-here document. Read it before assuming what is currently built, what is next, or which migration/ADR numbers are current.
 
-## Target architecture (where this is heading)
+For the current Phase 3 PR, read the matching section of:
+`docs/phase-3-microservices-extraction-plan.md`
 
-The end state is ~15 services around a Kafka event backbone, but the roadmap is deliberately **modular-monolith-first**: build one deployable with strict module boundaries, prove the API/event contracts, and only extract services later (low-coupling ones like webhook/notification/provider/risk/reporting first; the Ledger last). Build for those boundaries now even while everything is one process — that is the whole point of package-by-feature.
+The SDD and Phase 3 plan are target/reference documents and may run ahead of the code. When they disagree with the current implementation, surface the divergence instead of silently rewriting the design.
 
-**The governing invariant:** a request may fail or be retried, but committed money movement must never be lost, silently duplicated, or become unauditable. Most rules below exist to protect it.
+## Source-of-truth documents
 
-- **The Ledger is the financial source of truth**, not payment rows. It is double-entry: every transaction's debits equal its credits, amounts are positive integers in minor units with direction stored separately, entries are immutable, and corrections are new reversal transactions (never edits/deletes). A `SUCCEEDED` payment is operational state; the balance only becomes real once the ledger posts.
-- **Idempotency everywhere it matters.** Public writes, provider callbacks, and event consumers must be safe to retry. Durable idempotency scope is `merchant + endpoint/action + Idempotency-Key`, stored in **PostgreSQL** (Redis is only an accelerator). Same key + different body → `409`. Merchant registration already models the spirit of this via `existsByEmail`.
-- **Transactional outbox + inbox.** A service commits its state change and an `outbox_events` row in the *same* transaction; a relay publishes to Kafka; consumers insert into a `processed_events` (inbox) table so duplicate delivery is a safe no-op. Delivery is at-least-once, never exactly-once.
-- **Explicit state machines.** Callers request actions (`confirm`, `capture`, `activate`); they never set a status field directly. This is why domain aggregates expose intent methods, not setters.
-- **Tenant isolation.** Every merchant-owned table carries `merchant_id` and every query scopes by it. An object ID never authorizes access on its own; cross-tenant access returns `404`/`403` without leaking existence.
-- **Graceful degradation & non-authoritative caches.** Redis, notifications, and reporting may fail without corrupting payments. Reporting/read models are eventually consistent by design.
-- **AI is advisory only.** The planned AI operations service can explain and summarize but must never post a ledger entry, move money, or approve a refund.
+Read only the relevant document/section for the task; do not read entire documents by default.
 
-Money is always integer **minor units** + explicit currency; timestamps are UTC `Instant`/ISO-8601; enum values are `UPPER_SNAKE_CASE`; IDs are opaque prefixed strings (see below). Target stack: Java 21, Spring Boot, PostgreSQL + Flyway/Liquibase, Redis, Kafka (KRaft), Spring Security (JWT/OAuth2/OIDC + API keys + HMAC webhooks), Resilience4j, OpenTelemetry/Prometheus/Grafana/Loki/Tempo, Docker/Kubernetes/Helm/Terraform, Testcontainers.
+- `docs/project-status.md` — current implementation state and next work.
+- `docs/phase-3-microservices-extraction-plan.md` — Phase 3 plan of record.
+- `docs/PayMesh_Payment_as_a_Service_Software_Design_Document.docx` — target product and architecture.
+- `docs/api/rest-api-conventions.md` — HTTP/JSON/API contract rules.
+- `docs/development/java-coding-conventions.md` — Java design and coding rules.
+- `docs/architecture/package-structure.md` — package/module structure.
+- `docs/decisions/ADR-*.md` — decisions and the reason behind them.
+- `docs/domain/` and `docs/api/*-contract.md` — capability-specific domain/API contracts.
 
-## Commands
+If an ADR or contract directly governs the requested change, read that specific document before editing.
 
-All commands run from `backend/` (the Maven project root). Use the wrapper `./mvnw`.
+## Non-negotiable architecture invariants
 
-```bash
-cd backend
-./mvnw test                                            # run all tests
-./mvnw test -Dtest=MerchantTest                        # single test class
-./mvnw test -Dtest=MerchantTest#registersMerchant      # single test method
-./mvnw spring-boot:run                                 # run the app (port 8080)
-./mvnw clean package                                   # build the jar
-./mvnw verify                                          # full build + tests
+1. **Financial correctness**
+   A request may fail or be retried, but committed money movement must never be lost, silently duplicated, or become unauditable.
+
+2. **Ledger is the financial source of truth**
+   Payment state is operational state. Financial truth lives in the double-entry ledger. Never edit/delete ledger history to correct a mistake; use a new reversal/correction transaction.
+
+3. **Idempotency**
+   Public writes, provider callbacks, and event consumers must be safe under retry and duplicate delivery. PostgreSQL is the durable authority; Redis is never the financial source of truth.
+
+4. **Transactional outbox + inbox**
+   Commit business state and the service's outbox event atomically. Consumers use `processed_events`/inbox semantics so duplicate events are safe. Delivery is at-least-once, not exactly-once.
+
+5. **No distributed transactions**
+   Each service owns its local transaction. Cross-service behavior is eventual, idempotent, and recoverable.
+
+6. **Service owns its data**
+   A service must not read another service's tables. Use an event-fed local read model or a synchronous API owned by the other service.
+
+7. **Explicit state machines**
+   Business actions use intent-revealing methods (`activate`, `confirm`, `capture`, etc.). Do not set domain status fields directly.
+
+8. **Tenant isolation**
+   Merchant-owned data is scoped by merchant. Resource IDs alone never authorize access.
+
+9. **Non-authoritative infrastructure**
+   Redis, reporting, notifications, and other read-side infrastructure may fail without corrupting financial state.
+
+10. **AI is advisory**
+    AI may explain, summarize, or analyze. It must not directly move money, post ledger entries, or approve financial actions.
+
+## Architecture and Java conventions
+
+### Package-by-feature
+
+Use business modules under `com.paymesh`, not global technical packages.
+
+```text
+com.paymesh
+├── merchant
+├── customer
+├── order
+├── payment
+├── ledger
+└── shared
 ```
 
-Kafka runs from the repository root and is **optional** for the monolith — no code path needs it yet:
+A capability normally follows:
 
-```bash
-docker compose up -d kafka                             # single-broker KRaft (ADR-036)
-docker compose up -d redis                             # gateway rate-limit store (ADR-040)
+```text
+<feature>/
+├── api/
+├── application/
+├── domain/
+└── infrastructure/
 ```
 
-The **API gateway (ADR-040)** is a separate module with its own build, off in `gateway/`. It is a
-second deployable and optional until 3B; the monolith does not need it. To run or test it:
+Dependency direction:
 
-```bash
-cd gateway
-./mvnw test                                            # 9 tests; needs Docker (Testcontainers Redis + WireMock)
-./mvnw spring-boot:run                                 # gateway on 8081 → monolith on 8080
+```text
+api → application → domain
+infrastructure → application/domain contracts
 ```
 
-Running the gateway needs `docker compose up -d redis` and the JWT secret (the `dev` profile supplies
-the throwaway one that matches the monolith); the monolith itself need not be up for it to boot.
+Do not introduce global packages such as:
 
-- **Java 21**, **Spring Boot 4.1.0**, Maven. Note Boot 4 specifics: the web starter is `spring-boot-starter-webmvc` (not `-web`), and Jackson is v3 — its `ObjectMapper` is `tools.jackson.databind.ObjectMapper`, not `com.fasterxml.jackson`.
-- Health/info actuator endpoints are exposed at `/actuator/health` and `/actuator/info`.
-
-## Architecture
-
-**Package-by-feature, not package-by-layer** (ADR-002). Each business capability owns a top-level package under `com.paymesh` and is internally split into four layers. Never introduce global technical packages like `com.paymesh.controller` / `.service` / `.repository` / `.dto`.
-
-```
-com.paymesh.merchant
-├── api             HTTP boundary: controller, request/response records, @RestControllerAdvice
-├── application     use-case services, commands, repository interfaces, business exceptions
-├── domain          aggregates + value objects that protect invariants (framework-free)
-└── infrastructure  config (bean wiring) + persistence adapters
+```text
+com.paymesh.controller
+com.paymesh.service
+com.paymesh.repository
+com.paymesh.dto
+com.paymesh.util
 ```
 
-The dependency direction is inward: `api → application → domain`, with `infrastructure` implementing `application` interfaces. `com.paymesh.shared` holds cross-cutting code.
+### Spring wiring
 
-### Two conventions that are easy to violate
+Application/domain services and persistence adapters are ordinary classes, not component-scanned services.
 
-1. **Beans are wired manually, not component-scanned.** Application/domain services (`RegisterMerchantService`, `GetMerchantService`) and repository adapters are plain `final` classes with **no** `@Service`/`@Component`/`@Repository`/`@Autowired`. They are instantiated as explicit `@Bean` methods in an infrastructure `@Configuration` class (see `MerchantConfiguration`). Only true framework components (controllers, `@RestControllerAdvice`, `@Configuration`) carry Spring annotations. When adding a service, add a `@Bean` method — don't annotate the class. This keeps the domain/application layers testable as ordinary Java. (See `docs/development/java-coding-conventions.md` §13.)
+- Prefer constructor injection.
+- Wire application services/repositories explicitly through configuration.
+- Use Spring annotations only at real framework boundaries such as controllers, configuration, and exception handlers.
+- Do not add `@Service`, `@Repository`, `@Component`, or field `@Autowired` merely for convenience.
+- No Lombok.
 
-2. **The request/domain/response separation is enforced, not optional.** The flow is `RegisterMerchantRequest` (API record, holds `@NotBlank`/`@Size` boundary validation) → `RegisterMerchantCommand` (application record) → `Merchant` (domain, owns normalization + invariants) → `MerchantResponse` (API record, built via `from(...)`). Never reuse a request record as a domain or persistence type, and never return a domain/persistence object from a controller.
+### Domain modeling
 
-### Where each kind of logic lives
-
-- **Boundary validation** (required, blank, length, format) → Bean Validation annotations on the request record, triggered by `@Valid`.
-- **Domain invariants + normalization** → static factory methods on the aggregate (e.g. `Merchant.register(...)` trims/lowercases email, uppercases country/currency, enforces formats). These throw `IllegalArgumentException`.
-- **Business-rule failures** → dedicated exceptions in the `application` package (`MerchantEmailAlreadyExistsException`, `MerchantNotFoundException`). Domain/application code must stay HTTP-agnostic — no `ResponseStatusException`, no status codes.
-- **HTTP translation** → a per-feature `@RestControllerAdvice` (e.g. `MerchantExceptionHandler`) maps each exception to a status + `ApiErrorResponse`. Time is injected via a `Clock` bean so services are deterministic in tests.
-
-### Identifiers
-
-Public IDs are opaque, prefixed strings: `<prefix>_<uuid>` (ADR-003). In use: `mrc_` (merchant), `cus_`, `ord_`, `pi_` (payment intent), `ref_`, `evt_` (outbox event), `whe_` (webhook endpoint), `whv_` (webhook event), `whd_` (webhook delivery), `nfn_` (notification), `rex_` (report export), `aud_` (audit event), `aex_` (audit export). Planned: `pay_`, `stl_`. IDs are value-object records (`MerchantId`) that validate the prefix + UUID in their compact constructor: `MerchantId.generate()` mints one, `MerchantId.from(String)` parses/validates. Do not expose sequential DB IDs.
+- Prefer immutable records for requests, responses, commands, events, and value objects.
+- Keep domain aggregates responsible for their invariants.
+- Prefer intent-revealing methods over public setters.
+- Keep domain/application code HTTP-agnostic.
+- Use business-specific exceptions; translate them to HTTP responses at the API boundary.
+- Avoid generic `RuntimeException` for expected business failures.
+- Do not return `null` collections; use empty collections.
+- Use `Optional` for repository/query results where absence is expected, not as fields or parameters.
 
 ### Persistence
 
-**PostgreSQL + Flyway, thirty-nine migrations (V1–V39).** Every capability's `application` layer declares repository interfaces; `infrastructure/persistence/jpa` implements them with a **separate JPA entity, never the domain type**, and a mapper between the two. `ddl-auto=validate`, so a mapped column that drifts from its migration fails startup rather than surprising someone later. Since **V38 (ADR-038)** the tables live in ten schemas, not `public`; entities keep bare `@Table(name=…)` and each connection resolves them through a `search_path` across all schemas (every table name is globally unique). A migration from V38 on must schema-qualify its tables.
+- PostgreSQL + Flyway is authoritative for durable state.
+- Prefer database constraints for invariants where appropriate.
+- Keep persistence entities separate from domain objects and map between them.
+- Never bypass the service's schema ownership rules.
+- Never make Redis the durable authority for financial/idempotency correctness.
 
-Migrations are hand-authored and heavily commented — they are where several invariants actually live (deferred constraint triggers for debits-equal-credits, immutability triggers on ledger entries, composite tenant foreign keys, partial unique indexes). **Prefer a database constraint over an application check** where the choice exists; the application pre-check turns a violation into a readable 409/422, but the constraint is what makes it true.
+### REST/API conventions
 
-Integration tests use Testcontainers and **need Docker running** — without it ~450 tests error on context startup rather than failing meaningfully. Run the full suite with `./mvnw test`.
+Use the API conventions document as the contract.
 
-### Scheduled jobs
+Core defaults include:
 
-Several capabilities own a timer (order expiry, abandoned checkout, payment and refund processing timeouts, the outbox relay, simulator callback dispatch, reconciliation). Two rules hold for all of them:
+- Base path: `/api/v1`
+- Resource-oriented plural nouns.
+- Lowercase kebab-case URL segments.
+- Lower camel case JSON fields.
+- Descriptive path parameters (`{merchantId}`, not `{id}`).
+- `POST` for creation/commands, `GET` for retrieval, `PATCH` for partial updates, `DELETE` only where deletion/deactivation is supported.
+- Use domain-action endpoints such as `/confirm` or `/activate` when the operation is a business command.
+- Preserve the existing API contract when extending existing code; do not silently "upgrade" old endpoints to a newer target shape.
 
-1. **The `@Scheduled` class contains no logic** — it calls one service method and logs the result. Every rule lives in a plain object taking an injected `Clock`, so tests drive it directly instead of booting a context and waiting for a tick.
-2. **They are all off under the `dev` profile**, which is what the test suite runs on. A timer mutating rows underneath an assertion is a flake generator. The services are ordinary beans regardless, so tests call them directly.
+## Testing and verification
 
-## The `docs/` folder is the source of truth for conventions
-
-`docs/` contains detailed, authoritative convention specs — read the relevant one before designing a new capability or endpoint:
-
-- `docs/PayMesh_..._Software_Design_Document.docx` — the SDD: full product vision, per-service designs, API/event/schema catalogs, workflows, and its own architecture decision records. The top-level reference for *what* to build and *why*.
-- `docs/api/rest-api-conventions.md` — exhaustive HTTP/JSON contract (versioning, status codes, error shape, pagination, idempotency, money as integer minor units, timestamps as UTC `Instant`/ISO-8601, enum casing, etc.).
-- `docs/development/java-coding-conventions.md` — layering, DI, immutability, exceptions, logging, testing, framework boundaries, no Lombok.
-- `docs/decisions/ADR-*.md` — the repo's own numbered ADRs, **forty of them and the best record of why anything looks the way it does.** `001` modular monolith, `002` package-by-feature, `003` opaque prefixed IDs; later ones carry the load-bearing money decisions (`012` callback dedup and ordering, `015` payment timeout, `016` in-process event dispatch, `018` the Ledger, `019` refunds, `025` the outbox dead letter, `026` reconciliation, `028` webhooks and the secret that is never stored, `029` identifier format constraints, `030` risk decides and payment acts, `031` the ledger releases its own funds, `036` Kafka as the event backbone and the wire envelope's versioning rule, `037` the dual-path relay and the budget that governs the in-process sink only, `038` schema-per-service, `039` the merchant reference projection and the retryable-not-yet-consistent gate, `040` the API gateway and edge auth). Read the relevant ADR before changing anything on the money path. **Note:** the SDD (Appendix D) has a *separate* ADR list with the same numbers but different decisions (e.g. its ADR-001 is "money in minor units"). When citing an ADR, say which source you mean.
-- `docs/domain/` and `docs/api/*-contract.md` — per-capability domain discovery and API contracts.
-
-**These docs describe the target design and run ahead of the code.** The current merchant implementation intentionally diverges in places (e.g. the error body is a flat `{code, message, fieldErrors}` rather than the full RFC-7807 problem shape the doc specifies; validation failures currently return `400` where the doc prescribes `422`; the JSON id field is `id`, not `merchantId`). When extending existing code, match the **existing code**; when the two conflict and it matters, surface the divergence rather than silently picking one.
-
-## Conventions for changes
-
-- Branches: `feature/…`, `fix/…`, `test/…`, `docs/…`, `chore/…`. Commits: `type(scope): summary` (e.g. `feat(merchant): add merchant registration`). One focused change per PR. (See `CONTRIBUTING.md`.)
-- Prefer records for immutable carriers (requests, responses, commands, value objects). Aggregates are mutable only through intent-revealing methods (`merchant.activate()`), never public setters. No Lombok.
-- Test naming states behavior (`rejectsRegistrationWhenBusinessNameIsBlank`), not `test1`. Keep domain/application tests context-free (plain JUnit); reserve `@SpringBootTest`/`MockMvc` for the API layer.
-
-
-## Agent efficiency
-
-Default to direct tool use. Do not spawn subagents unless explicitly
-requested by the user.
-
-For a scoped PR:
-
-- Read the assigned Phase 3 PR section first.
-- Read project-status.md.
-- Use git/grep/find to locate relevant code before opening whole files.
-- Do not scan unrelated modules.
-- Do not reread files already inspected unless they changed.
+- Use plain JUnit tests for domain/application logic where possible.
+- Use Spring/HTTP tests at the API boundary.
+- Integration tests use Testcontainers and require Docker.
 - Prefer targeted tests during implementation.
-- Run the broad suite once after the implementation stabilizes.
-- Do not independently re-derive architecture already established by an ADR.
-- Do not explore alternative designs unless the specified design is
-  demonstrably incompatible with the code.
-- Keep intermediate explanations short.
-- Stop when the stated PR acceptance criteria are satisfied.
+- Run the relevant/broad suite once after the implementation stabilizes.
+- Do not repeatedly run the entire suite after every small edit.
+- When an invariant is important, prefer tests that would fail if the invariant were removed.
+
+Commands from `backend/`:
+
+```bash
+./mvnw test
+./mvnw test -Dtest=TestClassName
+./mvnw test -Dtest=TestClassName#testMethod
+./mvnw verify
+./mvnw clean package
+./mvnw spring-boot:run
+```
+
+Gateway commands from `gateway/`:
+
+```bash
+./mvnw test
+./mvnw spring-boot:run
+```
+
+## Phase 3 execution workflow
+
+Work **one PR at a time**, in the order specified by `project-status.md` / the Phase 3 plan.
+
+For the current PR:
+
+1. Read the current PR section and its relevant ADR.
+2. Read `docs/project-status.md`.
+3. Inspect only the affected capability and direct dependencies.
+4. Produce a plan of **10 lines or fewer**.
+5. Implement directly.
+6. Run targeted tests.
+7. Run the relevant full suite once when stable.
+8. Run `/code-review` once after implementation if the user requested the normal PR workflow.
+9. Update `docs/project-status.md` in the same PR when the implementation changes current project state.
+10. Update README/Postman only when the change actually affects them.
+
+Do not start the next PR before the current one is complete/merged.
+
+## Agent efficiency rules
+
+These rules are intentional.
+
+### Direct work by default
+
+- **Do not spawn subagents unless the user explicitly asks for them.**
+- **Do not invoke `/office-hours` by default.**
+- Use direct tool calls and direct edits for scoped repository work.
+- Do not ask another agent to rediscover context already available locally.
+
+### Read narrowly
+
+- Read the assigned PR section first.
+- Read `project-status.md`.
+- Read the relevant ADR/contract/convention only.
+- Use `git`, `grep`, `rg`, `find`, and targeted file reads before opening large files.
+- Do not scan unrelated modules.
+- Do not read the entire SDD just because the task mentions architecture.
+- Do not reread files that have not changed and are already in context.
+
+### Minimize unnecessary model work
+
+- Do not restate the architecture when the ADR already defines it.
+- Do not explore alternative designs unless the specified design is demonstrably incompatible with the code.
+- Do not narrate options that will not be used.
+- Keep implementation plans short.
+- Prefer the smallest correct diff.
+- Reuse existing helpers, ports, outbox/inbox patterns, ID constraints, configuration patterns, and test utilities before creating new abstractions.
+- Do not add interfaces with only one implementation unless the architecture explicitly needs the seam.
+- Do not add speculative configuration or scaffolding for future work.
+- Stop when the stated acceptance criteria are satisfied.
+
+### Context discipline
+
+- Do not compact repeatedly just to keep a long session alive.
+- When a PR is checkpointed and the conversation becomes large, prefer a fresh Claude Code session.
+- Before starting a fresh session, ensure the state is recoverable from:
+  - `docs/project-status.md`
+  - `git status`
+  - `git diff`
+  - recent commit/PR history
+  - targeted test results
+- A fresh session should rediscover only the minimum state needed for the current PR.
+
+### Token-discipline pattern
+
+Apply the existing `/ponytail:ponytail` principle:
+
+1. Reuse before inventing.
+2. Fewest files and shortest working diff.
+3. Read before editing, but do not reread unnecessarily.
+4. Record deliberate corner-cuts and their upgrade path when the project convention requires it.
+5. Do not over-engineer for hypothetical future services.
+
+## Documentation maintenance
+
+When a change makes the current state different:
+
+- Update `docs/project-status.md` in the same PR.
+- Update README run/topology instructions if they changed.
+- Update Postman when the HTTP surface changes.
+- Add/update an ADR when a non-obvious architectural tradeoff changes.
+- Do not turn CLAUDE.md into a historical changelog. Keep it focused on durable instructions and pointers.
+
+## Completion rule
+
+The task is complete when the requested acceptance criteria are satisfied, the relevant tests pass, required project-state documentation is updated, and no unnecessary work remains.

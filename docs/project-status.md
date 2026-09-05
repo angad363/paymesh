@@ -1,1388 +1,526 @@
-# PayMesh — Project Status and Roadmap
+# PayMesh — Project Status
 
-_Last updated: 5 September 2026, after Phase 3 PR 5 (API gateway) was built.
-Update this file at the end of a working session, not during one._
+_Last updated: 5 September 2026._
 
-**Reading this to resume?** Phase 2 is **complete** — all eight of its capabilities are merged,
-Audit (ADR-035, V36) last. **Phase 3 has started**: `docs/phase-3-microservices-extraction-plan.md`
-is the plan of record. **PR 1–PR 4 are merged** (Kafka backbone ADR-036, dual-path relay ADR-037,
-schema-per-service ADR-038, merchant reference projection ADR-039); **PR 5 (API gateway, ADR-040) is
-built on `feature/api-gateway`.** The 46 tables live in **ten schemas** with nine fenced `*_svc`
-roles; no consumer reads the `merchants` table (PR 4's `merchant_ref` projection replaced it). **PR 5
-stands up a second deployable** in front of the monolith: a new `gateway/` Maven module (Spring Cloud
-Gateway Server WebMVC 5.0.0) on port 8081 that validates the same HS256 tokens at the edge (mirroring
-the monolith's public/authenticated split exactly), routes all north-south traffic to the monolith,
-and rate-limits `/api/**` per client IP with a **Redis-backed** bucket4j limiter (new `redis` service
-in compose). Nothing is extracted and the monolith is untouched; the gateway is **optional** until 3B
-(a client may still address 8080 directly). Still **one process** for all business logic. Read "PICK
-UP HERE" at the bottom before starting PR 6 (the provider-sim extraction pilot, ADR-041).
-
-This is the pick-up-here document. It records what exists, what has actually been
-verified, what is deliberately unfinished, and what comes next. For *why* a design
-looks the way it does, read the ADRs in `docs/decisions/`; for the target
-architecture, read the SDD.
+This is the pick-up-here document: what's built, what each PR decided and what it cost, phase by
+phase, ending with where to start next. Full ADRs live in `docs/decisions/`; this is the
+compressed version — decision + tradeoff, not the whole argument. For the target architecture read
+the SDD; for the Phase 3 plan of record read `docs/phase-3-microservices-extraction-plan.md`.
 
 ---
 
-## Where the project is
+## Phase 1 — Monolith core (complete)
 
-**All eight of Phase 1's capabilities are built**: **Merchant**, **Identity & Access**,
-**Customer**, **Order**, **Payment**, the **Provider Simulator**, the **Ledger**, and
-**Refund**. Underneath them sit four
-pieces of platform work that had to land first: the application refuses to boot on the committed
-JWT signing key, public writes are idempotent through PostgreSQL, a transactional outbox lets a
-state change and the event announcing it commit together, and **that outbox is finally read**.
-A scheduled relay, an in-process dispatcher and a `processed_events` inbox deliver events to
-consumers, and Order is the first consumer (ADR-016).
+One deployable, package-by-feature (ADR-002), built as strangler-ready modules from the start
+(ADR-001) so extraction later is a lift, not a rewrite.
 
-**1533 backend tests + 9 gateway tests, 0 failures.** Thirty-nine Flyway migrations (V1–V39; the
-gateway adds none). Forty ADRs. The Postman
-collection runs **nineteen folders green** — the newest a self-contained Reporting folder (17
-requests, 30 assertions, verified with newman against the running app) covering the two summary
-reads, the async export lifecycle, tenant isolation and every error path.
+### Foundations
 
-**Phase 2 is more than half built.** See `docs/phase-2-plan.md` for the eight-PR plan and "What comes
-next" below for where it stands. Five of the eight are **merged into `main`**:
-
-| PR | What it delivered | Merged |
-|---|---|---|
-| 0 | `PLATFORM_ADMIN` grantable (ADR-027) | #54 |
-| 1 | **Webhook** (ADR-028) — merchant-facing endpoints, a signing secret that is derived rather than stored, an internal-to-external translator, and a scheduled dispatcher with its own retry budget | #55 |
-| 2 | **Risk** (ADR-030) — evaluated on confirm, with an immutable assessment carrying the inputs and the ruleset version, and no rules table, no Redis and no review queue | #59 |
-| 3 | **The settleable balance** (ADR-031) — `MERCHANT_AVAILABLE`, a per-merchant holding period, and a release job that carries no state because the ledger is its own record of what has been released | #60 |
-| 4 | **Settlement** (ADR-032) — cut a batch from available, submit the payout to the simulator, and post `BANK_CASH` only on the provider's signed callback; a terminal failure returns the funds to available by a new journal | #61 |
-
-**Settlement is built, and PR 5 (Notification) now is too** — see below. PR 6 (Reporting) is what
-comes next.
-
-| 5 | **Notification** (ADR-033) — a third pure event consumer that records a merchant notification per committed `payment.succeeded` / `payment.failed` / `refund.succeeded`, renders it from code templates, and a scheduled dispatcher hands it to a simulated sender; templates and attempt history are code and a counter, not two tables | built |
-
-**Phase 1 is complete, including its operational half.** The last PR closed the three things that
-were still only described: the outbox relay now gives up on an event rather than freezing its
-aggregate forever (ADR-025), `GET /sim/v1/reconciliation/{date}` is finally read by a job that
-repairs what it finds (ADR-026), and `/actuator/health` reports when delivery has stopped. A
-payment the provider collected and ADR-015's sweeper wrongly failed is now put right from the
-provider's own record, and the Ledger posts the balance it should always have had.
-
-**The Ledger is the financial source of truth, and as of this session it exists** (ADR-018).
-A captured payment posts a balanced double-entry journal, and `GET /api/v1/balances` reports
-what PayMesh owes a merchant. What makes it trustworthy is not the Java: debits-equal-credits
-is a DEFERRED constraint trigger checked at COMMIT, immutability is a trigger, single-currency
-is a composite foreign key. The integration tests insert lopsided journals with raw SQL and the
-database refuses them with the application entirely out of the path.
-
-The Provider Simulator is the first module written to be **removed from a deployment**. Every other
-capability is built to be extracted eventually; this one holds no reference to PayMesh at all — no
-shared type, no shared table, no import in either direction — so its only influence is an HTTP POST
-of a signed body at the callback route, exactly as a third party's would be.
-
-The application is still a single deployable with strict module boundaries — the
-modular-monolith-first plan from ADR-001 and SDD §30.1. Nothing has been extracted
-into a service, and nothing should be until the API and event contracts are proven.
-
-Payment is the first capability where the platform work paid off rather than being built
-alongside: creating an intent writes the intent, its first state-history row and its
-event in one transaction, on an idempotency layer and an outbox that already existed.
-
----
-
-## How the pieces fit
-
-One authenticated write, end to end. Worth reading once before touching any capability,
-because every layer below answers a different question and conflating two of them is how
-this shape usually fails.
-
-| # | Step | What it decides | Tenant check here? |
-|---|---|---|---|
-| 1 | **Spring Security filter chain** (`SecurityConfiguration`) | *Who is calling.* `BearerTokenAuthenticationFilter` verifies the HS256 access token and populates the `SecurityContext`. No token, bad signature, expired → `401`. | **No.** The edge cannot see which row is being touched, so it cannot answer tenancy (ADR-007). |
-| 2 | **`IdempotencyFilter`** | *Has this exact request already run.* Ordered deliberately **after** security, because the record's key is `merchant + endpoint template + Idempotency-Key` and the merchant does not exist until the token is verified. Missing header on a registered route → `400`; same key + different body hash → `409`; `COMPLETED` → the stored response is replayed with `Idempotency-Replayed: true`. | Indirectly — the key is *scoped by* merchant, so two tenants cannot collide on one key. |
-| 3 | **Controller** (`OrderController`, `PaymentIntentController`, …) | *Which tenant is this.* The `AuthenticatedCaller` argument resolver hands the handler the caller's roles, and `caller.requireSingleMerchant()` reduces them to exactly one `MerchantId`. | **Yes — this is where the tenant is *derived*.** It is never read from a request body; no write request record has a `merchantId` field. |
-| 4 | **Application service** | *Is this allowed, and what changes.* Takes the `MerchantId` as an argument and passes it into every repository call. A cross-module read goes through the consumer's own port (`CustomerLookup`, `OrderLookup`), which is merchant-scoped too — so another tenant's row is simply *not found*, and the caller gets the same answer as for a row that never existed. | **Yes — every query is scoped, including through the ports.** |
-| 5 | **Transaction boundary** (`TransactionTemplate`, inside the service) | *What commits together.* The aggregate row, its state-history row where one exists, and the `outbox_events` row. All or nothing — an event can never survive a rolled-back state change, and a committed state change can never lose its event (ADR-010). | Inherited from step 4; nothing inside re-derives the tenant. |
-| 6 | **PostgreSQL** | *The last word.* Composite tenant foreign keys, unique constraints and the partial unique index. | **Yes, and this is the only one that cannot be bypassed.** Everything above it is a pre-check that exists to turn a violation into a readable `409`/`422` instead of a `500`. |
-| 7 | **Response, back through the filter** | The status and body are stored against the idempotency record, which is marked `COMPLETED`. If the handler threw, or the status is 5xx, the record is **deleted** so a retry is a real retry. | — |
-
-The load-bearing property of that list: **steps 3–5 are advisory and step 6 is not.** The
-integration tests prove this by bypassing the application pre-checks entirely and staying
-green.
-
----
-
-## What of the SDD is implemented
-
-The SDD describes ~15 services across 31 sections. This is what the code actually covers.
-
-| Capability / piece | SDD sections | State |
-|---|---|---|
-| Identity & Access | §8 (all), §8.6 token lifetimes | Built. No API keys, no OAuth2/OIDC, no denylist. |
-| Merchant | §9 (all) | Built. Registration, lifecycle and API keys (ADR-022). §9.3's webhook setup now lives in the Webhook capability rather than under Merchant. No team roles. |
-| Customer | §10, and §10.6's hash/display split | Built in the encrypted *shape*; encryption itself deferred (ADR-006). No payment-method endpoints. |
-| Order | §11.1–§11.4, §11.6 | Built, including `order_state_history`. §11.5's events are written **and now published**. Every status in the enum is reachable. |
-| Payment | §12.1 (partially), §12.2–§12.3, §12.5–§12.6 | Core built. **§12.4 confirm is not implemented**; 2 of the 10 §12.1 states are reachable. |
-| Idempotency & concurrency | §23.1–§23.2 | Built in PostgreSQL. §23.3's Redis accelerator: not built, deliberately. |
-| Events / outbox | §22.1 envelope, §22.2 topics, §22.3 outbox, §22.4 inbox, §24 durability | Built: in-transaction write, a scheduled relay, an in-process dispatcher, `processed_events`, consumers, and a retry budget with a dead letter (ADR-025). **§22.2 (Kafka topics and partition keys) now exists** — the relay publishes to Kafka alongside the in-process dispatcher and one listener consumes back through the same inbox (ADR-037, dual path, `paymesh.events.delivery.mode`); topic per aggregate, partition key the aggregate id. **§24's alerting** is a health indicator on oldest-unpublished age and abandoned-event count; it is not metrics, and §26 still has none. |
-| API Gateway / Edge | §7 | Partial. API keys exist (ADR-022) and HMAC guards both callback routes; rate limiting is absent. |
-| Provider Simulator | §13.1–§13.3, §13.5–§13.6 | Built, and §13.1's reconciliation export is now **read** (ADR-026). **§13.3's payouts and §13.4's `provider_payouts` now exist** (ADR-032): `POST /sim/v1/payouts` accepts a payout and posts a signed callback, Settlement being the first consumer. Percentage-based injection is deliberately absent (ADR-017 §5). |
-| Reconciliation | §21.4 | Built (ADR-026). Fetches the provider's daily record over HTTP and replays every terminal row through the ordinary callback path, so ADR-015's and ADR-023's timeout *guesses* are revisable by the provider's own word. No settlement reconciliation and no fee reconciliation — neither exists to reconcile. |
-| Risk & Fraud | §14 | Built (ADR-030). Evaluated synchronously on confirm; an immutable assessment records the inputs and the ruleset version. Rules are code, not a table. No analyst queue, no `REQUIRE_ACTION` step-up, no read API. |
-| Ledger | §15.1–§15.2, §15.6 | Core built (ADR-018): double-entry accounts, journals, immutable entries, and a merchant balance. **`MERCHANT_AVAILABLE` now exists and a release job moves cleared funds into it** (ADR-031); **`SETTLEMENT_IN_TRANSIT` and `BANK_CASH` arrived with Settlement** (ADR-032), so the balance reports pending, available *and* in-settlement. **§15.3's internal posting API is deliberately absent** — the only writer is an event consumer, so every posting traces to a committed state change; Settlement's three journals are posted from its outbox events, not through a port. **§15.5's `balance_holds` and `account_balances` are not built**: nothing reserves funds, and a SUM over entries cannot drift the way a projection can. No fee split (§15.2) — there is no fee schedule. Reversals: Refund (ADR-019). |
-| Refund | §16.1–§16.3, §16.5–§16.6 | Built (ADR-019). Create, read, list, cancel, and a Refund-owned callback route. **§16.4's `refund_reservations` and `refund_attempts` are not built** — the first is a second copy of what `refunds.status` says, the second is for a conversation a refund does not have. §16.3's ops retry route is absent. §16.6's third line — reconciling a lost callback — is the known gap. |
-| Webhook | §18.1–§18.4 | Built (ADR-028). Endpoints, subscriptions, a derived signing secret, an internal-to-external translator, a scheduled dispatcher with backoff, and replay. **§18.4's `webhook_delivery_attempts` is deliberately not built** — the counters on the delivery row answer what a merchant debugging a failure asks, and a row per attempt is a log wearing a table's clothes. No merchant-facing event catalogue endpoint; the four published types are named in the 422 you get for asking for a fifth. |
-| Settlement | §17.1–§17.6 | Built (ADR-032). A scheduled job cuts a merchant's available balance into a batch and items (§17.1), submits the payout to the simulator (§17.2), and the provider's signed callback posts `BANK_CASH` — a terminal failure returns the funds to available by a new journal. `settlement_configs` now carries the holding period *and* a payout destination and minimum (§17.4); `GET /api/v1/settlements` reads batches. §17.6's invariants are DB triggers: a deferred batch-total check, immutability on posted rows, and the two account CHECKs. **No FX and no fee deduction** — one currency per batch, and there is no fee schedule to net. |
-| Notification | §19.1 | Built (ADR-033). A merchant notification is recorded per committed `payment.succeeded` / `payment.failed` / `refund.succeeded`, rendered from code templates, and a scheduled dispatcher (off under `dev`) hands each to a **simulated** sender. **§19.1's `notification_templates` and `delivery_attempts` are deliberately not built** — templates are code (as Risk's rules are) and attempts are a counter on the row (as Webhook chose over `webhook_delivery_attempts`). No channels, no recipient resolution: it stays a leaf. `GET /internal/v1/notifications/{id}` is platform-admin-only, for support. |
-| Reporting | §19.2 | Built (ADR-034, V34–V35). Merchant-scoped projections built from domain events into one append-only `report_facts` table (PK = the `evt_` source event, so a redelivery is a refused insert), aggregated on read. `GET /api/v1/reports/payment-summary` and `.../settlements` return per-currency totals with a daily trend, each carrying an `asOf` that admits eventual consistency (null when nothing is projected). `POST /api/v1/report-exports` records a `PENDING` row and returns `202`; a scheduled generator (off under `dev`) renders the CSV, served from `GET .../{id}` by content negotiation (`Accept: text/csv`). Six subscribed types; `order.paid` omitted to avoid double-counting `payment.succeeded`. **No OpenSearch, no pre-aggregated rollup, no export retention** — deliberately. |
-| Audit | §19.3 | Built (ADR-035, V36). Append-only `audit_events` recorded in-process inside the acting transaction through the shared `AuditRecorder` port (its subjects — merchant freezes, role grants, secret rotations — emit no outbox event, so it is NOT a pure consumer like Notification/Reporting). Immutability is a trigger, the actor rule a CHECK, both proven by raw SQL. Platform-admin read + async CSV export (`audit_exports`). Wired: merchant status change, user privileged access, webhook secret rotation. Deferred with the port ready: risk decisions (no caller until confirm) and SYSTEM-actor recovery. |
-| AI Ops | §20 | Not started. Phase 3. |
-| End-to-end workflows | §21 | The create-order → collect → refund path exists, and **§21.4 reconciliation is now built** (ADR-026). |
-| Security & privacy | §25 | Partial: authn, tenant isolation, secret guards. No encryption at rest, no key management, no audit trail beyond `security_events`. |
-| Observability | §26 | `/actuator/health` and `/actuator/info`, the former now carrying the outbox backlog alert (ADR-025). No OpenTelemetry, metrics, tracing or structured correlation ids. |
-| Deployment / IaC | §27 | Not started. `infrastructure/` and `scripts/` are empty. |
-
----
-
-## What is built
+- **ADR-001 — Start as a modular monolith.** Decision: one Spring Boot app, business modules with
+  explicit boundaries, extraction deferred until a module has a stable interface and its own
+  scaling/reliability needs. Tradeoff: modules can't deploy independently yet, and the whole bet
+  only pays off if boundary discipline holds without a compiler enforcing it module-to-module.
+- **ADR-002 — Package by feature.** Decision: each capability owns `api/application/domain/infrastructure`
+  under its own top-level package; no global `controller`/`service`/`repository` packages.
+  Tradeoff: none stated — this is the one decision with no cost, only the discipline of not
+  reaching for the global-layer shortcut later.
+- **ADR-003 — Opaque prefixed identifiers.** Decision: public ids are `<prefix>_<uuid>`
+  (`mrc_`, `cus_`, `ord_`…), minted by the app, validated in a value-object's compact constructor,
+  never a sequential DB key. Tradeoff: 40 characters per id instead of a few, a `VARCHAR(40)` PK,
+  and random UUIDs scatter B-tree inserts (mitigated later, if it matters, by UUIDv7 behind the
+  same type). Unguessability is defense in depth only — every query is still tenant-scoped.
+- **ADR-004 — Separate JPA entity from domain aggregate.** Decision: two types per aggregate (a
+  framework-free domain type, a `<Aggregate>JpaEntity`) plus a hand-written mapper — no MapStruct,
+  no `@Entity` on the domain. Tradeoff: two types and a mapper to keep in sync per aggregate, paid
+  for a domain layer that's plain Java and testable with no Spring context.
+- **ADR-005 — Testcontainers, not a developer database.** Decision: every context-loading test runs
+  against a throwaway PostgreSQL container (`ddl-auto=validate` needs a real, matching schema).
+  Tradeoff: Docker becomes a hard test prerequisite and cold runs pay ~1 minute of container
+  startup; in exchange CI needs no database service and migrations are re-proved on every run.
+- **ADR-029 — Constrain identifier formats in the database.** Decision: 63 `CHECK` constraints
+  (one `IMMUTABLE` SQL function, `is_prefixed_id`) enforce ADR-003's shape on every id column the
+  app mints, closing a hole where five scheduled sweeps could be permanently disabled by one
+  malformed row outside their per-item `try/catch`. Tradeoff: this narrows what can break a row
+  mapper, it doesn't close the set — JSONB metadata columns still have no shape constraint, so the
+  per-item `try/catch` stays load-bearing regardless.
 
 ### Merchant — `com.paymesh.merchant`
 
-| Endpoint | Auth | Notes |
-|---|---|---|
-| `POST /api/v1/merchants` | public | Self-service onboarding; precedes having an account |
-| `GET /api/v1/merchants/{id}` | bearer token | Caller must hold a role at that merchant, else 404 |
+Delivers self-service onboarding (`POST /api/v1/merchants`, public) and a merchant read scoped to
+callers holding a role there. Domain normalizes on the way in and `uq_merchants_email` is the real
+uniqueness guard, not the application's `existsByEmail` pre-check.
 
-Domain normalizes on the way in (trims the business name, lowercases the email,
-uppercases country and currency) and enforces format invariants. `uq_merchants_email`
-is the real uniqueness guard; the adapter translates its violation into a 409 so the
-loser of a registration race is not handed a 500.
+- **ADR-022 — Authenticate machines with merchant API credentials.** Decision:
+  `Authorization: ApiKey ak_<prefix>.<secret>`, verified inside the Spring Security filter chain
+  (must run *before* `BearerTokenAuthenticationFilter`, or every ApiKey request 401s before the
+  filter sees it), minting an in-memory unsigned JWT so a key is indistinguishable downstream from
+  a human token — every rule written for humans (status gate, roles) applies to machines for free.
+  Tradeoff: SHA-256, not bcrypt, for the secret hash — correct because the secret is 32 random
+  bytes and not guessable, but a reviewer expecting bcrypt everywhere has to know why this one
+  differs. No key expiry exists; rotation is a manual discipline.
 
 ### Identity & Access — `com.paymesh.identity`
 
-| Endpoint | Auth | Notes |
-|---|---|---|
-| `POST /api/v1/auth/register` | public | Optional `merchantId` grants `MERCHANT_ADMIN` scoped to it |
-| `POST /api/v1/auth/login` | public | Returns a 15-minute HS256 JWT + a 30-day opaque refresh token |
-| `POST /api/v1/auth/token/refresh` | refresh token | Rotates; reuse revokes the whole family |
-| `POST /api/v1/auth/logout` | refresh token | Idempotent, revokes the family |
+Delivers register/login/refresh/logout: 15-minute HS256 access tokens, 30-day opaque refresh
+tokens, rotation that detects reuse and revokes the whole token family.
 
-Properties that are load-bearing and easy to break by accident:
-
-- **Login is not an oracle.** Unknown email and wrong password return byte-identical
-  bodies; an unknown email still runs one BCrypt verification against a fixed hash so
-  timing does not differ; account status is checked *only after* the password
-  verifies, which is why `USER_NOT_ACTIVE` is 403 rather than 401.
-- **Rotation is a compare-and-swap**, not read-then-write. `and revoked_at is null`
-  lives in the UPDATE, so the database decides which of several concurrent callers
-  actually spent a token. Losing that race is indistinguishable from replay and is
-  treated identically. Regression test verified by breaking the fix.
-- **Refresh tokens are opaque 256-bit random values, SHA-256 hashed at rest** — not
-  BCrypt (refresh must *find* the row by hash) and not JWTs (an opaque token is
-  revocable).
-- **The application will not start on the committed dev signing key.** Secrets live in
-  `application-dev.yaml`, activated only when `dev` is the *sole* active profile;
-  everything else must supply `PAYMESH_SECURITY_JWT_SECRET`. See below.
+- **ADR-007 — Authenticate at the filter chain, scope tenancy at the data.** Decision: default-deny
+  (`anyRequest().authenticated()`) with an explicit public-route allowlist; a verified token becomes
+  an `AuthenticatedCaller` that controllers must ask for, so no request body/path/query ever carries
+  a merchant id — the type signature carries tenancy, not developer discipline. Cross-tenant access
+  is always 404, never 403 (a 403 would confirm the row exists). Tradeoff: roles are baked into the
+  token at login, so a role granted mid-session isn't visible for up to 15 minutes, and there's no
+  access-token revocation before expiry — the token's lifetime *is* the revocation window.
+- **ADR-020 — Defer federated login.** Decision: no OAuth2/OIDC; password login is the only human
+  auth path until there's an actual identity provider to integrate with. Tradeoff: a stub endpoint
+  or fake IdP were both rejected as worse than absence — a login route that authenticates nobody is
+  a bypass waiting to be found in review — so this is a stated gap, not a hidden one.
 
 ### Customer — `com.paymesh.customer`
 
-| Endpoint | Auth | Notes |
-|---|---|---|
-| `POST /api/v1/customers` | bearer token | Tenant comes from the token; the request record has no `merchantId` field |
-| `GET /api/v1/customers/{id}` | bearer token | Another merchant's customer returns 404 |
+Delivers per-merchant customer records; `merchant_reference` unique per merchant, not globally.
 
-`merchant_reference` is unique **per merchant**, not globally. Every index is
-composite and merchant-leading. PII is stored in the encrypted *shape* — display
-columns that are never queried, separate hash columns carrying the indexes — but is
-**plaintext today** (ADR-006).
+- **ADR-006 — Defer PII encryption, ship the encrypted-shape schema.** Decision: display columns
+  (`email`, `phone`) and separate deterministic-hash lookup columns from day one, so introducing
+  real encryption later only changes what the display column *contains* — no query, index or
+  repository method changes. Tradeoff: **accepted, stated risk**: PII is plaintext today (unsalted
+  SHA-256 lookup hashes are additionally dictionary-reversible), acceptable only because PayMesh
+  handles no real people. Five concrete prerequisites are listed before this can touch a real
+  person's data (KMS, envelope encryption, HMAC-under-pepper hashing, audited decrypt, retention).
+
+### Merchant + Identity + Customer — lifecycle correctness
+
+Three successive corrections of the same defect, worth reading as one narrative: lifecycle enums
+that were declared but never reachable.
+
+- **ADR-021 — Make the lifecycle states reachable, and enforce them.** Decision: intent methods on
+  all three aggregates, a status-history table for each, one `MerchantStatusGate` filter (not a
+  check duplicated per service) refusing writes from a non-`ACTIVE` merchant, and `CallerRole`
+  finally read (not just tenant scope) from the token. KYC ships in the *same* PR — shipping the
+  gate without it froze every newly registered merchant permanently, caught by 84 failing tests
+  before merge. Tradeoff: self-serve registration is no longer really self-serve (needs platform
+  approval to trade); provider/refund callbacks and the lifecycle-transition endpoints themselves
+  are deliberately exempt from the gate, or suspension would be irreversible.
+- **ADR-023 — Finish the lifecycle claims; give the token table a writer.** Decision: ADR-021's
+  claim that users and customers could be disabled wasn't true — the aggregate methods existed and
+  nothing called them. This PR wires `Customer.block/unblock` for real, gives `payment_method_tokens`
+  its first writer (attach/list/detach, storing only a provider *reference*, never a PAN), and adds
+  a `PROCESSING`-refund timeout mirroring Payment's. Tradeoff: the refund timeout can be *wrong* — it
+  fails a refund to `FAILED` on a clock, and if the provider actually moved the money, PayMesh now
+  believes it didn't; `UserStatus.SUSPENDED/CLOSED` stays unreachable, deferred again because "who
+  may disable a user" needed its own answer.
+- **ADR-024 — Disabling people, at the two scopes that mean different things.** Decision: splits
+  "remove this employee from my merchant" (a `MERCHANT_ADMIN` action, revokes only `user_roles` at
+  that tenant) from "bar this person from the whole platform" (`PLATFORM_ADMIN`-only, moves
+  `UserStatus`) — conflating them would have let one merchant lock a user out of a *different*
+  merchant they also work for. Grant ships with revoke, or an admin who revoked by mistake needs a
+  support ticket. Tradeoff: granting a role needs no consent from the user (grant-by-id, not an
+  invitation flow); platform-scoped actions can't be idempotency-keyed because that table's schema
+  assumes every action belongs to a merchant.
 
 ### Order — `com.paymesh.order`
 
-| Endpoint | Auth | Idempotent | Notes |
-|---|---|---|---|
-| `POST /api/v1/orders` | bearer token | yes | `ord_` id; optional customer link |
-| `GET /api/v1/orders/{id}` | bearer token | — | Another merchant's order returns 404 |
-| `GET /api/v1/orders` | bearer token | — | Cursor pagination, optional status filter |
-| `POST /api/v1/orders/{id}/cancel` | bearer token | yes | Only from `PENDING`, else 409 |
+Delivers create/read/list/cancel with every status in the enum reachable, cursor pagination that
+breaks ties on `order_id` (dropping the tiebreak silently skips rows sharing a timestamp boundary).
 
-State machine: **every status is reachable.** `PENDING → CANCELLED` is a merchant request,
-`PENDING → EXPIRED` is the sweeper (ADR-014), and `PENDING → PAID` / `PENDING → PARTIALLY_PAID`
-is Order's own consumer of `payment.succeeded` (ADR-016) — the last two were declared in V5 and
-unreachable until this session. `PARTIALLY_PAID` does not lead to `PAID`: a second collection
-against one order is structurally impossible while an order holds at most one live intent for
-exactly its own amount.
-
-Properties worth not breaking:
-
-- **The customer FK is composite on `(merchant_id, customer_id)`**, not on
-  `customer_id` alone. A single-column FK would have permitted an order to name *any*
-  customer on the platform, leaving only an advisory application check between a
-  merchant and another tenant's data. This required adding
-  `uq_customers_merchant_customer` to `customers`. Proven at the database level: a raw
-  JDBC insert of a cross-tenant order is refused by Postgres with no application code
-  in the path. `customer_id` stays nullable and Postgres FKs default to `MATCH
-  SIMPLE`, so guest orders with no customer still work.
-- **Cursor pagination breaks ties on `order_id`.** Ordering by `created_at` alone
-  silently *skips* rows that share a boundary instant — three orders, `limit=2`, and
-  the third vanishes while every page still looks well-formed. Regression test
-  verified by removing the tiebreak.
-- **Two independent dedup rules, deliberately.** `Idempotency-Key` replays a response;
-  `uq_orders_merchant_ref` catches a genuine double-submit that arrives with a
-  *fresh* key. Neither subsumes the other. Verified by deleting the application's
-  pre-check entirely and confirming every integration test stayed green — the
-  constraint is the guard, the pre-check only buys a friendlier message.
-- **Order reads Customer through a port it owns** (`CustomerLookup`), implemented in
-  `order.infrastructure`. Nothing in Order's `api`, `application` or `domain` sees
-  Customer. ADR-008.
-- **Order learns that a payment succeeded from an EVENT, not from a call**, and that is what
-  keeps `ModuleBoundaryTest.orderNeverImportsPayment`'s allowlist empty while Order writes
-  `orders.status` on Payment's news. The consumer reads the payload as a `Map`, imports nothing
-  from `com.paymesh.payment`, and takes the merchant from the envelope rather than the payload.
-  **The PAID / PARTIALLY_PAID split compares the captured figure against the ORDER's amount, never
-  the payment's** — the two agree today, so reading the payment's would pass every test that did
-  not check, and would mark an order fully paid on the strength of a document that is not the
-  obligation.
+- **ADR-008 — Cross-module reads through a consumer-owned port.** Decision: Order defines the
+  narrow interface it needs (`CustomerLookup.exists(...)`) in its *own* package; Customer never
+  knows Order exists. The one-implementation-interface rule is deliberately broken here because the
+  substitution (Customer becomes its own service) is the actual roadmap, not a hypothetical.
+  Tradeoff: the check is advisory — a composite FK on `(merchant_id, customer_id)` is what actually
+  stops an order naming another tenant's customer; a single-column FK would have let it through with
+  only application code standing guard.
+- **ADR-013 — Re-read payability at confirm; lock the order at create.** Decision: an order could be
+  cancelled after its live payment intent was created, then the intent confirmed anyway — collecting
+  for a cancelled order. Confirm now re-reads payability inside its own transaction (a plain read,
+  not a lock — locking there serializes concurrent confirms and turns a clean 409 into a 500 on a
+  different constraint); create takes `SELECT … FOR UPDATE` on the order row. Tradeoff: a real,
+  named, *unclosed* window remains — a cancel landing between confirm's read and its commit — bounded
+  only by there being no live provider to actually move money yet.
+- **ADR-014 — Expire orders, never one holding a live collection.** Decision: a sweeper skips any
+  order with a live payment intent, asking Payment through an Order-owned inverted port
+  (`PaymentActivityLookup`, implemented by Payment) so the dependency graph stays acyclic — the naive
+  shape would have made Order → Payment → Order, undoing the whole point of separable modules. Both
+  sides take the same order-row lock so create and expire serialize correctly. Tradeoff: expiry is
+  now indefinitely deferred while a collection is live — `expires_at` means "expires at or after this
+  instant, once nothing is collecting," not an instant guarantee, and that had to wait on ADR-015 to
+  actually bound it.
 
 ### Payment — `com.paymesh.payment`
 
-| Endpoint | Auth | Idempotent | Notes |
-|---|---|---|---|
-| `POST /api/v1/payment-intents` | bearer token | yes | `pi_` id; → `REQUIRES_PAYMENT_METHOD` |
-| `GET /api/v1/payment-intents/{id}` | bearer token | — | Another merchant's intent returns 404 |
-| `GET /api/v1/payment-intents` | bearer token | — | Cursor pagination, optional `status` and `orderId` filters |
-| `POST /api/v1/payment-intents/{id}/cancel` | bearer token | yes | Only from `REQUIRES_PAYMENT_METHOD`, else 409 |
+Delivers payment intents with the exact-amount rule making overpayment structurally impossible, not
+merely CHECK-constrained.
 
-All ten statuses are declared in the enum and the CHECK constraint; **only
-`REQUIRES_PAYMENT_METHOD` and `CANCELLED` are reachable** — verified by grep, not by
-assertion. Attach, confirm, provider callbacks and capture are the remaining PRs.
-
-Properties worth not breaking:
-
-- **An order holds at most one live payment intent, and the database enforces it**
-  (ADR-011). `uq_payment_intents_live_per_order` is a partial unique index excluding
-  exactly `FAILED` and `CANCELLED`. The application pre-check exists only for a friendlier
-  message: the integration tests bypass it entirely and still pass, because the index is
-  the guard. Two concurrent creates for one order produce exactly one intent — verified by
-  downgrading the index to non-unique, which yields `expected: 1L but was: 2L`.
-- **The slot is only defensible because every state a customer can strand an intent in has
-  a route to `CANCELLED`.** A slot that cannot be released kills the order, which is worse
-  than the overpayment the index prevents. `PROCESSING` is the deliberate exception and the
-  cost is written down in ADR-011, not discovered later.
-- **Creation is one transaction across three writes** — the intent, its `NULL →
-  REQUIRES_PAYMENT_METHOD` history row, and `payment.created`. Cancellation is one
-  transaction across three more, including `payment.cancelled`. Verified by removing the
-  `TransactionTemplate` wrap, which leaves an intent behind with no event and no timeline.
-- **Payment never writes the `orders` table**, posts no ledger entry, talks to no provider,
-  and mints no credential it cannot verify (design spec §0.5, re-checked line by line in
-  review). It reads Order through an `OrderLookup` port it owns, and
-  `ModuleBoundaryTest` now asserts both directions — including that Order **never** imports
-  Payment.
-- **`ORDER_NOT_PAYABLE` is one code for three causes** — no such order, another merchant's
-  order, not `PENDING`. Splitting them would make the endpoint an oracle for enumerating
-  another tenant's order ids. The API test compares the three responses byte for byte.
-- **The exact-amount rule makes overpayment structurally impossible**, not merely
-  CHECK-constrained: one live intent per order, for exactly the order's amount. Split
-  payments are out as a direct consequence.
-- `PaymentIntent` restates Order's `MAX_AMOUNT_MINOR` and metadata caps rather than
-  importing them, so Payment's domain does not depend on Order's. Review confirmed the
-  values are identical today; if they drift, an order could exist that no intent may
-  collect.
-
-### Ledger — `com.paymesh.ledger`
-
-**The financial source of truth**, and the module SDD §30.1 schedules for extraction last.
-
-| Endpoint | Auth | Notes |
-|---|---|---|
-| `GET /api/v1/balances` | Bearer | One row per currency the merchant has been paid in; `pendingMinor` and `availableMinor`; empty list, never 404 |
-| `GET /api/v1/settlement-config` | Bearer | The merchant's holding period, with `isDefault` saying whether it was chosen or inherited |
-| `PUT /api/v1/settlement-config` | Bearer | Sets it. The merchant is the key, so a second PUT replaces rather than duplicates — idempotent without the filter |
-
-The last two live in `com.paymesh.settlement`, which is otherwise empty until PR 4; the Ledger reads
-the period through a `HoldingPeriodPolicy` port with one allowlisted adapter (ADR-031).
-
-There is **no write endpoint on the ledger itself**, deliberately (ADR-018 §3). The only writers are
-a consumer of `payment.succeeded`, a consumer of `refund.succeeded`, and the release job — so
-**every posting traces back to a committed state change or to time passing**. SDD §15.3's
-`POST /internal/v1/ledger/transactions` would be a second way into the financial source of truth
-with no originating event to reconcile against.
-
-Properties worth not breaking:
-
-- **The invariants are in PostgreSQL, not in Java.** Debits-equal-credits is a DEFERRED constraint
-  trigger checked at COMMIT; immutability is a trigger refusing UPDATE and DELETE; single-currency
-  is a pair of composite foreign keys; tenant consistency is a check inside the balance trigger.
-  The integration tests insert lopsided journals with raw SQL and the database refuses them.
-  Verified by dropping the balance trigger, which turns exactly two raw-SQL tests red and leaves
-  every Java-level test green.
-- **A correction is a new reversal journal, never an edit**, and the immutability trigger is what
-  makes that the only available option rather than the disciplined one. Refund exercises it.
-- **The balance is a SUM over entries, not a projection.** SDD §15.5's `account_balances` is not
-  built: a second copy of a number the entries already determine can drift from them silently, and
-  the repair is the query being avoided. Carries a `ponytail:` marker naming the upgrade path.
-- **Accounts are opened on first use**, through an `INSERT … ON CONFLICT DO NOTHING` followed by a
-  read. Not a catch around a failed insert: this runs inside the dispatcher's transaction, and in
-  PostgreSQL *any* error aborts the enclosing transaction, so the recovery read would be the first
-  casualty.
-- **Three account types out of SDD §15.1's nine**, `MERCHANT_AVAILABLE` being the newest. Each of
-  the others still needs a producer that does not exist — settlement in transit, holds, a fee
-  schedule. An account that reads zero forever implies a capability that is missing.
-- **No platform fee.** There is no fee schedule anywhere in this codebase, and a made-up rate would
-  sit in rows nothing can ever edit.
-- **The release job carries no state, and that is deliberate** (ADR-031). "Has this payment been
-  released?" is `uq_ledger_transactions_idempotency` on `funds-released:pi_x`; "how much is left?"
-  is the signed sum of pending-account lines across every journal referencing that payment. A
-  released payment sums to zero because its own release is in the sum, so re-running the job posts
-  nothing. A state table would be a second copy of both.
-- **A refund reversal references the PAYMENT, not the refund**, which is what makes that sum work —
-  a partial refund is already subtracted, so a release moves the net. Rows written before V29 point
-  at the refund and are **not** backfilled: the immutability trigger refuses it, and rewriting
-  history is the thing this ledger exists to prevent. **A refund after release debits `available`
-  and may drive it negative**, because a merchant refunding after being paid out owes PayMesh the
-  difference.
-
-### Refund — `com.paymesh.refund`
-
-| Endpoint | Auth | Notes |
-|---|---|---|
-| `POST /api/v1/refunds` | Bearer + Idempotency-Key | `ref_` id; omit `amountMinor` to refund what is **left** |
-| `GET /api/v1/refunds/{id}` | Bearer | `404` for another merchant's, never `403` |
-| `GET /api/v1/refunds` | Bearer | Keyset pagination, newest first |
-| `POST /api/v1/refunds/{id}/cancel` | Bearer + Idempotency-Key | `409` almost always — see below |
-| `POST /internal/v1/refund-callbacks/{provider}` | HMAC signature | Refund's own route (ADR-019) |
-
-`PENDING → PROCESSING → SUCCEEDED | FAILED`, or `PENDING → CANCELLED`. Create writes PENDING and
-submits in one transaction, so the merchant never observes PENDING through the API.
-
-Properties worth not breaking:
-
-- **The over-refund guard is a LOCK plus a trigger, and the lock is the mechanism.** A row lock on
-  the payment intent, taken inside the create transaction before head-room is read, serializes
-  concurrent refunds of one payment. The deferred trigger is the backstop for raw SQL and
-  migrations. <b>The trigger alone does not work</b>: a constraint trigger's query runs on the
-  snapshot of the statement that queued it, so two simultaneous refunds each see a world without
-  the other and both commit. That was measured, not reasoned — `RefundConcurrencyTest` let both
-  through before the lock existed. ADR-019 §4.1.
-- **Everything except FAILED and CANCELLED counts against the captured amount.** A refund in flight
-  has moved no money yet but the provider may be about to; counting only SUCCEEDED would let a
-  merchant queue ten full refunds while the first is with the provider, each individually valid.
-- **The comparison is against `captured_amount_minor`, never `amount_minor`.** On a partial capture
-  the two differ by money that was never collected.
-- **A second trigger pins the currency to the payment's.** 5000 JPY against a 5000 INR capture
-  passes the amount check *exactly* — integers carry no currency. Unreachable through the API,
-  because the request record has no currency field at all.
-- **Refund's callback route is its own**, with its own secret property and its own dedup table.
-  Sharing Payment's would have meant Payment knowing refunds exist in order to route the callback.
-  The HMAC filter itself moved to `shared` so there is one implementation of that check rather than
-  two copies.
-- **Cancel answers 409 almost always**, and that is honest rather than broken: PROCESSING means the
-  provider may already have moved the money, so reporting CANCELLED would be PayMesh's opinion
-  contradicting a bank statement. Its real use is clearing a refund that failed to submit.
-- **Refund is a leaf.** It imports Payment through exactly one adapter plus its configuration
-  (ADR-008); nothing imports Refund. Payment learns that a refund succeeded from an event.
-
-### Webhook — `com.paymesh.webhook`
-
-**The first capability that points outward.** Everything else in this codebase answers a request;
-this one makes one — signed, retried, and aimed at a URL the merchant chose.
-
-| Endpoint | Auth | Notes |
-|---|---|---|
-| `POST /api/v1/webhook-endpoints` | Bearer | `whe_` id. **Returns the signing secret, once.** Deliberately NOT idempotency-filtered |
-| `PATCH /api/v1/webhook-endpoints/{id}` | Bearer | Subscriptions (a replacement, not an addition) and/or status |
-| `POST /api/v1/webhook-endpoints/{id}/rotate-secret` | Bearer | Names the version it replaces. Returns the new secret, once |
-| `GET /api/v1/webhook-endpoints/{id}/deliveries` | Bearer | Newest first, capped at 100 |
-| `POST /api/v1/webhook-endpoints/{id}/deliveries/{deliveryId}/replay` | Bearer + Idempotency-Key | The only webhook route on the filter |
-
-Three tables (V24–V25): `webhook_endpoints`, `webhook_events`, `webhook_deliveries`.
-`webhook_delivery_attempts` is deliberately absent — ADR-028 §3.
-
-Properties worth not breaking:
-
-- **The signing secret is never stored anywhere.** The endpoint row holds `secret_version`, an
-  integer. The secret is `HMAC-SHA256(masterKey, "paymesh.webhook.v1|<endpointId>|<version>" ||
-  0x01)`, derived on demand, `pmsec_`-prefixed. A database dump contains nothing that lets an
-  attacker sign as PayMesh, there is no ciphertext column and no decrypt path, and rotation is an
-  increment. **JDK 21 has no HKDF** (JEP 478/510 land it in 24/25), so this is a single-block
-  HKDF-Expand under RFC 5869 §3.3's licence to skip Extract — one `Mac` call, no new dependency.
-  ADR-028 §2 carries three frozen known-answer vectors.
-- **Two routes are off the idempotency filter, and that is structural.**
-  `idempotency_records.response_body` persists response bodies verbatim so a retry can replay them,
-  so registering create or rotate would write the secret to the database in cleartext — one table
-  away from the storage the whole design avoids. Rotate is idempotent on its own terms instead: the
-  caller names the version it is replacing, so a retry re-derives the same secret rather than
-  bumping again.
-- **A merchant endpoint being down must never affect a payment.** The fan-out runs inside the event
-  dispatcher's transaction and only ever writes rows — one `webhook_events` row and one PENDING
-  delivery per subscribed endpoint. All sending happens later, on a timer, one transaction and one
-  socket per delivery. The 20-endpoint-per-merchant cap exists because that loop is on the money
-  path.
-- **The payload is a `String`, serialized once.** A merchant's HMAC covers the bytes they received,
-  so a replay must resend *those bytes* rather than equivalent JSON. Holding it parsed would make
-  the bytes a function of map ordering and Jackson configuration. `webhook_events.payload` is
-  `TEXT` behind an immutability trigger, and the request goes out as raw UTF-8 rather than through
-  a converter that might re-serialize it.
-- **The external shape is not the internal one**, and the translator's tests assert literal strings
-  rather than parsed objects, because a reordered key breaks a signature even when the JSON is
-  equivalent. `previousStatus`, `captureMethod`, `merchantId` and `providerReference` are
-  deliberately not on the wire.
-- **`payment.failed` has two producers with two different key sets** —
-  `RecordProviderCallbackService` writes `occurredAt` and no failure text,
-  `TimeOutProcessingPaymentsService` writes `failedAt` plus `failureCode` and `failureMessage`.
-  Both translate to one schema. Reading only `occurredAt` would have stamped every timed-out
-  payment with the envelope's clock instead of the authority's.
-- **Two counters, and confusing them is a factor of five.** A failed *attempt* reschedules the
-  delivery (six attempts, waits of 1m, 5m, 30m, 2h, 6h, 8h36m end to end, then FAILED). Only a
-  delivery that spends its whole budget moves
-  the *endpoint's* consecutive-failure streak, by one; twenty of those disable it. The budget is
-  deliberately not ADR-025's: a merchant returning 503 for six hours is ordinary operation.
-- **A webhook URL is an SSRF primitive, and the guard is at delivery rather than registration.** A
-  name can resolve differently at each. Every address the host answers with is checked — not the
-  first — and loopback, wildcard, link-local (the metadata service), RFC1918, multicast, IPv6
-  unique-local and CGNAT are all refused. Redirects are refused rather than followed, which closes
-  the one-line version of the same attack. **The residual DNS-rebinding race is documented and
-  accepted** (ADR-028 §7): the client resolves again after the check.
-- **Rotation keeps the old version signing for 24 hours**, so the header carries two `v1=` values
-  inside the window, current first. That makes the outbound format a **superset** of what
-  `ProviderCallbackSignatureFilter` parses — that one keeps the last `v1` it sees, and a merchant
-  must check whether *any* matches.
-- **Webhook is a leaf.** It imports nothing from any capability; it consumes four event types as a
-  `Map` through the shared dispatcher, exactly like the Ledger does.
-
-### Settlement — `com.paymesh.settlement`
-
-**Where the money leaves.** A scheduled job turns a merchant's available balance into a batch, hands
-the payout to the provider, and PayMesh's cash account only moves when the provider says the money
-landed (ADR-032). Migrations V30–V32.
-
-| Endpoint | Auth | Notes |
-|---|---|---|
-| `GET /api/v1/settlement-config` | Bearer | Holding period, payout destination, minimum |
-| `PUT /api/v1/settlement-config` | Bearer | PUT semantics — every setting replaced, not merged |
-| `GET /api/v1/settlements` | Bearer | The merchant's batches, newest first |
-| `GET /api/v1/settlements/{settlementBatchId}` | Bearer | `404` for another merchant's, never `403` |
-| `POST /internal/v1/payout-callbacks/{provider}` | HMAC signature | Settlement's own route; the only thing that posts `BANK_CASH` |
-
-Batch `CREATED → SUBMITTED → PAID | RETURNED`; the money moves `available → SETTLEMENT_IN_TRANSIT`
-on cut and `in-transit → BANK_CASH` on paid, or `in-transit → available` on a terminal failure.
-
-Properties worth not breaking:
-
-- **`BANK_CASH` is credited from a signed callback and nothing else.** The same rule Payment follows:
-  submitting a payout is not confirmation it landed. Settlement writes rows and an outbox event; the
-  Ledger consumes the event and posts. There is no internal posting port (ADR-018 §3), so every
-  journal traces to a committed row and a redelivery is a no-op on the idempotency key.
-- **A terminal failure returns the funds by a NEW journal, never an edit.** `in-transit → available`
-  is a fresh reversal transaction, so the batch that failed and the funds that came back are both on
-  the record. The batch is marked `RETURNED` and the money is settleable again.
-- **Cut and the callback both take the payment-journal lock before reading available** — open item 20.
-  Settlement pays against `available`, and a refund against already-released funds drives the same
-  figure; without the lock a concurrent cut and refund each see a world without the other. Same shape
-  as Refund's over-refund lock (ADR-019 §4.1), applied a second time.
-- **§17.6's invariants are database triggers, not application checks.** A deferred trigger makes a
-  batch's ledger debit equal the sum of its items, immutability triggers freeze posted rows, and two
-  CHECKs bound `SETTLEMENT_IN_TRANSIT` and `BANK_CASH`. The application pre-checks turn a violation
-  into a readable error; the constraint is what makes it true.
-- **The Ledger↔Settlement cycle is named and allowed.** `ModuleBoundaryTest` records the one edge:
-  Settlement emits events the Ledger posts from, and the Ledger reads Settlement's available
-  contributions to cut against. Every other import stays one-directional.
-- **One currency per batch, no fees.** FX and fee deduction are absent because there is no fee
-  schedule and no cross-currency payout — a batch is per currency and nets nothing out.
+- **ADR-011 — One live payment intent per order, enforced by a partial unique index.** Decision:
+  `uq_payment_intents_live_per_order` excludes only `FAILED`/`CANCELLED` — the index *is* the
+  enforcement, the application pre-check exists only to produce a friendly 409 before the constraint
+  would. Tradeoff: split/partial payments are ruled out as a direct consequence, and `PROCESSING` is
+  deliberately uncancellable (an in-flight attempt may have already succeeded at the provider) —
+  which means a lost callback strands the order's only slot with no route out until ADR-015.
+- **ADR-012 — Deduplicate and order provider callbacks with three independent mechanisms.**
+  Decision: a primary key on `(provider, external_event_id)` — deliberately **not** merchant-leading,
+  because the merchant is derived from the callback, not supplied by it, and adding it would let one
+  provider event apply once per resolvable merchant — inserted *inside* the transition's own
+  transaction (so a concurrent duplicate blocks rather than racing), plus a monotonic
+  per-attempt-max event clock for ordering. Tradeoff: ties (identical `occurred_at`) are refused
+  rather than applied, which trades "moved backwards" for "never moved forward" — a real, accepted
+  hole pending a provider sequence number that doesn't exist yet.
+- **ADR-015 — Time a stranded `PROCESSING` payment out to `FAILED`.** Decision: after a generous
+  default of 1 hour, an intent stuck with no provider answer is asserted `FAILED` with a code
+  (`provider_no_response`) that must never look like a decline, releasing the order's slot.
+  Tradeoff: stated as the least certain decision in the whole payment capability — **a real payment
+  can be recorded as failed** if it actually succeeded at the provider, letting the merchant
+  double-collect on a second attempt. The age is "doing all the work" until reconciliation exists to
+  catch it (ADR-026 later closes this).
 
 ### Provider Simulator — `com.paymesh.simulator`
 
-**Not the merchant API.** Everything is under `/sim/v1/**`, authenticated by a dedicated shared key
-in `X-PayMesh-Simulator-Key` and nothing else — a merchant bearer token is refused (ADR-017 §3).
+- **ADR-017 — Simulate providers through scheduled, signed callbacks, never an inline call.**
+  Decision: the simulator holds zero references to PayMesh in either direction (`ModuleBoundaryTest`
+  empty allowlist both ways) — it restates PayMesh's callback contract rather than importing it, so
+  the two can drift and a test catches it rather than a shared type silently keeping them in sync. A
+  `@Scheduled` dispatcher, never an inline POST from the create handler, because every failure mode
+  worth simulating (delayed, lost, duplicate, out-of-order) is a property of *when* a callback
+  arrives. Authenticated by a third, deliberately *weaker* shared key than the callback route's HMAC.
+  Tradeoff: the contract duplication is a real, paid cost (drift is possible and only a test catches
+  it); percentage-based random failure injection is deliberately not built — a probabilistic path in
+  a suite run on every commit is a flake generator.
 
-| Endpoint | Auth | Notes |
-|---|---|---|
-| `POST /sim/v1/payments` | simulator key | `sim_pay_` id; `201` on create, **`200` on a replay** |
-| `POST /sim/v1/payments/{id}/capture` | simulator key | Only from `AUTHORIZED`, else 409 |
-| `POST /sim/v1/refunds` | simulator key | `sim_ref_` id; **enqueues no callback — now a gap, not a decision** |
-| `POST /sim/v1/payouts` | simulator key | `sim_po_` id; accepts a payout and **enqueues a signed payout callback** (ADR-032) |
-| `GET /sim/v1/reconciliation/{date}` | simulator key | One UTC day of the provider's own truth |
-| `POST /sim/v1/failure-profile` | simulator key | Last-write-wins; not idempotency-keyed |
+### Ledger — `com.paymesh.ledger`
 
-Deterministic tokens, and **the token wins where it names a behaviour; the profile fills in where it
-does not**: `tok_sim_success`, `tok_sim_decline`, `tok_sim_3ds`, `tok_sim_timeout` (**no callback row
-at all**), `tok_sim_duplicate`, `tok_sim_stale`.
+- **ADR-018 — Post the ledger from events; keep the invariants in the database.** Decision: the
+  financial source of truth is built as double-entry accounts/transactions/entries with every
+  invariant as a Postgres trigger or constraint — debits-equal-credits is a DEFERRED constraint
+  trigger checked at COMMIT, entries are immutable by trigger — and the *only* writer is an event
+  consumer of `payment.succeeded`, deliberately with no internal posting API (SDD §15.3), so every
+  journal traces to a committed state change. Tradeoff: no platform fee (there's no fee schedule to
+  post against) and no `account_balances` projection — the balance is a live `SUM` over entries,
+  bounded but not free, carrying a `ponytail:` marker for the day it needs an index-only path instead.
 
-Properties worth not breaking:
+### Refund — `com.paymesh.refund`
 
-- **It holds no reference to PayMesh in either direction, and `ModuleBoundaryTest` asserts it with an
-  empty allowlist on both.** That is stricter than every other pair in that file, all of which permit
-  an adapter. `CallbackBody` restates `ProviderCallbackRequest` and `SimulatedOutcome` restates
-  `ProviderOutcome` rather than importing them: the contract is *published*, not *shared*. The cost
-  is that the two can drift, and `SimulatorCallbackDeliveryIntegrationTest` is what goes red when
-  they do — the notification a shared type would have suppressed.
-- **The dispatcher is the design; an inline POST would make the module worthless.** Every failure
-  mode worth simulating is a property of *when and how often* a callback arrives, and none of them is
-  expressible from inside the create handler. Delayed, lost, duplicated, out-of-order and retried all
-  fall out of `deliver_after`, `external_event_id` and `occurred_at` on `provider_outbound_callbacks`.
-- **The body is serialized once at enqueue time and stored as `TEXT`, not `JSONB`.** A `JSONB` round
-  trip normalises key order and whitespace, so the bytes read back would not be the bytes signed. The
-  dispatcher signs the stored string and posts that same string. Verified by re-serializing after
-  signing, which turns 6 of the 7 delivery tests red.
-- **The signature timestamp is taken at delivery, not enqueue.** A callback deliberately delayed ten
-  minutes must not arrive carrying a ten-minute-old `t` and be refused as stale. `occurred_at` and
-  `t` are different facts produced at different moments; conflating them makes every delayed-callback
-  case fail with a 401.
-- **A third guarded secret.** `paymesh.simulator.api-key` is in `DevelopmentSecretGuard.GUARDED`
-  alongside the JWT and callback secrets, and it is not the lesser one: `POST /sim/v1/payments`
-  queues the callback that marks a payment `SUCCEEDED`, which is the same power as forging a
-  callback, reached one step earlier and without signing anything.
-- **The timer is absent under `dev`, not merely idle.** `@ConditionalOnProperty` removes the bean.
-  `dev` is the profile every `@SpringBootTest` runs under, and a dispatcher POSTing at PayMesh
-  mid-test would mutate the rows under assertion. Verified by flipping the flag, which turns
-  `SimulatorConfigurationTest` red.
-- **`ck_provider_payments_refunded` is the real over-refund guard**, not the aggregate's check; the
-  application checks under a row lock only to turn a constraint violation into a readable 422.
-- **It cannot send refund callbacks, and that has changed meaning.** When ADR-017 was written there
-  was no receiver, so queueing nothing was correct. Refund's callback route now exists, so this is
-  the reason the one hand-signed HMAC request in the Postman collection and the test suite still
-  has to be hand-signed. Closing it means a target URL on `provider_outbound_callbacks`, a refund
-  body writer, and a migration.
+- **ADR-019 — Refunds own their callback route; over-refund is guarded by a lock and a trigger.**
+  Decision: Refund gets its own `/internal/v1/refund-callbacks/{provider}` (sharing Payment's would
+  make Payment know refunds exist), and over-refunding is stopped by a row lock on the payment taken
+  *before* head-room is read — a deferred constraint trigger alone was tried first and **measured to
+  fail**: its query runs on the snapshot of the statement that queued it, so two concurrent full
+  refunds both passed in a live test before the lock existed. Tradeoff: the simulator still can't
+  send refund callbacks (built for payments only), so refund callbacks are hand-signed HMAC in tests
+  and Postman; nothing reconciles a lost refund callback until later.
 
-### Cross-cutting — `com.paymesh.shared`
+### Platform plumbing — outbox, idempotency, event delivery
 
-`MerchantId` (the tenant identifier every capability carries), the `Clock` bean,
-`ApiErrorResponse`, the security layer (`SecurityConfiguration`, `AuthenticatedCaller`,
-`AuthenticatedCallers` and the argument resolver built on it), and:
+The infrastructure every capability above depends on, built to be broker-shaped before there was a
+broker.
 
-**Event delivery** — `com.paymesh.shared.outbox`, ADR-016. The half of the outbox pattern that
-did not exist until this session.
+- **ADR-009 — Idempotency for public writes, PostgreSQL as sole authority.** Decision:
+  `idempotency_records` keyed `(merchant, endpoint, key)`, the INSERT itself is the concurrency
+  control (committed *before* the handler runs, so two retries collide on the primary key and the
+  database picks the winner) — Redis rejected as authority because a cache eviction or split-brain
+  could re-open an already-used key. A 5xx **deletes** the record (server doesn't know what it did,
+  so a retry must be a real retry); a 4xx stores and replays it. Tradeoff: openly accepted — a retry
+  after a 500 may duplicate an effect that actually committed; narrowing that further is the outbox's
+  job, not this layer's.
+- **ADR-010 — Transactional outbox in PostgreSQL, in the caller's transaction, no relay yet.**
+  Decision: `OutboxWriter.append` assumes an open transaction and never opens its own — the caller
+  wraps state-change + event-append in one `TransactionTemplate` (not `@Transactional`, which
+  measurably fails to proxy this codebase's `final`, hand-wired application services). This PR
+  deliberately stops at "written," with no relay, no Kafka, no inbox — a named safe state, not an
+  omission. Tradeoff: a service that forgets to wrap its two writes compiles, starts, and passes
+  every happy-path test — nothing catches a missing `TransactionTemplate` except a dedicated
+  rollback test per producer, which is now a house requirement.
+- **ADR-016 — Deliver events in-process, on a broker-shaped consumer contract, before Kafka.**
+  Decision: `EventDispatcher` calls handlers directly (no broker, no queue) but `EventHandler` takes
+  an envelope with a `Map` payload, dedupes via `processed_events`, and must throw to retry — exactly
+  what a Kafka listener would need, so swapping the transport later changes no handler. One
+  transaction per (handler, event), not per event, so one consumer failing never rolls back another's
+  already-committed work. Tradeoff: an event that fails forever freezes its own aggregate's later
+  events forever — no dead-letter, no attempt counter, no alert — named at the time as "the largest
+  known hole in this change" and left open on purpose for ADR-025 to close.
+- **ADR-025 — Give up on an outbox event rather than freezing its aggregate.** Decision: four new
+  columns (`attempt_count`, `last_attempt_at`, `last_error`, `dead_lettered_at`) on `outbox_events`;
+  after 25 attempts (~1 minute at the relay's 2s interval) a row is dead-lettered and the claim query
+  skips it, so the aggregate behind it drains on the very next pass. Surfaced via `/actuator/health`
+  going DOWN, not a metrics pipeline that doesn't exist. Tradeoff: **a dead-lettered event is never
+  delivered** — stated without softening — and the health indicator must never be wired to a
+  liveness/readiness probe, since restarting the process doesn't clear a dead letter and draining an
+  instance mid-backlog is actively counterproductive.
+- **ADR-026 — Reconcile against the provider's record by replaying it.** Decision: a scheduled job
+  fetches the provider's daily export and **replays** every terminal row through the same callback
+  service a real callback uses — no diff logic, no second copy of the state-machine rules, because a
+  second copy is exactly what drifts. Deduplication key is the job's own deterministic hash so
+  reruns are safe. One narrow, explicitly-scoped exception is added to ADR-012's "terminal states
+  absorb": a payment ADR-015 guessed-`FAILED` can now be revived by the provider's own confirming
+  record. Tradeoff: this is the change that finally closes ADR-015's and ADR-023's admitted
+  uncertainty, but only for payments/refunds within a 3-day replay window, and only for this
+  provider's specific "unknown status" semantics — a real acquirer's "unknown" must never be read the
+  same way.
 
-| Piece | What it does |
-|---|---|
-| `PublishOutboxEventsService` | Two passes (ADR-037): `publish()` claims `published_at IS NULL` oldest-first, dispatches in-process, stamps `published_at`; `relayToKafka()` claims `kafka_published_at IS NULL`, publishes to the broker, stamps `kafka_published_at`. Independent columns, so a Kafka outage never stalls in-process. A plain object; `OutboxRelay` is the `@Scheduled` bean and runs both passes |
-| `EventDispatcher` | Handlers indexed by event type. **One transaction per (handler, event)**, holding the inbox claim and everything the handler writes |
-| `ProcessedEventRepository` | `INSERT … ON CONFLICT DO NOTHING`; the row count is the answer. No read, so there is no read-then-write window |
-| `EventHandler` | The consumer contract: envelope in, `Map` payload, must be idempotent, must throw to retry, **must not open a transaction** |
-| `EventEnvelope`, `KafkaEventPublisher` | ADR-036, `…outbox.infrastructure.kafka`. The wire contract and the Kafka sink (`KafkaEventPublisher` implements the `EventPublisher` port). Driven by the relay's separate `relayToKafka()` pass in `both` mode (ADR-037) |
-| `KafkaEventListener` | ADR-037, `…outbox.infrastructure.kafka`. One `@KafkaListener(topicPattern = ".+-events")` feeding the existing `EventDispatcher`, so every handler is reachable from Kafka with no per-handler adapter. Registered only in `both` mode |
-
-Properties worth not breaking:
-
-- **The mapping from row to envelope happens INSIDE the per-item try/catch**, which is the
-  one thing open item 2 says both sweeps get wrong. `OutboxReader.findUnpublished` returns raw
-  unvalidated rows for exactly this reason. Verified by moving it out: one corrupt row then
-  killed the whole pass *and* a different test in the same class, which is open item 2's
-  pathology reproduced live.
-- **A failed event blocks its own aggregate for the rest of the pass, and nothing else.**
-  Without that, the first failure delivers an aggregate's second event before its first.
-- **The `published_at` stamp commits separately from the handlers**, which is what makes
-  delivery at-least-once. Not a defect to remove: a consumer that will one day live in another
-  process cannot share a transaction with the relay at all.
-- **Per-handler transactions, not per-event.** One transaction across every consumer would mean
-  the Ledger failing rolls back Order's committed work *and* the inbox row recording it, so both
-  re-apply.
-- **`published_at` is deliberately unmapped on the JPA entity and both relay queries are
-  native.** The entity is `@Immutable`, so Hibernate would silently drop an assignment to a
-  mapped field — it would look correct and do nothing.
-- **Three independent mechanisms stop a payment being applied twice** — the inbox row, the
-  consumer's `PENDING` re-check, and `Order.markPaid`'s refusal — and this was *measured*:
-  removing the first two together still left the end-to-end test green. So the inbox is proved
-  by a test with a guard-free handler that counts invocations, not by an order-level assertion.
-  Same shape as the idempotency-filter note below: a partial sabotage that stays green means the
-  sabotage was unfaithful.
-
-**Idempotency** — `com.paymesh.shared.idempotency`, ADR-009. A servlet filter running
-*after* Spring Security, keyed on `merchant + endpoint + Idempotency-Key`, with
-PostgreSQL as the durable authority (SDD §23.1–23.2).
-
-| Situation | Result |
-|---|---|
-| Header missing on a registered route | `400 IDEMPOTENCY_KEY_REQUIRED` |
-| Same key, different body hash | `409 IDEMPOTENCY_KEY_REUSED` |
-| Same key, record `COMPLETED` | Stored response replayed, `Idempotency-Replayed: true` |
-| Same key, record `IN_PROGRESS` | `409 REQUEST_IN_PROGRESS` |
-| Handler threw, or 5xx | Record **deleted** — a retry must be a real retry |
-
-**The insert commits in its own transaction before the handler runs, and that commit
-is the entire concurrency control** — the database picks the winner on the primary
-key. It is not a read-then-write, and the regression test was verified by making it
-one: four simultaneous retries of one key produced four handler executions
-(`expected: 1 but was: 4`). Note that a *partial* sabotage — adding a read but leaving
-`ON CONFLICT DO NOTHING` with the row count checked underneath — does **not** fail the
-test, because the database is still arbitrating. Only discarding the row count breaks
-it.
-
-Hashing is over raw request bytes, so semantically identical JSON with different key
-order hashes differently and yields a 409. Deliberate: canonicalising means parsing
-attacker-controlled JSON before the dedup decision, and a normalisation bug there
-replays the *wrong* response. Failing closed on a spurious 409 is strictly safer.
-
-Routes are opt-in via `IdempotentRoutes`; the layer is inert until a route registers.
-Four routes are registered today, all in `IdempotencyConfiguration`: Order's two writes
-and Payment's two. `POST /api/v1/merchants` stays out because it is unauthenticated and so
-has no merchant to scope a key by; `POST /api/v1/customers` stays out because it creates
-no financial effect.
+**Phase 1 status: done**, including this operational half.
 
 ---
 
-## How to verify it
+## Phase 2 — Event-driven capabilities (complete)
 
-```bash
-cd backend
-./mvnw test                     # 1529 tests; needs Docker, no local database
-./mvnw spring-boot:run          # port 8080, activates the dev profile via the pom
+Eight PRs, all merged. See `docs/phase-2-plan.md` for the sequencing rationale (Ledger-balance
+work had to precede Settlement; Reporting was sequenced after Settlement so it lands settlement
+facts in one pass).
 
-# API contract, end to end, including cross-tenant isolation and idempotency
-npx newman run docs/api/postman/paymesh.postman_collection.json \
-  --env-var baseUrl=http://localhost:8080
-```
+- **PR 0 — Make `PLATFORM_ADMIN` grantable.** *(ADR-027)* Delivers: the fix that makes every other
+  Phase 2 PR verifiable end to end — before this, a merchant registered through the public endpoint
+  could never be activated, because activation is `PLATFORM_ADMIN`-only and no such role could ever
+  exist. Decision: drop the `user_roles` primary key, make `merchant_id` nullable with **`NULL`
+  meaning platform-wide**, and enforce the shape with two partial unique indexes plus a biconditional
+  CHECK (`PLATFORM_ADMIN` iff `merchant_id IS NULL`) — closing off the escalation path where a
+  merchant admin granting themselves the role at their own tenant would become platform staff.
+  Tradeoff: demoting the platform's last admin needs a `FOR UPDATE`-locked count, not a CHECK or a
+  deferred trigger, because two concurrent demotions of the last two admins can each read "2 left"
+  and both pass under a single-row constraint — a genuinely serialized read, not a database rule.
 
-Tests use Testcontainers and never touch a developer database. Flyway migrates an
-empty container on every run, so the migrations are re-proved rather than assumed.
-The Postman collection's folders must run top to bottom — onboarding creates a merchant,
-Identity & Auth attaches a user and captures a token, and Authenticated access, Orders,
-Outbox and Payment Intents all use it. Payment Intents runs against the linked order the
-Orders folder leaves `PENDING`, not the one it cancels.
+- **PR 1 — Webhook.** *(ADR-028)* Delivers: merchant-facing endpoints, HMAC-signed delivery with
+  backoff (1m/5m/30m/2h/6h, six attempts, 8h36m total — an arithmetic bug once shipped this at
+  2h36m and a regression test now pins the total), and replay. Decision: the signing secret is
+  **derived, never stored** — `HMAC-SHA256(masterKey, "paymesh.webhook.v1|endpointId|version")`, one
+  block of HKDF-Expand (JDK 21 has no native HKDF) — so a database dump contains nothing that lets an
+  attacker sign as PayMesh; rotation is an integer increment, not a re-encryption. Tradeoff: create
+  and rotate are deliberately **not** idempotency-filtered, because that layer persists response
+  bodies verbatim and would write a plaintext secret to `idempotency_records`; a lost create response
+  is recovered by rotating, not by retrying create.
 
-**Nothing activates the `dev` profile by default, and that is the whole point.** Each
-supported launch path turns it on differently: `./mvnw spring-boot:run` via the
-`<profiles>` block in `pom.xml`, the IDE via the shared `BackendApplication [dev]`
-configuration in `.run/`, and the test suite via `@ActiveProfiles("dev")`. Running the
-packaged jar activates nothing, so it needs `PAYMESH_SECURITY_JWT_SECRET` (32+ bytes),
-`SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD` supplied explicitly.
+- **PR 2 — Risk.** *(ADR-030)* Delivers: synchronous risk evaluation on confirm, an immutable
+  assessment recording the ruleset version and a verbatim feature snapshot. Decision: **Risk decides,
+  Payment acts** — Risk writes nothing to any payment table and emits no event, because a second
+  writer of Payment's state machine is how a status becomes unexplainable. Rules are code, not a
+  `risk_rules` table (a bad expression at runtime is worse than a bad deploy); no Redis velocity
+  counters (Postgres already has the rows). Tradeoff: evaluation runs **before** confirm opens its
+  transaction, which looks like the weaker placement and is the correct one — `REQUIRES_NEW` was
+  tried first and would have held two Hikari connections per confirm, which wedges the whole pool at
+  ~5 concurrent confirms on the default size-10 pool.
 
-A startup failure reading `Property: paymesh.security.jwt.secret / Reason: must not be
-blank` means the profile is not active. That is the guard working. It was also, for a
-while, a genuine papercut: the IDE run button has no idea the Maven plugin exists, so
-a fresh clone failed with a message whose Action line never mentions profiles at all.
-The `.run/` configuration exists so the button works rather than failing more
-legibly (#28). See README §Running it locally.
+- **PR 3 — The Ledger's settleable balance.** *(ADR-031)* Delivers: `MERCHANT_AVAILABLE`, a
+  per-merchant holding period, and a release job that moves cleared funds from pending to available.
+  Decision: the job carries **no state table** — "has this been released" is answered by
+  `uq_ledger_transactions_idempotency` on `funds-released:pi_x`, and "how much is left" by the signed
+  sum of pending-account lines, so a released payment sums to zero and the job is idempotent by
+  arithmetic as well as by key. Refund reversals are re-pointed to reference the **payment**, not the
+  refund, so a partial-refund's net is what gets released rather than the gross. Tradeoff:
+  `availableMinor` may go **negative** (a merchant refunding after payout owes PayMesh the
+  difference) — clamping at zero was rejected as a second copy of the truth that would disagree with
+  the entries.
 
-The collection is not decorative: dropping the tenant predicate in
-`JpaOrderRepository` turns 9 of its assertions red, led by the cross-tenant 404 checks.
+- **PR 4 — Settlement.** *(ADR-032)* Delivers: a scheduled job cuts a merchant's available balance
+  into a batch, submits a payout to the simulator, and posts `BANK_CASH` only on the provider's
+  signed callback. Decision: three journals, and a failure is a **new** reversal transaction, never
+  an edit of the cut — `available → SETTLEMENT_IN_TRANSIT → BANK_CASH`, or `→ available` on a
+  terminal failure. The release/refund interleave race ADR-031 left open on principle (no lock
+  without a measured failure to justify it) is closed here with the same row-lock pattern as Refund's
+  over-refund guard, because Settlement is what makes a wrong `available` figure get **paid out**.
+  Tradeoff: no FX, no fee deduction (no fee schedule exists to net against), and a payout is
+  confirmed all-or-nothing — partial settlement isn't modeled because there's no provider event to
+  trace a partial outcome to.
 
----
+- **PR 5 — Notification.** *(ADR-033)* Delivers: a merchant notification recorded per committed
+  `payment.succeeded`/`payment.failed`/`refund.succeeded`, rendered from code templates, dispatched
+  by a simulated sender on a timer. Decision: record-on-event, send-on-timer — sending stays out of
+  the event transaction so a notification failure can never roll back the payment that triggered it.
+  No `notification_templates` table (code, like Risk's rules) and no `delivery_attempts` table
+  (counters on the row, like Webhook's choice). Tradeoff: because the simulated sender never fails,
+  `FAILED` and `attempt_count > 0` are only reachable in tests today, not in production — the retry
+  path is proven by injecting a throwing sender, not by anything that happens naturally.
 
-## Decisions on record
+- **PR 6 — Reporting.** *(ADR-034)* Delivers: `GET /api/v1/reports/payment-summary` and
+  `.../settlements`, plus async CSV export. Decision: **one append-only fact table**
+  (`report_facts`), aggregated on read — `source_event_id` is the primary key, so a redelivered
+  event is a refused insert rather than a double-counted payment, avoiding the concurrency bugs a
+  mutate-in-place row-per-payment design would need to get right under out-of-order delivery. `asOf`
+  is the newest fact's `recorded_at`, never wall-clock "now" — a stalled relay shows up as an `asOf`
+  that stops advancing, which is exactly the delayed-data signal the SDD requires. Tradeoff: exports
+  live in a `TEXT` column (no object storage exists in this project) with no retention/expiry sweep,
+  and there's no pre-aggregated rollup — deferred until a `GROUP BY` over one merchant's own facts is
+  measurably slow, not before.
 
-| ADR | Decision |
-|---|---|
-| 001 | Start as a modular monolith; extract services only after contracts are proven |
-| 002 | Package by feature, not by layer |
-| 003 | Opaque prefixed identifiers (`mrc_`, `usr_`, `cus_`, `ord_`, `pmt_`) |
-| 004 | Domain aggregate and JPA entity are separate types with a hand-written mapper |
-| 005 | Integration tests run against Testcontainers, not a developer database |
-| 006 | Customer PII encryption deferred; schema already in the encrypted shape |
-| 007 | Authentication at the filter chain, tenancy next to the data |
-| 008 | Cross-module reads go through a port owned by the consumer |
-| 009 | Public-write idempotency in PostgreSQL; records deleted on 5xx |
-| 010 | Transactional outbox in PostgreSQL, written in the caller's transaction (its "no relay" section is superseded by 016) |
-| 011 | One live payment intent per order, enforced by a partial unique index |
-| 012 | Provider callbacks deduplicated by `(provider, external_event_id)` and ordered by a monotonic clock |
-| 013 | Guard the confirm transition against an order cancelled underneath it |
-| 014 | Expire orders, but never one holding a live collection |
-| 015 | Time a stranded `PROCESSING` payment out to `FAILED`, with the risk stated |
-| 016 | Deliver events in-process on a broker-shaped consumer contract, before Kafka |
-| 017 | Simulate providers through scheduled, signed callbacks — never an inline call |
-| 018 | Post the ledger from events, and keep its invariants in the database |
-| 019 | Refunds own their callback route, and over-refund is guarded by a lock and a trigger |
-| 020 | Defer federated login until there is an identity provider |
-| 021 | Make the lifecycle states reachable, and enforce them |
-| 022 | Authenticate machines with merchant API credentials |
-| 023 | Finish the lifecycle claims, and give the token table a writer |
-| 024 | Disabling people, at the two scopes that mean different things |
-| 025 | Give the outbox relay a retry budget and a dead letter, and alert on the backlog |
-| 026 | Read the provider's own daily record, and repair what a lost callback left wrong |
-| 027 | Make `PLATFORM_ADMIN` grantable by giving a platform role no merchant at all |
-| 028 | Sign webhooks with a secret that is derived and never stored |
-| 029 | Constrain identifier formats in the database, so a row the application cannot read back cannot be written |
-| 030 | Risk decides and Payment acts — rules as code, evaluated synchronously on confirm |
-| 031 | Release funds from the ledger itself: a holding period, a pending→available journal, and no state table for the job |
-| 032 | Settlement cuts against available, submits to the provider, and posts `BANK_CASH` only on the signed callback; failures return funds by a new journal |
-| 033 | Notify merchants from committed events with a simulated sender; templates are code and attempts are a counter, not two tables |
-| 034 | Project one fact per event into an append-only table, aggregate on read; export async |
-| 035 | An append-only audit log recorded in-process inside the acting transaction (its subjects emit no event), immutable by trigger like `ledger_entries` |
-| 036 | Kafka (KRaft) is the event backbone; the wire envelope is the outbox row formalized as a separate published type, one topic per aggregate type with the aggregate id as the partition key (so one aggregate's causally-chained events cannot be reordered), and changes are additive within a version |
-| 037 | The dual-path relay: two INDEPENDENT passes over two columns (`published_at` in-process, `kafka_published_at` on Kafka, V37) plus one listener consuming back through the same inbox, behind `paymesh.events.delivery.mode` (`both` default, `in-process` rollback). Two columns because a single shared gate let a Kafka outage stall in-process money-path delivery; the dead-letter budget governs the in-process sink only, and the Kafka sink retries without a budget, surfaced by its own backlog age |
-| 038 | Schema-per-service (V38): the 46 tables move into ten schemas (nine services + a `platform` schema for outbox/inbox/idempotency) by `ALTER TABLE … SET SCHEMA`, keeping every trigger, index and FK intact. Nine `NOLOGIN` `*_svc` roles are fenced to their own schema and proven so. Lean carve — still one process, one datasource, one Flyway history; no FK dropped (the `* → merchants` FK is kept for PR 4 to replace). Schema follows the code package, so three of the plan's mappings are corrected. Per-service Flyway histories and splitting the platform tables are deferred to each service's extraction |
-| 039 | The merchant reference projection (V39): the merchant capability emits `merchant.registered/activated/suspended/closed` from its own outbox in the acting transaction; a `merchant_ref` read model (`merchant_id, status, updated_at`) in each of the six consuming schemas is fed by one `MerchantRefProjector` through the inbox; the platform `MerchantStatusGate` reads that projection (`MerchantRefStore`, schema-qualified JDBC — six same-named tables defeat a bare JPA entity) instead of the `merchants` table. The 17 cross-capability `* → merchants` FKs are dropped; the two `platform` ones are kept (no projection replaces them; they go when the platform tables split per-service). The gate gains a third outcome — absent → 503 `MERCHANT_NOT_YET_AVAILABLE` (retryable), distinct from present-but-inactive → 403 — so the gate is now eventually consistent, a documented partial walk-back of ADR-021's no-cache stance (suspension bites after one relay cycle; acceptable because it is policy, not money integrity) |
-| 040 | The API gateway (no migration): a new standalone `gateway/` module — Spring Cloud Gateway Server WebMVC 5.0.0, port 8081 — is the one north-south front door. It validates the same HS256 tokens at the edge from the same shared secret (`MerchantStatusFilter`-style mirror of the monolith's public/authenticated split: `/api/**` needs a token, but `/api/v1/auth`, `POST /api/v1/merchants`, `/internal/**` HMAC callbacks and `/sim/**` pass through), routes every prefix to the monolith (`backend-uri`, re-pointed per service in 3B), and rate-limits `/api/**` per client IP with a **Redis-backed bucket4j** limiter → `429`. Proxy hop pinned to HTTP/1.1; Lettuce pinned to 6.3.2 (bucket4j 8.15's CAS path predates Lettuce 7); Spring Cloud's Boot-4.0-only compatibility check waived for Boot 4.1. Optional until 3B — rollback is addressing the monolith on 8080 directly. Verified against Testcontainers Redis + a WireMock backend: unauthenticated → refused at the edge, authenticated → forwarded, burst → 429 |
+- **PR 7 — Audit.** *(ADR-035)* Delivers: an append-only `audit_events` log for privileged actions
+  (merchant freezes, role grants, secret rotations), immutable by the same trigger pattern as
+  `ledger_entries`. Decision: recorded **in-process, inside the acting transaction**, deliberately
+  **not** as an event consumer — Audit's subjects (a freeze, a rotation) publish no domain event at
+  all, verified in code before choosing the shape, so a shared `AuditRecorder` port is called from
+  inside the same transaction that commits the privileged action. Before/after values and the caller
+  IP are stored as SHA-256 hashes, never plaintext. Tradeoff: **a failure to record is a failure to
+  act** — if the audit append throws, the privileged action rolls back with it. Correct for a
+  security log, but a real, stated coupling: audit's uptime is now part of every privileged action's
+  uptime.
 
-Note that the SDD's Appendix D has its own ADR list with the same numbers and
-different decisions. When citing one, say which source you mean.
-
----
-
-## Open items, worst first
-
-_Items 1 and 2 of the previous list are now **closed in code** and kept below only where a
-residue survives. The Payment module is feature-complete; what follows is what is known to be
-wrong with it, worst first, and every one of these was found by review rather than by a
-failing test._
-
-0. ~~**`UserStatus.SUSPENDED` and `CLOSED` are still unreachable.**~~ **CLOSED by ADR-024.** The
-   question turned out to be two questions: a merchant admin revokes a user's roles at their own
-   merchant (the departed-employee case, account survives), and platform staff suspend the account
-   platform-wide. Conflating them would have let merchant A lock somebody out of merchant B.
-   **Every lifecycle enum in the platform is now reachable.**
-
-   Two things ADR-024 surfaced and did NOT close, recorded here rather than left for the next
-   audit: **granting a user a role needs no consent from that user** (grant-by-id rather than an
-   invitation, and it leaks existence where revoke deliberately does not), and **platform-scoped
-   writes cannot be made idempotent** because an idempotency record is merchant-scoped and
-   foreign-keyed to `merchants`. Also still open: `GET /v1/customers` (SDD 10.3's search).
-
-1. **Timing a stranded payment out can kill the order it exists to rescue.** ADR-015 says
-   `FAILED` releases the slot so the merchant can retry. But the intent has been stranded for
-   at least an hour by then, so an order that set `expires_at` is usually past it. The expiry
-   sweep runs within five minutes, finds a `PENDING` order past its deadline with no live
-   intent, and expires it. `EXPIRED` is not payable, so create returns 422, and
-   `uq_orders_merchant_ref` stops the merchant recreating the order under the same reference.
-   The same dead end open item 1 used to describe, reached through its fix. Neither ADR-014
-   nor ADR-015 notices. A grace period after a system-initiated terminal transition is the
-   likely answer. Only bites orders that set a deadline.
-2. ~~**One unmappable row disables a sweep permanently and silently.**~~ **CLOSED**, and the entry
-   was wrong about two things worth keeping visible.
-
-   **It said "both sweeps". There were five.** Order expiry, payment processing-timeout, refund
-   processing-timeout, the abandoned-checkout sweep, and the simulator's callback dispatcher — the
-   last of these with no per-item `try/catch` at all, so *anything* thrown while delivering the
-   first row ended the pass. The webhook dispatcher was a sixth near-miss: it returned ids rather
-   than aggregates and its comment claimed immunity on that basis, but `WebhookDeliveryId.from`
-   validates, so the throwing call had simply moved from the mapper to the adapter — still outside
-   the boundary. ~~Only the outbox relay was already right, and deliberately.~~ **That claim was
-   wrong too, and V26 is what proved it — see open item 19.** The relay was scrupulous about
-   *identifiers* and never noticed that its candidate query returned entities, so Hibernate
-   deserialized the JSONB `payload` into a `Map` while materializing each one — inside the
-   repository call, outside the per-item try. It was the sixth instance, not the prior art.
-   Fixed in the same change that closed item 19.
-
-   **And it said reaching the bug "needs database state the current CHECKs forbid, so this is a
-   latent trap rather than a live bug". It does not.** `merchants.merchant_id`, `orders.order_id`,
-   `payment_intents.payment_intent_id` and `refunds.refund_id` are all `VARCHAR(40)` with **no
-   format CHECK**, while `MerchantId.from` and its siblings refuse anything that is not
-   `prefix_uuid`. One malformed identifier — a bad migration, a hand-fixed row, a future import —
-   is a row PostgreSQL accepts today and every sweep chokes on. It was filed as latent because
-   nobody checked whether the ids were constrained. Open item 19 is the constraint that would make
-   it latent for real.
-
-   The fix is the one the entry prescribed, taken a step further than it said. Candidate queries
-   return **raw identifiers**, so nothing is mapped before the boundary, and the `XxxId.from` calls
-   — which also throw — moved inside the per-item `try` with them. The first attempt moved the
-   aggregate mapping and left the id parsing in the adapter; it still failed the regression test,
-   which is why the candidate types are `String` rather than value objects, and it is the same
-   half-fix the webhook dispatcher had already shipped.
-
-   Proved by sabotage in all five. The order one is an integration test with a genuinely
-   unmappable row, and with the mapping restored it takes down **12 of 14 tests in its class**
-   rather than one — because the bad row persists and kills every later sweep, which is exactly the
-   failure mode described above.
-
-   **How the last three were found:** by review, not by the suite. 1321 tests were green across a
-   fix whose own documentation claimed to be exhaustive and was not. The lesson is narrow and
-   worth stating — "I fixed every instance" is a claim about a search, and a search nobody
-   re-ran is a claim nobody checked.
-
-   **Also proved outside the suite**, against the local V25 database with rows already in it: a
-   malformed-merchant order planted so it held the oldest deadline, then the sweep enabled.
-
-   ```
-   WARN  ExpireOrdersService  : Could not expire order orderId=ord_925f588c… merchantId=bad-live-check-0001
-   INFO  OrderExpirySweeper   : Order expiry sweep examined=2 expired=1 held=0 failed=1
-   ```
-
-   The bad row is examined, warned about and counted — and **the healthy order behind it reached
-   `EXPIRED`**. Before the fix that first tick threw out of `sweep()` and expired nothing, on that
-   tick and every tick after it. Every later pass reads `examined=1 failed=1`: a permanently bad
-   row costs one order per sweep, which is the whole point.
-3. **ADR-014's race guard depends on `READ COMMITTED` and nothing says so.** The expiry sweep
-   takes the order's row lock and then does an *unlocked* read of `payment_intents`. It sees
-   an intent committed while it waited on the lock only because each statement takes a fresh
-   snapshot. Set `default_transaction_isolation = repeatable read` and it would miss the
-   intent and expire an order being collected against — the one thing ADR-014 exists to
-   prevent. The isolation level is load-bearing and undocumented.
-4. **A provider callback row is never read back, and one line depends on that.**
-   `ProviderCallbackJpaEntity.isNew()` always returns `true`, which is necessary — without it
-   Spring Data merges and a duplicate delivery becomes a silent `UPDATE` that answers
-   `APPLIED`. It stops being correct the moment anything reads a callback row and saves it.
-   Reconciliation is exactly that, and no test guards the assumption.
-5. **An order can still be cancelled out from under a live payment intent.** The dangerous
-   half is closed — confirm re-reads payability inside its transaction, so that intent can
-   never collect (ADR-013) — but the inconsistency remains: a `CANCELLED` order can hold a
-   live intent until a sweep or a merchant releases it. Deliberate. Closing it entirely needs
-   either Order to know Payment exists (forbidden) or a database trigger (hides business logic
-   where no reader looks).
-6. **The error dispatch renders Boot's error body, not the house shape.** Side effect of the
-   fix in #39: the status is now right where it used to be a wrong `401`, but the body is
-   `{timestamp,status,error,path}` rather than `{code,message,fieldErrors}`. Belongs with the
-   existing RFC-7807 divergence.
-7. **Two Postman folders have never been run — and the simulator's is now one of them.** The
-   provider-callback folder's HMAC pre-request script encodes the same contract the server-side tests
-   prove; the new Provider Simulator folder is in the same position. Both need a live server plus
-   `newman`, and the simulator's last six requests additionally need
-   `PAYMESH_SIMULATOR_DISPATCH_ENABLED=true`, because `./mvnw spring-boot:run` activates `dev`, which
-   switches the dispatcher off. The Java tests cover the same ground and are run; the collections are
-   documentation that has not been executed.
-8. **One global provider callback secret**, and now a second simulator key beside it. Anyone holding
-   the callback secret can name any merchant's intent; anyone holding the simulator key can make the
-   provider collect one. A documented deferral until per-provider credentials exist — ADR-017 §3
-   argues the split moves this closer rather than further, because the signing secret is now read at
-   exactly one place.
-9. **`POST /api/v1/merchants` is unauthenticated by design** and has no rate limit.
-   It is the obvious abuse vector: an open write endpoint that creates rows.
-10. ~~**Authorization is binary per tenant.**~~ **CLOSED by ADR-021.** `AuthenticatedCaller` now
-    carries the role instead of discarding it; `MERCHANT_USER` can no longer do what
-    `MERCHANT_ADMIN` can. The remaining hole is narrower: role checks are applied where they have
-    been written, and only the merchant module has them so far. Original text: holding any role at a merchant grants
-   everything at that merchant. `MERCHANT_ADMIN` vs `MERCHANT_USER` matters as soon
-   as two endpoints differ by permission.
-11. **Access tokens cannot be revoked before expiry** — nothing checks a denylist, so
-   the 15-minute lifetime *is* the revocation window. Acceptable now; revisit when a
-   compromised session has to be killed immediately.
-12. **Customer PII is plaintext** (ADR-006). Needs key management before it holds
-   anything real.
-13. **A stranded `IN_PROGRESS` idempotency record wedges that key permanently.** If the
-   process dies between the insert and the completion update, the row survives with no
-   TTL, no age check and no reaper. The endpoint answers (409, no hang), and the
-   merchant's escape is a fresh key — backstopped by `merchant_order_ref`, which is
-   precisely why those two dedup rules stay independent. But the cost is a wedged key,
-   not merely table growth.
-14. ~~**A permanently failing event freezes its own aggregate forever, silently.**~~ **CLOSED by
-   ADR-025.** Every failure now increments `attempt_count` and records its message, and the attempt
-   that reaches `max-attempts` (25, ≈ one minute at the 2s interval) stamps `dead_lettered_at`,
-   which drops the row out of the claim query so the aggregate behind it drains on the next pass.
-   The event is **not delivered and not deleted** — it is retained in place, in order, requeued by
-   clearing the stamp, and it raises one ERROR carrying the exact statement to do so.
-   `OutboxBacklogHealthIndicator` reports `/actuator/health` DOWN while any event is abandoned or
-   while the oldest deliverable one exceeds `backlog-alert-age`, which is SDD §24's own metric.
-
-   Two things ADR-025 surfaced and did NOT close, recorded here rather than left for the next
-   reader. **The health indicator must never be wired to a Kubernetes liveness or readiness probe**
-   when SDD §27 lands: restarting does not deliver a dead event, and draining an instance removes
-   the process working through the backlog. It belongs in a health group alerting scrapes and
-   orchestration ignores. And there is still **no attempt-level history** — only the most recent
-   error is kept, so a row that failed for two different reasons tells you only the second.
-
-   Residue from ADR-016 that ADR-025 did not touch: **delivery is asynchronous**, so a merchant
-   polling immediately after a capture may read `PENDING` for a second or two; `occurred_at` is not
-   unique, so two events for one aggregate at the same instant have no defined order (the same
-   trade ADR-012 accepts, with the same fix — a sequence number); neither `outbox_events` nor
-   `processed_events` is ever pruned; and there is one relay instance with no leader election (two
-   would be safe, the inbox arbitrates, but wasteful). **Merchant and Customer still emit no events
-   at all**, and a number of `order.*` and `payment.*` events are delivered to nobody — dispatched
-   to an empty handler list and stamped published, which is the correct handling of an event nobody
-   wants.
-
-15. **Reconciliation cannot tell an unknown refund from a settled one.** `RecordRefundCallback
-   Service` returns `NOT_APPLICABLE` for both — its declared meaning is "a new event for a refund
-   already terminal", but it also returns it for a callback naming a refund that does not exist,
-   which it cannot record because `refund_callbacks` has a foreign key to `refunds`. From the
-   reconciliation adapter the two are indistinguishable, so both count as `ALREADY_CONSISTENT`
-   (ADR-026 §8). Chosen deliberately: a settled refund is the common case, so counting the pair as
-   unresolved would make that number permanently large and meaningless — the same always-red-equals-
-   off failure the outbox health indicator avoids. `REPAIRED` is exact either way. Closing it needs
-   a distinct value on Refund's outcome enum, which is Refund's PR.
-16. ~~**The Postman collection had been failing 321 assertions since ADR-021.**~~ **CLOSED, and
-   worth keeping visible.** `Merchant.register` lands on `PENDING_VERIFICATION`, and
-   `MerchantStatusFilter` then refuses every merchant-scoped write with `MERCHANT_NOT_ACTIVE` — so
-   from the moment merchant lifecycle enforcement shipped, every folder past onboarding 403'd. The
-   collection was never re-run, so nobody saw it. Two activation requests fix it and the collection
-   is green again (218 requests, 524 assertions).
-
-   **The lesson is about what the Java suite cannot see.** 1176 tests passed throughout, because
-   integration tests build their merchants through `MerchantRepository.save(...).activate(...)`
-   rather than through the onboarding endpoint. The suite never walked the path a real integrator
-   walks, so a change that made the product unusable from outside was invisible from inside. The
-   Postman collection is the only check that exercises routes rather than services, and it is worth
-   running after any change to the HTTP surface.
-17. **Smaller:** `DevelopmentSecretGuard` surfaces as a raw stack trace rather than the
-    tidy `APPLICATION FAILED TO START` block a `FailureAnalyzer` would give it;
-    `ModuleBoundaryTest` allowlists by *filename* rather than path, so a
-    `OrderConfiguration.java` created under `order/application` would pass;
-    `java-coding-conventions.md` §7 says business-rule failures live in `application`
-    without acknowledging that an aggregate-thrown exception must live in `domain` or
-    the dependency direction inverts; the idempotency filter's several-merchants branch
-    is untested and its replay hard-codes `Content-Type: application/json`;
-    `JwtSecretGuards` imports the guard directly, so the suite would not notice if it
-    stopped being component-scanned; the
-    customer API's `@Email` rejects a padded address where merchant's tolerates one;
-    `SERVICE_ACCOUNT` exists in the enum but is not grantable
-    (deliberate since ADR-027 — machines authenticate with merchant API credentials, so a
-    platform-wide service account needs a different issuer); writes use `saveAndFlush`, which costs
-    one `SELECT` before each `INSERT`; `rest-api-conventions.md` prescribes 422 for
-    validation failures where the code returns 400.
-    <br>~~`IdentityConfiguration`'s javadoc credits `MerchantConfiguration` for the `Clock`
-    bean~~ and ~~`PLATFORM_ADMIN` is not grantable~~ are **closed by ADR-027**.
-
-19. ~~**No identifier column has a format CHECK.**~~ **CLOSED by V26 and ADR-029.** 63 constraints
-    across 20 identifier types, sharing one `IMMUTABLE is_prefixed_id(value, prefix)` function
-    rather than 63 inline regexes — only the prefix varies, so inlining the pattern would have been
-    63 chances to fat-finger a character class in a way nothing would catch. Applied against a
-    populated V25 database with zero violating rows. Five categories are deliberately excluded and
-    the migration names each: polymorphic columns paired with a `*_type`, `actor_id` (not an
-    identifier), the two bare internal UUIDs, provider-supplied ids, and merchant free text.
-
-    **Two things it turned up that were worth more than the constraint.**
-
-    First, **the constraint closed the door our own regression tests came through.** Open item 2's
-    tests planted a malformed `merchants.merchant_id`; V26 makes that insert impossible. They were
-    rewritten around `metadata`, which is JSONB with no shape constraint and maps to a `Map`, so a
-    JSON array there is still a row no mapper can rehydrate — same test, same blast radius (12 of 14
-    when the fix is reverted). **That is the point, not a snag:** constraining identifiers narrows
-    what can be unreadable, it does not close the set, and the per-item boundary stays load-bearing.
-    We deliberately did *not* add a `jsonb_typeof = 'object'` CHECK to close that door too; chasing
-    every unmappable shape with a constraint is the wrong end of the problem.
-
-    Second, **it exposed a sixth instance of open item 2, in the component this document had just
-    finished calling the prior art.** Removing the malformed-id door from `EventDeliveryIntegrationTest`
-    left one other way to poison an outbox row — the payload — and the relay did not survive it.
-    `findUnpublished` returned entities, so Hibernate deserialized the JSONB payload while
-    materializing each one, inside the repository call and outside the per-item try.
-    `UnpublishedEvent` was careful about identifiers and never noticed the payload arriving already
-    parsed, while its javadoc claimed `toEvent()` was "the only place this row is allowed to throw".
-    Fixed the same way as the other five: the query selects `payload::text`, the record carries the
-    raw string, `toEvent(ObjectMapper)` parses inside the caller's try.
-
-    Third, **writing the constraint proved the domain type did not enforce the invariant it
-    advertised.** Fifteen of the eighteen `XxxId` types round-tripped the parsed UUID with
-    `equalsIgnoreCase`, so `mrc_550E8400-…` and `mrc_550e8400-…` were both legal; the other three
-    (`ApiCredentialId`, `KycSubmissionId`, `PaymentMethodTokenId`) called `UUID.fromString` and
-    discarded the result, which also admitted padded shorthand like `apc_1-1-1-1-1` that the parser
-    silently expands. The CHECK was therefore *stricter* than the type it was written to mirror, and
-    both the migration comment and the ADR asserted the opposite. **These columns are primary keys:
-    two accepted spellings of one UUID is two rows for one thing.** The constraint was the correct
-    half; all eighteen now round-trip with `equals`. Nothing else would have found this — every id
-    the application mints is canonical, so no test and no volume of traffic produces the divergent
-    case.
-
-    Third time this month an exhaustiveness or correctness claim has been wrong, and all three were
-    found by removing an assumption rather than by adding a test.
-
-20. **One limit the release job still ships with; the interleave was closed by PR #61** (both found
-    by reviewing #60, not by a failing test).
-
-    **A capture fully refunded before it cleared never leaves the candidate set.** It earns no
-    release journal, so the anti-join never filters it out and the job counts it `held` on every
-    pass. The cost is a slot in the oldest-first batch: accumulate `batch-size` of them and
-    releases stop. **Still open.**
-
-    **~~Release and a refund reversal of the same payment can interleave~~ — CLOSED (PR #61).** The
-    fix is ADR-019 §4.1's row lock, applied a second time: `lockPaymentJournals` is now taken before
-    the read in both the release job and the refund reversal, so a concurrent release and refund of
-    one payment serialize instead of each reading a world without the other. Settlement pays against
-    `available`, and this had to close before it could — it did.
-
-18. **`SERVICE_ACCOUNT` is the last unreachable enum constant on the platform**, and unlike the
-    ones ADR-021/024/027 closed it is unreachable *by decision* rather than by oversight.
-    `ck_user_roles_scope` keeps it merchant-scoped; nothing mints one. Recorded so the next audit
-    does not rediscover it as a bug.
+**Phase 2 status: done.**
 
 ---
 
-## What comes next
+## Phase 3 — Microservices extraction (in progress)
 
-### Phase 1 is done, operational half included
+Plan of record: `docs/phase-3-microservices-extraction-plan.md`, executed one PR at a time in table
+order. Wave **3A** builds the infrastructure with the monolith still whole; **3B–3D** pull services
+out one at a time in order of coupling (leaves first, the money path last); **3E** closes out.
 
-**Payment, Refund and the Ledger are feature-complete, and so is the machinery around them.** Every
-state in the intent enum is reachable, every capability the SDD lists for Phase 1 is built, and the
-three items that were still only *described* are now built:
+### 3A — Foundations (built; still one deployable)
 
-| Was | Now |
-|---|---|
-| A refund whose callback never arrived sat `PROCESSING` forever, holding its amount against the captured total | Closed by **ADR-023**: a sweeper fails it on a deliberately long timer, re-reading under lock so a callback arriving in the gap wins |
-| `GET /sim/v1/reconciliation/{date}` produced the provider's truth and nothing read it | Closed by **ADR-026**: a job reads it over HTTP and replays every terminal row through the ordinary callback path |
-| A failing event was retried forever with no dead letter and no alert | Closed by **ADR-025**: a retry budget, a dead-letter stamp that unblocks the aggregate, and a health indicator on backlog age |
+- **PR 1 — Kafka backbone.** *(ADR-036)* Delivers: KRaft Kafka in `docker-compose.yml`, the
+  `EventEnvelope` wire contract, and `KafkaEventPublisher` — **with no caller**. Decision: topic is
+  derived from the **aggregate type**, not the event-type's domain prefix (`SETTLEMENT_BATCH` emits
+  both `settlement.batch_cut` and `payout.*`, and those are causally chained — splitting them across
+  topics named after the event prefix would silently break ordering); partition key is the
+  aggregate id, the same grain ADR-012 already established for callback ordering. The publish call
+  **blocks** on the broker's acknowledgement — a relay that treated the buffered `send()` return as
+  success would stamp `published_at` on an event a crash then discards. Tradeoff: from the moment
+  something actually publishes (PR 2), the existing 25-attempt/~1-minute dead-letter budget (ADR-025)
+  would treat a simple broker outage as poison and dead-letter a healthy backlog — explicitly flagged
+  here as "the first thing ADR-037 has to decide," not fixed in this PR.
 
-**The most important consequence, stated plainly.** ADR-015 fails a stranded payment on a guess and
-says so; until this session that guess was final, and a payment the provider had actually collected
-stayed `FAILED` forever with the Ledger never posting and the merchant simply short. It is now
-revisable — by a late callback, or by the provider's daily record — and only while the failure code
-is the sweeper's own. A payment the provider *declined* stays terminal forever. That narrowness is
-the whole safety argument and is pinned down directly in `PaymentIntentTest`.
+- **PR 2 — Dual-path relay.** *(ADR-037)* Delivers: the relay now publishes to Kafka **and**
+  in-process, and one `@KafkaListener` feeds events back through the same `EventDispatcher` and
+  `processed_events` inbox — an event is delivered twice, applied once. Decision: **two independent
+  columns**, not one shared gate — `published_at` (in-process) and `kafka_published_at` (Kafka),
+  because the first cut of this design gated one column on both sinks and had a real money-path bug:
+  during a Kafka outage, in-process-done-but-Kafka-pending rows saturate the bounded claim batch and
+  new events stop being claimed at all — a broker outage stalling the Ledger. The dead-letter budget
+  from PR 1's concern is resolved: it governs the **in-process sink only**; the Kafka sink retries
+  forever with no budget, since an outage is global and self-healing, not a poisoned event. Tradeoff:
+  every event is delivered and applied-checked twice while both paths run — the accepted cost of
+  running a safety net that makes every later extraction (PRs 6–14) reversible by a flag.
 
-### What is genuinely next
+- **PR 3 — Schema-per-service.** *(ADR-038)* Delivers: the 46 tables move into ten schemas (nine
+  services + `platform`) via `ALTER TABLE … SET SCHEMA`, keeping every trigger, index and FK intact;
+  nine fenced `NOLOGIN` `*_svc` roles prove a service cannot read another's tables. Decision: the
+  schema mapping follows the **code package**, not the plan document's prose table, where the two
+  disagreed (three corrections recorded: `api_credentials` → `merchant`, `provider_callbacks` and
+  `refund_callbacks` → `payment`). The pervasive `* → merchants` FK is **kept**, not dropped —
+  dropping it here would remove a live integrity guard for a whole PR with nothing yet to replace it;
+  PR 4 drops each FK in the same step that lands its replacement, so there's never an unguarded
+  interval. Tradeoff: this is a deliberately **lean carve** — one Flyway history, one
+  `outbox_events`/`processed_events`/`idempotency_records` set in `platform`, not split nine ways —
+  each ponytail-marked for the extraction that actually needs it, plus one real deployment caveat
+  (a separate migrator role needs an explicit `GRANT USAGE` this single-process carve doesn't need).
 
-**Phase 2 has started.** `docs/phase-2-plan.md` is the plan of record: eight PRs, with migration and
-ADR numbers pre-assigned so parallel worktrees cannot collide on them. The ordering is
-value-and-dependency first rather than SDD order, because Webhook, Notification and Reporting are
-pure event consumers that depend on nothing, and only Settlement has a real prerequisite (the
-Ledger's `MERCHANT_AVAILABLE` account, which `AccountType`'s own javadoc names as missing).
+- **PR 4 — Merchant reference projection.** *(ADR-039)* Delivers: `merchant.registered/activated/
+  suspended/closed` events from Merchant's own outbox; a `merchant_ref(merchant_id, status,
+  updated_at)` read model in each of six consuming schemas, fed by one `MerchantRefProjector`
+  through the inbox; the platform's `MerchantStatusGate` reads the projection instead of the
+  `merchants` table — the last direct cross-service table read. Decision: per-schema copies, not one
+  shared `merchant_ref` (a shared table is "a shared database wearing a lanyard" — it re-couples
+  every consumer to one table). The gate gains a third outcome: **absent from the projection → 503
+  `MERCHANT_NOT_YET_AVAILABLE`** (retryable), distinct from present-but-inactive → 403. Tradeoff:
+  **suspension is now eventually consistent** — a real, stated partial walk-back of ADR-021's
+  "no cache, ever" stance, accepted because a few extra seconds of trading after a suspension is a
+  policy lag, not a money-integrity failure; every test that flips merchant status must now drive the
+  relay before asserting against the gate.
 
-| PR | Delivers | Depends on | Migrations | ADR |
-|---|---|---|---|---|
-| 0 ✅ | `PLATFORM_ADMIN` grantable — **merged, PR #54** | — | V23 | ADR-027 |
-| 1 ✅ | Webhook — **merged, PR #55** | — | V24–V25 | ADR-028 |
-| 2 ✅ | Risk — **merged, PR #59** | — | V27–V28 | ADR-030 |
-| 3 ✅ | Ledger available balance — **merged, PR #60** | — | V29 | ADR-031 |
-| 4 ✅ | Settlement — **merged, PR #61** | — | V30–V32 | ADR-032 |
-| 5 ✅ | Notification — **merged, PR #62** | — | V33 | ADR-033 |
-| 6 ✅ | Reporting — **built on `feature/reporting`** | PR4 (content) | V34–V35 | ADR-034 |
-| 7 ✅ | Audit — **built on `feature/audit`** | PR2, PR4 (subjects) | V36 | ADR-035 |
+- **PR 5 — API gateway.** *(ADR-040)* Delivers: a standalone `gateway/` Maven module (Spring Cloud
+  Gateway Server WebMVC, port 8081) — edge JWT validation from the same shared secret, routing every
+  prefix to the monolith, Redis-backed per-IP rate limiting on `/api/**`. Decision: the edge mirrors
+  the monolith's public/authenticated split **exactly** (auth routes, merchant registration, HMAC
+  callbacks and simulator routes pass through unauthenticated at the edge, or a provider retry would
+  401 before its signature is ever checked); the rate limiter **fails open** on a Redis outage,
+  because Redis here is a throwaway counter, not an authority, and the graceful-degradation rule says
+  it may fail without corrupting payments. Tradeoff: three real pins recorded — the proxy hop forced
+  to HTTP/1.1 (h2c to a plaintext backend gets `RST_STREAM`), Lettuce pinned to 6.3.2 (bucket4j 8.15
+  predates Lettuce 7), and Spring Cloud's Boot-4.0-only compatibility check disabled for Boot 4.1 —
+  each a specific, load-bearing workaround rather than a style choice.
 
-The numbers moved once: open item 19 took V26 and ADR-029 mid-plan, so everything after it shifted
-by one. `docs/phase-2-plan.md` carries the same table and the two agree.
+### 3B — Extraction wave 1: the pilot and the leaves (planned, not yet built)
 
-### PR #54 is merged. What it settled, and the one thing it deliberately left uncovered
+- **PR 6 — Provider Simulator (the pilot).** *(ADR-041, planned)* Goal: prove the whole extraction
+  recipe on the safest possible service — the one with an empty cross-capability allowlist in *both*
+  directions and no money authority at all, so if the recipe is wrong, it's wrong here, where nothing
+  financial is at risk while that's discovered. Planned shape: its own deployable, its own
+  `provider_*` schema, inbound requests arrive by event or gateway call, outbound callbacks publish
+  to Kafka with ADR-012's ordering/dedup re-proven across a real wire. Rollback: the dual-path relay
+  makes this a flag flip back to the in-process simulator.
 
-**`PLATFORM_ADMIN` is grantable (ADR-027).** V23 makes `user_roles.merchant_id` nullable behind a
-biconditional CHECK, a platform role travels in the claim with **no `:merchantId` suffix at all**,
-and the first admin comes from a startup property
-(`paymesh.security.bootstrap-platform-admin-email`) that promotes an existing account rather than
-seeding a password hash into a migration. The escalation the nullability would have opened — a
-merchant admin granting themselves `PLATFORM_ADMIN` at their own tenant, which
-`requirePlatformAdmin()` used to read as platform authority — is refused independently by the
-constraint, the aggregate and the claim parser.
+- **PR 7 — Webhook.** *(ADR-042, planned)* Goal: the first *merchant-facing* leaf to leave the
+  process. Planned shape: Kafka-fed from `payment.*`/`refund.*`/`order.*`, its own delivery-dispatch
+  timer, per-tenant secret derivation carried over unchanged (nothing to migrate — ADR-028's secrets
+  were never stored anywhere to begin with). Verification target: a merchant endpoint being down
+  never touches a payment, now literally proven across two processes rather than one.
 
-**Verification, do not redo it:** 1197 tests green; Postman 217 requests / 522 assertions / 0
-failures; V23 applied to a live V22 database *with data in it*; the whole loop walked live with no
-minted token (register merchant → register human → bootstrap on restart → log in → activate →
-promote a second admin), plus the three negatives.
+- **PR 8 — Engagement (Notification + Reporting + Audit).** *(ADR-043, planned)* Goal: move the
+  three read-side consumers out together. The one hard part: Audit isn't a pure event consumer today
+  (ADR-035's subjects emit no domain event, only an in-process transactional call) — once the acting
+  capability is in another service, that in-process call can't survive. Planned fix: each privileged
+  action emits an `*.audited` event on its **own** outbox in the same local transaction as the action
+  itself, and engagement consumes it through its inbox — moving the atomicity guarantee from "same DB
+  transaction" to "same outbox transaction," which is strictly stronger than a synchronous cross-service
+  call that could fail after the action already committed.
 
-**The last-admin guard needed a lock, and getting there cost two rounds.** The first round of review
-found the guard was check-then-act — `countPlatformAdmins()` then a delete, no lock, READ COMMITTED
-— so two overlapping demotions of the last two admins both read 2 and both committed. The fix took
-`FOR UPDATE` on every platform-admin row. The **second** round found that fix had inverted the lock
-order: Hibernate rewrites the roles collection as delete-all-and-recreate, so every other writer of
-the `User` aggregate takes `users` before `user_roles`, and a guard that locked `user_roles` first
-deadlocked against all six of them (reproduced as 40P01, mapping to nothing, so a bare 500). The
-target is now read under a lock on its `users` row *before* the count. Recorded in ADR-027 §4.
+- **PR 9 — Risk.** *(ADR-044, planned)* Goal: the first *synchronous* extraction — payment's confirm
+  needs a risk decision over the network, not a method call. Planned shape: Resilience4j around a
+  gateway/mesh call, with ADR-030's fail-open/fail-closed-by-tier policy (specified for a Redis
+  outage) extended to also cover "risk service unreachable." Verification target: a risk timeout
+  applies the documented policy and records that it did — payments must neither hang nor silently
+  allow through an unreachable risk check.
 
-Two things about that guard worth not rediscovering. **A deferred constraint trigger cannot replace
-the lock** — V15 and V16 use one for their cross-row invariants and it looks like the house answer
-here, but it fires inside the committing transaction under its own snapshot, so both demotions still
-pass it. **And the lock does nothing for the startup bootstrap**, whose count runs against an empty
-set; `uq_user_roles_platform_scoped` is what stops two instances bootstrapping the same email, by
-failing the loser's startup.
+### 3C — Extraction wave 2: supporting core (planned)
 
-**`reactivate` is transactional at last.** It was the third appearance of the same finding —
-`reject()` in ADR-023's PR, this method in ADR-024's PR, both noted and not fixed. Every method in
-`ManageUserAccessService` that writes twice now writes once.
+- **PR 10 — Identity.** *(ADR-045, planned)* Goal: authentication becomes its own service, since
+  every other service will depend on validating its tokens. Planned shape: token *issuance* moves
+  here; token *validation* stays distributed (the gateway and each service verify independently via
+  public key/introspection, never trusting a caller's say-so) — the same defense-in-depth principle
+  ADR-040 already applies at the edge.
 
-**The deadlock has no automated test, on purpose.** One was written and deleted. The losing
-interleaving is a window of microseconds; with the lock order inverted the test passed 40 out of 40
-attempts, so it would have shipped as false coverage. The reviewer reproduced 40P01 by hand-driving
-two `psql` sessions, which a service-level test cannot do. The fix rests on the lock-order argument
-in `SpringDataUserRepository.lockUserRow` and ADR-027 §4, not on a green assertion. **If you touch
-the order of locks in `revokePlatformAdmin`, nothing will fail.**
+- **PR 11 — Merchant.** *(ADR-046, planned)* Goal: close the loop ADR-039 opened — the service that
+  actually owns merchant status becomes the sole emitter every `merchant_ref` projection consumes,
+  instead of the monolith emitting on its behalf. Its privileged actions (freeze/activate/close) emit
+  the `*.audited` event PR 8 defined.
 
-Two things review checked and deliberately did **not** flag, recorded so they are not re-litigated:
-`CallerRole.parse` uppercases before `valueOf`, so a colon-less `"platform_admin"` would parse — but
-the claim is only ever written server-side from `Role.name()` and the token is HMAC-signed, so it is
-not attacker-reachable. And a platform admin who also holds a merchant role can now transact at a
-suspended merchant they administer — no escalation, since they can unilaterally reactivate it
-anyway, at most a lost audit step.
+- **PR 12 — Settlement.** *(ADR-047, planned)* Goal: settlement runs standalone, reading the
+  (still-monolith) Ledger's available balance **across the wire** rather than in-process. Planned
+  shape: the batch-net-equals-items invariant stays a deferred trigger entirely inside the settlement
+  schema (it never crossed a service boundary, so extraction doesn't touch it); a forced final-payout
+  failure posts its reversal via a Ledger API call instead of a local method.
 
-### Webhook is built. What it settled, and what it deliberately does not cover
+### 3D — Extraction wave 3: the money path (planned)
 
-**The signing secret is derived and never stored (ADR-028).** That one decision removed a whole
-subsystem: no `Cipher`, no AES-GCM facility, no master-key-to-ciphertext map, no decrypt on every
-send — a grep of the codebase found zero of any of it, so "encrypted secret" had been quietly
-requesting all of it. The blast radius is identical either way (one key, every secret) and the only
-capability lost is a merchant supplying their own, which Stripe, GitHub and Shopify all decline to
-offer. It also removed the need to put the two secret-returning routes on the idempotency filter,
-which would have written the secret to `idempotency_records.response_body` in cleartext.
+- **PR 13 — Payment (Order + Payment + Customer + Refund).** *(ADR-048, planned)* Goal: the
+  synchronous money path leaves as **one** service, kept together because these four share the
+  tightest transactional coupling in the system and a network hop between order and payment would be
+  a real regression. Planned shape: confirm calls Risk (PR 9) synchronously and calls the Ledger API
+  to post money, consuming `ledger.transaction.posted` back; ADR-031's sharp already-released-balance
+  edge becomes a network call instead of a local debit. Explicitly the point of no easy return: ships
+  only after 3A–3C are stable under production-shaped load.
 
-**The one mapping this capability guessed at was proved before anything was built on it.** Five
-entities in this repo map `@JdbcTypeCode(SqlTypes.JSON)` and every one maps a `Map`;
-`subscriptions` is the first `List`, and an un-annotated `List<String>` defaults to a SQL *array*
-rather than jsonb. `WebhookEndpointPersistenceTest` round-trips it and reads it back through
-`subscriptions->>0`. A mapping that fails `ddl-auto=validate` fails at context startup across every
-integration test at once, which is the least readable way to learn anything.
+- **PR 14 — Ledger (last).** *(ADR-049, planned)* Goal: the financial source of truth becomes its
+  own service **last and whole**, specifically because its invariants (the deferred debits=credits
+  trigger, immutability) never leave its schema and extracting it after every caller is already
+  stable is the only ordering that protects the governing invariant. Planned shape: posting becomes
+  an idempotent API (`Idempotency-Key` per caller+action) plus a `ledger.transaction.posted` event;
+  the release job keeps running here on its own timer. Why last, stated plainly in the plan: every
+  earlier service can tolerate eventual consistency or a brief outage — the Ledger cannot tolerate a
+  distributed transaction, and its invariants cannot be distributed.
 
-**What tracing the producers turned up, and no amount of reading the design would have.**
-`payment.failed` is emitted from two places with two different key sets — one writes `occurredAt`
-and no failure text, the other writes `failedAt` plus `failureCode` and `failureMessage`. A
-translator reading only `occurredAt` would have stamped every timed-out payment with the envelope's
-clock. Both shapes are now pinned as literal expected JSON.
+### 3E — Close-out (planned)
 
-**And what running it turned up.** The Postman collection had an assertion pinning
-`amountPaidMinor` to 3000 where the capture above it takes 2500. It had never failed because it
-only ever ran in the PENDING branch, where the other side of the ternary is not evaluated; adding
-one more consumer to `payment.succeeded` was enough extra latency for a relay tick to land first
-and expose it. Fixed in the same change.
+- **PR 15 — Observability across the hops.** *(ADR-050, planned)* Goal: one trace follows a request
+  across every service it touches, once the money path spans nine deployables instead of one.
+  Planned shape: OpenTelemetry auto-instrumentation, trace/span propagation through the gateway,
+  synchronous calls and Kafka headers; Prometheus + Grafana.
 
-**Verification:** 1318 tests green (Webhook PR); Postman 233 requests / 566 assertions / 0 failures across
-seventeen folders; V24 and V25 applied to a live V23 database *with data in it*; the whole loop
-walked live — register an endpoint, read the secret once, pay an order through the simulator, watch
-a PENDING delivery appear for it, rotate twice from the same version and get the same secret back.
-
-**Five defects review found that 1300 green tests did not**, all in the author's own work:
-
-| Found | Why the suite missed it |
-|---|---|
-| The retry horizon was 2h36m, not the 8h36m four documents state — `MAX_ATTEMPTS` was `BACKOFF.size()`, so the six-hour wait was unreachable | The schedule test walked four of the five steps and stopped |
-| `V24` and ADR-028 claimed a retried create "re-derives the same secret"; it answers 409 with no secret, and the controller javadoc said the opposite | Nothing asserts a comment |
-| `requireStrongMasterKey` was documented as failing at startup and was only ever called from `derive` | A short key throws either way, just later |
-| A javadoc described a "duplicate-URL pre-check" that does not exist, beside a query method nobody calls | Dead code compiles |
-| The sixth guarded secret shipped without the startup test its own class javadoc mandates | The other five have one; nothing enforces the rule |
-
-The first is a behavioural defect and the rest are the codebase lying about itself, which in a repo
-this heavily commented is the same category of problem. All five are fixed, the two new guards are
-proved by sabotage, and the retry horizon is now asserted as a single figure so it cannot drift from
-the documents again.
-
-**What is NOT covered, stated rather than left to be discovered:**
-
-- **No live walk of an actual outbound delivery.** The webhook dispatcher was left off for the
-  Postman run: `https://merchant.test/` does not resolve, and a walkthrough that spent a retry
-  budget against DNS would prove less than the PENDING row does. A local receiver would need real
-  TLS, because the URL must be `https` and the JDK client will not accept a self-signed
-  certificate. What stands in for it is `HttpWebhookSenderTest`, which asserts the exact
-  `X-PayMesh-Signature` header, the byte-for-byte body and the charset against the real
-  `RestClient` through `MockRestServiceServer` — including the two-`v1=` rotation window.
-- **No merchant-facing documentation of how to verify a signature.** The scheme is in ADR-028 §4
-  and in the Postman folder's prose; there is no integrator-facing page.
-- **No endpoint listing route.** Five routes were specified and five were built; a merchant who
-  loses an endpoint id has no way to enumerate.
-- **The DNS-rebinding race in the SSRF guard is open and documented** (ADR-028 §7).
-
-### PICK UP HERE — after Reporting (PR 6)
-
-Phase 2's PRs 0–5 are merged; **PR 6 (Reporting, ADR-034, V34–V35) is built on
-`feature/reporting`** and 1479 tests are green. The next thing to build is **PR 7, Audit**
-(`docs/phase-2-plan.md`): migration **V36**, **ADR-035**, and it is the last PR of Phase 2.
-
-- **Reporting is the last of the three pure event consumers, the same shape as Webhook and
-  Notification.** It projects one append-only fact per source event into `report_facts` — the
-  primary key is the `evt_` id, so a redelivered event is a refused insert, not a double-counted
-  payment — and both reports are a `GROUP BY` over it, the export a `SELECT`. It names no producer
-  type: payloads are read as a `Map`, so `ModuleBoundaryTest`'s allowlist stays empty. Six subscribed
-  types (`payment.succeeded/failed`, `refund.succeeded`, `settlement.batch_cut`, `payout.paid/
-  returned`); `order.paid` omitted, as Notification omits it, to avoid double-counting a collection.
-- **Every report carries an `asOf`** — the newest `recorded_at` this merchant's projection holds,
-  or null when it holds none. Never the read time: a relay that stopped shows up as an `asOf` that
-  stops advancing, which is the delayed-data signal SDD §19.2 asks for. Everything is per currency;
-  nothing sums USD and EUR.
-- **The two derived helpers were cut in review.** `netAmountMinor` (payment) and `inFlightAmountMinor`
-  (settlement) were subtractions over a windowed fact set that does not partition, so they could go
-  negative in a way that reads as a defect; the raw counts are always correct, and true balances are
-  the Ledger's. ADR-034 records this.
-- **Exports live in a `TEXT` column, not object storage** (there is none in this project yet), and an
-  export over the row cap is `FAILED` with a reason rather than retried forever. The generator timer
-  is off under `dev`, so an export stays `PENDING` in the test/newman path — which is what makes the
-  not-ready `409` deterministic there.
-- **Open item 20's held-slot leak is still open** — a capture fully refunded before it cleared never
-  leaves the settlement release candidate set. Not on the payout path; a `held`-slot cost only.
-- **Audit (SDD §19.3) is next and last** — an append-only `audit_events` log of privileged and
-  financial-operational actions (risk decisions, payout retries, secret rotations, merchant freezes,
-  manual recovery), immutability enforced by a trigger exactly as `ledger_entries` is. It is
-  sequenced last because its subjects are what the rest of Phase 2 created. Read `docs/phase-2-plan.md`
-  PR 7 first.
-- **The rest of open item 17 is still not worked through** — the `FailureAnalyzer`,
-  `ModuleBoundaryTest` allowlisting by filename rather than path, the idempotency filter's
-  hard-coded replay `Content-Type`, the `@Email` inconsistency. All cosmetic or test-only.
-- **Postman now has a Reporting folder** (self-contained: its own merchant, no dependence on earlier
-  folders), covering the two summary reads, the export `202` → `PENDING` → not-ready `409` path,
-  idempotent replay, tenant isolation and every error path. Projection from real relayed events is
-  covered by `ReportingIntegrationTest` and was verified live by hand this session (a simulator-
-  collected payment surfaced in `payment-summary` and in a downloaded CSV).
-
-**The judgement call to revisit when a second provider arrives.** Reconciliation reads this
-provider's `TIMED_OUT` as "nothing was collected", which is true of the simulator's file because
-those rows carry `capturedAmountMinor = 0`. A real acquirer may report an outcome it genuinely does
-not yet know, and a file meaning "unknown" must never be read as "nothing moved". That judgement
-belongs in the provider's adapter — which is why the job carries the provider's status as a raw
-string and skips every value it does not recognise rather than defaulting.
-
-### PICK UP HERE — Phase 3, after the API gateway (PR 5)
-
-**PR 1–PR 4 are merged; PR 5 (API gateway, ADR-040) is built on `feature/api-gateway`** — 1533
-backend tests still green, plus 9 new gateway tests (edge auth incl. expired-token/unknown-internal
-refusals, Redis-backed rate limit → 429 with the house body, and rate-limiter fail-open when Redis is
-down). PR 5 is the last 3A foundation step. The next PR
-is **PR 6, the provider-sim extraction pilot** (`service/provider-sim`, **ADR-041**), which begins 3B
-— the first time code actually leaves the process. Read the plan of record's §3B "strangler recipe"
-before starting it.
-
-What PR 5 actually put in the tree (all under a NEW top-level `gateway/` module, nothing touched in
-`backend/`):
-
-- **A standalone `gateway/` Maven module**, its own pom + wrapper + port (8081), NOT a reactor
-  conversion of the repo (ADR-040 §1). Build it with `cd gateway && ./mvnw test`. It is Spring Cloud
-  Gateway Server WebMVC 5.0.0 (servlet stack, matching the platform).
-- **Edge auth = a Spring Security resource server mirroring the monolith's split.** Same HS256
-  decoder from the same `paymesh.security.jwt.secret` (`JwtConfiguration`), and a permit list copied
-  from `shared.security.SecurityConfiguration`: `/api/**` needs a token at the edge, but
-  `/api/v1/auth/**`, `POST /api/v1/merchants`, `/internal/v1/**` (HMAC callbacks) and `/sim/v1/**`
-  (shared-key) pass through — demanding a JWT on those would 401 them before the monolith's own filter
-  ran. 401 body is the monolith's `{code:"UNAUTHENTICATED"}` shape.
-- **Routes all point at `paymesh.gateway.backend-uri` (the monolith)**, re-pointed per service in 3B.
-  `/api/**` is rate-limited; `/internal/**` and `/sim/**` are forwarded unthrottled (a provider
-  retrying a required callback must not be throttled into stranding money). The proxy hop is pinned to
-  HTTP/1.1 (`ProxyClientConfiguration`) — the JDK client's h2c POST upgrade to the plaintext monolith
-  gets `RST_STREAM` otherwise.
-- **Redis-backed rate limiting** (`RateLimitConfiguration`): the webmvc gateway's `rateLimit()` filter
-  pulls an `AsyncProxyManager` bean; we back it with Redis via bucket4j's Lettuce module, keyed by
-  client IP → `429`. New `redis` service in `docker-compose.yml`. Two pins, both in the gateway pom:
-  **Lettuce 6.3.2** (bucket4j 8.15's CAS path predates Lettuce 7), and a **String-keyed** proxy
-  manager codec (the filter passes a String IP key). `spring.cloud.compatibility-verifier.enabled=false`
-  because Spring Cloud 2025.1.0 whitelists Boot 4.0.x and the platform runs 4.1.0.
-
-Two gotchas for whoever runs it: the gateway needs **Redis up** (`docker compose up -d redis`) and the
-**JWT secret** (the `dev` profile supplies the throwaway one matching the monolith) to start; the
-monolith need not be running for the gateway to boot (routes resolve lazily). Full end-to-end
-pass-through of every Postman request stays the Postman/newman job — the Java suite proves the edge
-decisions (401/pass-through/429) against Testcontainers Redis + a WireMock backend, not the whole
-collection.
+- **PR 16 — Decommission the monolith.** *(ADR-051, planned)* Goal: delete the scaffolding once
+  every capability runs as its own service — the dual-path flag, the in-process `EventDispatcher`,
+  the shared in-process lookup adapters, the now-empty monolith module itself. `shared/` survives
+  only as versioned libraries (the envelope, id value objects, security primitives) each service
+  depends on explicitly rather than by being in the same process.
 
 ---
 
-### PICK UP HERE — Phase 3, after merchant-ref projection (PR 4) [merged]
+## Where we are now
 
-**PR 1–PR 4 are merged.** PR 4 (merchant reference projection, ADR-039, V39) landed on
-`feature/merchant-ref-projection`. The section below is kept for the detail on what PR 4 put in the
-tree; the current front is PR 5 (above).
+**On `main`.** Phase 1 and Phase 2 are complete. Phase 3 wave 3A (PR 1–5) is merged — Kafka
+backbone, dual-path relay, schema-per-service, merchant reference projection, API gateway. 40 ADRs,
+migrations V1–V39, 1533 backend tests + 9 gateway tests, all green.
 
-What PR 4 actually put in the tree:
+**Next up: PR 6** — extract the Provider Simulator into its own deployable (`service/provider-sim`,
+ADR-041). It's the pilot because it already has zero shared code with the rest of the app in either
+direction (`ModuleBoundaryTest` enforces an empty allowlist both ways), so it's the cheapest place to
+prove the extraction mechanics — its own repo module, its own datasource, its own schema, talking to
+the monolith only over the same signed HTTP it uses today — before repeating them on services that
+actually share event traffic.
 
-- **The merchant capability got an outbox.** It had none. `RegisterMerchantService` (now wrapped in
-  a `TransactionTemplate`) emits `merchant.registered`; `ChangeMerchantStatusService` emits
-  `merchant.activated/suspended/closed` alongside the audit event it already wrote — both in the
-  acting transaction (`MerchantLifecycleEvents.of`). Events, not a `merchant_status_history` scan (a
-  divergence from the plan's prose, recorded in ADR-039 §2).
-- **A `merchant_ref` read model in each of the six consuming schemas** (payment, ledger, settlement,
-  risk, webhook, engagement) — `merchant_id, status, updated_at`, same `is_prefixed_id` CHECK, fed by
-  one `MerchantRefProjector` (four `EventHandler` beans, one class) through the existing inbox.
-  Reached by **schema-qualified JDBC** (`MerchantRefStore`), not JPA: six tables share the name
-  `merchant_ref`, which defeats the bare-`@Table` + `search_path` resolution ADR-038 relies on. One
-  projector writes all six copies (a monolith-era fan-out that collapses to one per service at
-  extraction, marked `ponytail:`).
-- **The gate reads the projection, not `merchants`.** `MerchantStatusGate` moved from the merchant
-  module to `shared` (`MerchantRefStore` implements it), so the merchant capability is now purely an
-  emitter. The gate returns `MerchantTransactability` — `ALLOWED` / `DENIED` (403) / `UNKNOWN` (503
-  `MERCHANT_NOT_YET_AVAILABLE`, retryable, `Retry-After: 1`). `MerchantStatusGateAdapter` is deleted.
-- **The 17 cross-capability `* → merchants` FKs dropped (V39); the two `platform` ones KEPT.** The
-  platform outbox/idempotency FKs have no projection to replace them (they are not consumers reading
-  status), so dropping them would be an unguarded interval (ADR-038 §3); they go when the platform
-  tables split per-service. Composite `→ customers` FKs and the format CHECKs stay.
-- **The gate is now eventually consistent — a documented partial walk-back of ADR-021.** The old
-  adapter read `merchants` synchronously and was deliberately not cached, so a suspended merchant
-  could not trade. The projection is relay-fed, so a suspension bites after one relay cycle. Accepted
-  because suspension is policy, not money integrity (a few seconds of trading loses no money); if a
-  zero window is ever needed, the answer is a synchronous call to the merchant service for that
-  action, not un-caching. Flagged in ADR-039 for reviewers.
-- **Test impact, and the pattern to know.** The relay is off under `dev`, so any test that changes
-  merchant status and then asserts the gate must drive it: `relay.publish()`
-  (`PublishOutboxEventsService`) between the change and the assertion. Twelve fixtures were updated
-  this way; `MerchantRefProjectionIntegrationTest` exercises the not-yet-propagated → 503 path on
-  purpose (the plan's headline verification). **No new HTTP route or request/response shape**, only a
-  new 503 outcome on existing merchant-scoped writes, so the Postman collection is untouched.
-
-Dev bootstrap note: V39's `merchant_ref` tables land in the six service schemas and inherit V38's
-`ALTER DEFAULT PRIVILEGES` grant to each `*_svc` role automatically (V38 named this table when it set
-that up), so `SchemaIsolationTest`'s fence stays complete with no new grants.
-
-### PICK UP HERE — Phase 3, after schema-per-service (PR 3)
-
-Phase 2 is closed. **PR 1 (ADR-036), PR 2 (ADR-037) and PR 3 (schema-per-service, ADR-038) are
-done** and **1529 tests are green**. The plan of record is
-`docs/phase-3-microservices-extraction-plan.md`; work it **one PR at a time, in table order**. The
-next PR is **PR 4, the merchant reference projection** (`feature/merchant-ref-projection`,
-**ADR-039**) — consumers stop depending on `merchants` and read a local event-fed `merchant_ref`
-instead, and each `* → merchants` FK is dropped *in the same step* its replacement lands.
-
-What PR 3 actually put in the tree, and what it deliberately did not:
-
-- **Ten schemas, one migration (V38).** `ALTER TABLE … SET SCHEMA` moves each of the 46 tables into
-  its service schema — `identity`, `merchant`, `payment`, `ledger`, `settlement`, `risk`,
-  `simulator`, `webhook`, `engagement` — plus a tenth `platform` schema for `outbox_events`,
-  `processed_events`, `idempotency_records`. The move carries every index, owned sequence, constraint
-  and trigger with the table, so the ledger's deferred `debits = credits` trigger and the
-  immutability triggers are now provably wholly inside the `ledger` schema.
-- **Schema follows the CODE PACKAGE, and where the plan's prose table disagreed the code won**
-  (ADR-038 §1): `api_credentials` → `merchant` (its entity is in `com.paymesh.merchant`),
-  `provider_callbacks` and `refund_callbacks` → `payment` (PayMesh's received-callback record and
-  Refund's own route, not the simulator's or settlement's). The plan also lists three tables that do
-  not exist (`payout_attempts`, `refund_attempts`, `refund_reservations`); omitted.
-- **No FK dropped — the `* → merchants` FK is KEPT (ADR-038 §3).** Postgres allows a cross-schema FK
-  within one database, so every FK still enforces. The plan's PR 3 drops it, but dropping it here
-  would leave a money-path integrity guard gone for a whole PR with nothing replacing it; PR 4 drops
-  each FK in the same step it lands `merchant_ref`. The one place PR 3 trades a plan target ("no
-  cross-schema FK left") for the governing invariant.
-- **Nine fenced roles prove the boundary (ADR-038 §4).** V38 creates `NOLOGIN` `identity_svc`,
-  `merchant_svc`, … each granted USAGE on only its own schema; `SchemaIsolationTest` `SET ROLE`s into
-  each and asserts a cross-schema `SELECT` is refused while its own succeeds. **The single-process app
-  does NOT connect as these yet** — one Hibernate over one datasource spans all schemas, so it uses a
-  role that sees them all. Each service adopts its restricted role at extraction.
-- **How unqualified names still resolve.** Entities keep bare `@Table(name=…)`; every app connection
-  sets `search_path` across all ten schemas (Hikari `connection-init-sql`), which is safe because all
-  46 table names are globally unique. Hibernate reads metadata `individually` so `ddl-auto=validate`
-  resolves each table through that path — **the drift guard is intact** (verified by injecting a bogus
-  column: startup failed with `missing column … in table [merchants]`, resolved in the `merchant`
-  schema). Flyway is pinned to `public` so its history placement is independent of `search_path`. No
-  entity and no native-query change.
-- **Lean carve — two plan items deferred, marked in code (ADR-038 §5).** One Flyway history (not
-  nine) and one physical copy of each platform table (not nine): both are machinery that gets
-  rewritten and moved when a service is extracted, so building them now is code with no caller. Each
-  service takes its own at 3B+.
-- **No HTTP surface changed, so the Postman collection is untouched** — deliberately.
-
-Dev bootstrap note: Testcontainers runs V38 as the container superuser and needs nothing. A local
-native Postgres running `./mvnw spring-boot:run` needs its app role able to create the schemas
-(`GRANT CREATE ON DATABASE paymesh TO paymesh_app;`); to also create the fenced roles locally,
-`ALTER ROLE paymesh_app CREATEROLE;`. Without `CREATEROLE` the migration skips the roles with a
-notice rather than failing (the roles are extraction-prep, not needed for one process to run).
-
-What PR 2 put in the tree, and what it deliberately did not:
-
-- **One flag, `paymesh.events.delivery.mode`** — `both` (default) or `in-process` (the rollback,
-  and a behavioural no-op because `both` changed nothing about the in-process path). It governs the
-  producer (whether the relay also publishes to Kafka) and the consumer (whether the listener bean
-  is registered) from one property so the two halves can never disagree. **The `dev` profile sets
-  it to `in-process`**, so the whole suite still needs no broker — exactly PR 1's property.
-- **Producer: TWO INDEPENDENT PASSES OVER TWO COLUMNS, and this is the load-bearing decision.**
-  `publish()` is the in-process pass, unchanged: it claims `published_at IS NULL`, dispatches,
-  stamps `published_at`. `relayToKafka()` is a separate pass claiming `kafka_published_at IS NULL`
-  (V37), publishing through the `EventPublisher` port, stamping `kafka_published_at`. The timer runs
-  both. **The first cut of this PR gated ONE column on both sinks — and code review found it stalls
-  the money path:** during a broker outage a Kafka failure keeps an already-in-process-delivered row
-  in the oldest-first in-process claim, the bounded batch saturates with Kafka-pending rows, and new
-  events are never claimed for in-process. Two columns decouple the sinks so in-process never waits
-  on the broker. This is why PR 2 takes a migration (V37) despite the plan's "DB: none".
-- **Consumer:** one `KafkaEventListener` with `@KafkaListener(topicPattern = ".+-events")` feeding
-  the existing `EventDispatcher`. The dispatcher is already the fan-out, so one listener reaches
-  every handler through the same `processed_events` inbox — no per-handler adapter, despite the
-  plan's wording (ADR-037 §4). Registered only in `both` mode.
-- **The dead-letter budget decision ADR-036 deferred is made (ADR-037 §3).** The budget governs the
-  in-process sink only. A broker outage is global and self-healing, not a poisoned event, so the
-  Kafka pass has **no budget at all**: a send failure leaves `kafka_published_at` NULL, is retried
-  next tick, and never dead-letters. Surfaced by a second age on the backlog health indicator
-  (`oldestUnpublishedToKafka`), which is reported but does NOT flip `/actuator/health` to DOWN —
-  Kafka has no dependent consumer yet, so an outage must not page like a stalled money path.
-- **Verified by breaking the implementation.** `DualPathRelayIntegrationTest` (own `KafkaContainer`):
-  the producer leg goes red if `relayToKafka` stops sending; the consumer leg — an event put on Kafka
-  with no in-process delivery, applied by Order — goes red if the listener is unregistered, and its
-  second delivery double-applies if the inbox guard is removed. `PublishOutboxEventsServiceTest`
-  proves the money-path fix directly: a Kafka outage delivers BOTH events of an aggregate in process
-  (the stall regression), the two passes stamp only their own column, and the Kafka sink retries at
-  `maxAttempts = 1` without dead-lettering.
-- **Only the one new test starts a broker**, like `KafkaEventRoundTripTest` — the suite still pays
-  for Kafka exactly twice.
-- **No HTTP surface changed, so the Postman collection is untouched** — deliberately, not by
-  omission. `docker-compose.yml`'s Kafka service is unchanged (PR 1 added it).
-
-Three ceilings to carry into PR 3 and beyond, all money-safe and marked in the code:
-
-- **In `both` mode every event is delivered twice and applied once**, the extra work a second
-  inbox-claim per (handler, event) that reads "already processed". Paid only during the transition;
-  PR 16 removes the in-process path and the flag.
-- **The Kafka pass blocks on the shared relay thread.** It ends at the first send failure and retries
-  next tick, but a broker outage can still delay the next in-process *tick* — a latency degradation,
-  never a loss or reorder. A dedicated Kafka relay thread is the upgrade path, deferred to extraction.
-- Topics are auto-created with **one partition and replication factor 1** (`ponytail:` note in
-  `docker-compose.yml`). RF=1 makes `acks=all` identical to `acks=1`. And consumer-side error
-  handling is Spring's default (bounded retry, then advance) — fine while in-process stays
-  authoritative; a real consumer dead-letter topic belongs to a Kafka-only capability at extraction.
-
-### Working method that has been effective
-
-- One capability per branch, one focused change per PR, verified live before merge.
-- Subagents in isolated worktrees, with migration numbers pre-assigned in the design
-  spec so parallel work cannot collide on them. Stacking a dependent branch on an
-  unmerged one works, at the cost of mechanical conflicts at merge time.
-- **A design spec written and approved before implementation, and corrected when it is
-  wrong.** Three spec errors were found by implementers and reviewers this session —
-  a single-column FK that could not deliver the isolation the same paragraph promised,
-  a testing section that contradicted its own outcome table, and wording that let a
-  security guard be built with a real bypass in it. Each was fixed in the spec, not
-  just in the code, because the same ambiguity would otherwise recur in Payment.
-- **Nothing merges on the author's report.** An independent reviewer re-runs the suite,
-  and where a test protects an invariant, breaks the implementation to confirm the
-  test catches it. This session that surfaced a packaged jar booting on the published
-  signing key, a merge that was textually clean and behaviourally red, and a
-  cross-tenant FK hole — none of which any suite reported.
-- **Assertions are proved by breaking the code, not by reading them.** A green
-  assertion that never fails is worse than no assertion; a passing sabotage means the
-  sabotage was unfaithful, not that the code is safe.
-- Every non-obvious tradeoff gets an ADR while the reasoning is still fresh.
+Read `docs/phase-3-microservices-extraction-plan.md` §"PR 6 — Provider Simulator (the pilot)" before
+starting it.
