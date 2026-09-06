@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "PayMesh API",
-    "description": "PayMesh Payment-as-a-Service API.\n\nSet `baseUrl` (defaults to http://localhost:8080) and `simBaseUrl` (defaults to http://localhost:8082, the provider simulator's own deployable since ADR-041 -- only the Provider Simulator folder uses it). Run the folders top to bottom: onboarding creates a merchant, Identity & Auth attaches a user and captures a token, and Authenticated access uses it.\n\nCapabilities covered: Identity & Auth, Merchant, Customer, Order, Payment Intents, and the shared transactional outbox (ADR-010).",
+    "description": "PayMesh Payment-as-a-Service API.\n\nSet `baseUrl` (defaults to http://localhost:8080), `simBaseUrl` (defaults to http://localhost:8082, the provider simulator's own deployable since ADR-041 -- only the Provider Simulator folder uses it) and `webhookBaseUrl` (defaults to http://localhost:8083, webhook's own deployable since ADR-042 -- only the Webhook folder uses it). Run the folders top to bottom: onboarding creates a merchant, Identity & Auth attaches a user and captures a token, and Authenticated access uses it.\n\nCapabilities covered: Identity & Auth, Merchant, Customer, Order, Payment Intents, and the shared transactional outbox (ADR-010).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -12,6 +12,10 @@
     {
       "key": "simBaseUrl",
       "value": "http://localhost:8082"
+    },
+    {
+      "key": "webhookBaseUrl",
+      "value": "http://localhost:8083"
     },
     {
       "key": "merchantId",
@@ -11846,16 +11850,16 @@
     },
     {
       "name": "Webhook (PayMesh calls the merchant back, ADR-028)",
-      "description": "THE FIRST CAPABILITY THAT POINTS OUTWARD. Everything above this folder is PayMesh answering a request. This is PayMesh making one -- signed, retried, and aimed at a URL the merchant chose.\n\nTHE SECRET IS NEVER STORED. webhook_endpoints holds secret_version, an integer. The signing secret is HMAC-SHA256(masterKey, \"paymesh.webhook.v1|<endpointId>|<version>\" || 0x01), derived on demand, so a database dump contains nothing that lets an attacker sign as PayMesh. Rotation is an increment (ADR-028 section 2).\n\nTWO CONSEQUENCES YOU CAN SEE BELOW. The secret is shown exactly twice -- on create and on rotate -- and neither route is on the idempotency filter, because idempotency_records.response_body stores response bodies VERBATIM and registering them would write the secret to the database in cleartext. Rotate is idempotent on its own terms instead: it names the version it is replacing, so a retry re-derives the same secret rather than bumping again. That is the request called 'idempotent by construction' below, and it is the whole argument in one call.\n\nA MERCHANT ENDPOINT BEING DOWN MUST NEVER AFFECT A PAYMENT. No HTTP happens on the payment path: the event dispatcher writes one webhook_events row and one PENDING delivery per subscribed endpoint, inside the transaction it was already in, and a separate timer does the sending.\n\nSTART THE APP WITH BOTH TIMERS ON, or nothing is ever queued:\n    PAYMESH_SIMULATOR_DISPATCH_ENABLED=true \\\n    PAYMESH_EVENTS_OUTBOX_RELAY_ENABLED=true \\\n    ./mvnw spring-boot:run\nThe webhook DISPATCHER is deliberately left off. It would POST at https://merchant.test/, which does not exist, and every delivery below would spend its retry budget against DNS. PENDING is the correct and observable state for a walkthrough; DeliverWebhooksServiceTest and HttpWebhookSenderTest cover the sending.",
+      "description": "THE FIRST CAPABILITY THAT POINTS OUTWARD. Everything above this folder is PayMesh answering a request. This is PayMesh making one -- signed, retried, and aimed at a URL the merchant chose.\n\nTHE SECRET IS NEVER STORED. webhook_endpoints holds secret_version, an integer. The signing secret is HMAC-SHA256(masterKey, \"paymesh.webhook.v1|<endpointId>|<version>\" || 0x01), derived on demand, so a database dump contains nothing that lets an attacker sign as PayMesh. Rotation is an increment (ADR-028 section 2).\n\nTWO CONSEQUENCES YOU CAN SEE BELOW. The secret is shown exactly twice -- on create and on rotate -- and neither route is on the idempotency filter, because idempotency_records.response_body stores response bodies VERBATIM and registering them would write the secret to the database in cleartext. Rotate is idempotent on its own terms instead: it names the version it is replacing, so a retry re-derives the same secret rather than bumping again. That is the request called 'idempotent by construction' below, and it is the whole argument in one call.\n\nWEBHOOK IS ITS OWN DEPLOYABLE NOW (ADR-042, PR 7): `cd webhook && ./mvnw spring-boot:run`, port 8083, {{webhookBaseUrl}} below -- the same split ADR-041 made for the Provider Simulator folder. Every /api/v1/webhook-endpoints request in this folder targets it directly; the Setup requests still target {{baseUrl}} (the monolith, which still owns orders/payment-intents) and the provider-collects request still targets {{simBaseUrl}}.\n\nA MERCHANT ENDPOINT BEING DOWN MUST NEVER AFFECT A PAYMENT. No HTTP happens on the payment path: the event dispatcher writes one webhook_events row and one PENDING delivery per subscribed endpoint, inside the transaction it was already in, and a separate timer does the sending.\n\nSTART THE APP WITH BOTH TIMERS ON, or nothing is ever queued:\n    PAYMESH_SIMULATOR_DISPATCH_ENABLED=true \\\n    PAYMESH_EVENTS_OUTBOX_RELAY_ENABLED=true \\\n    ./mvnw spring-boot:run\nThe webhook DISPATCHER is deliberately left off. It would POST at https://merchant.test/, which does not exist, and every delivery below would spend its retry budget against DNS. PENDING is the correct and observable state for a walkthrough; DeliverWebhooksServiceTest and HttpWebhookSenderTest cover the sending.",
       "item": [
         {
           "name": "Register a webhook endpoint, and read the secret once (201)",
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/api/v1/webhook-endpoints",
+              "raw": "{{webhookBaseUrl}}/api/v1/webhook-endpoints",
               "host": [
-                "{{baseUrl}}"
+                "{{webhookBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -11923,9 +11927,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/api/v1/webhook-endpoints",
+              "raw": "{{webhookBaseUrl}}/api/v1/webhook-endpoints",
               "host": [
-                "{{baseUrl}}"
+                "{{webhookBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -11968,9 +11972,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/api/v1/webhook-endpoints",
+              "raw": "{{webhookBaseUrl}}/api/v1/webhook-endpoints",
               "host": [
-                "{{baseUrl}}"
+                "{{webhookBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -12015,9 +12019,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/api/v1/webhook-endpoints",
+              "raw": "{{webhookBaseUrl}}/api/v1/webhook-endpoints",
               "host": [
-                "{{baseUrl}}"
+                "{{webhookBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -12313,9 +12317,9 @@
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{baseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}/deliveries",
+              "raw": "{{webhookBaseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}/deliveries",
               "host": [
-                "{{baseUrl}}"
+                "{{webhookBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -12386,9 +12390,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}/deliveries/{{whDeliveryId}}/replay",
+              "raw": "{{webhookBaseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}/deliveries/{{whDeliveryId}}/replay",
               "host": [
-                "{{baseUrl}}"
+                "{{webhookBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -12439,9 +12443,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}/rotate-secret",
+              "raw": "{{webhookBaseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}/rotate-secret",
               "host": [
-                "{{baseUrl}}"
+                "{{webhookBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -12493,9 +12497,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}/rotate-secret",
+              "raw": "{{webhookBaseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}/rotate-secret",
               "host": [
-                "{{baseUrl}}"
+                "{{webhookBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -12544,9 +12548,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}/rotate-secret",
+              "raw": "{{webhookBaseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}/rotate-secret",
               "host": [
-                "{{baseUrl}}"
+                "{{webhookBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -12591,9 +12595,9 @@
           "request": {
             "method": "PATCH",
             "url": {
-              "raw": "{{baseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}",
+              "raw": "{{webhookBaseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}",
               "host": [
-                "{{baseUrl}}"
+                "{{webhookBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -12639,9 +12643,9 @@
           "request": {
             "method": "PATCH",
             "url": {
-              "raw": "{{baseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}",
+              "raw": "{{webhookBaseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}",
               "host": [
-                "{{baseUrl}}"
+                "{{webhookBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -12684,9 +12688,9 @@
           "request": {
             "method": "PATCH",
             "url": {
-              "raw": "{{baseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}",
+              "raw": "{{webhookBaseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}",
               "host": [
-                "{{baseUrl}}"
+                "{{webhookBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -12729,9 +12733,9 @@
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{baseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}/deliveries",
+              "raw": "{{webhookBaseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}/deliveries",
               "host": [
-                "{{baseUrl}}"
+                "{{webhookBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -12768,9 +12772,9 @@
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{baseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}/deliveries",
+              "raw": "{{webhookBaseUrl}}/api/v1/webhook-endpoints/{{whEndpointId}}/deliveries",
               "host": [
-                "{{baseUrl}}"
+                "{{webhookBaseUrl}}"
               ],
               "path": [
                 "api",

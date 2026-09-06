@@ -66,17 +66,19 @@ class RefundConfigurationTest {
      * a context that starts has already proved it -- but only if every bean exists, which is what
      * this actually pins. A missing handler bean starts perfectly and simply never runs.
      * <p>
-     * Four now: Webhook joined the Ledger and Payment in the PR that built it (ADR-028), Notification
-     * in ADR-033.
+     * Notification joined Ledger and Payment in ADR-033, Reporting after it. Webhook USED to be a
+     * fifth (ADR-028) and is not any more (ADR-042, PR 7): extracted to its own deployable, its
+     * {@code webhook.refund.succeeded} handler now lives in {@code webhook}'s own process, fed by
+     * its own Kafka consumer group rather than this in-process dispatcher.
      */
     @Test
-    void subscribesTheLedgerPaymentWebhookNotificationAndReportingToRefundSucceeded() {
+    void subscribesTheLedgerPaymentNotificationAndReportingToRefundSucceeded() {
         assertThat(context.getBeansOfType(EventHandler.class).values().stream()
             .filter(handler -> handler.eventType().equals("refund.succeeded"))
             .map(EventHandler::consumerName)
             .toList())
             .containsExactlyInAnyOrder(
-                "ledger.refund-succeeded", "payment.refund-succeeded", "webhook.refund.succeeded",
+                "ledger.refund-succeeded", "payment.refund-succeeded",
                 "notification.refund.succeeded", "reporting.refund.succeeded"
             );
     }

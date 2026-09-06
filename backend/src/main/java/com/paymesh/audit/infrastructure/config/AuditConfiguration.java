@@ -9,12 +9,14 @@ import com.paymesh.audit.application.ListAuditEventsService;
 import com.paymesh.audit.application.RecordAuditEventService;
 import com.paymesh.audit.application.RequestAuditExportService;
 import com.paymesh.audit.infrastructure.AuditRecorderAdapter;
+import com.paymesh.audit.infrastructure.events.RecordWebhookSecretRotationAuditHandler;
 import com.paymesh.audit.infrastructure.persistence.jpa.JpaAuditEventRepository;
 import com.paymesh.audit.infrastructure.persistence.jpa.JpaAuditExportRepository;
 import com.paymesh.audit.infrastructure.persistence.jpa.SpringDataAuditEventRepository;
 import com.paymesh.audit.infrastructure.persistence.jpa.SpringDataAuditExportRepository;
 import com.paymesh.audit.infrastructure.schedule.AuditExportGenerator;
 import com.paymesh.shared.audit.AuditRecorder;
+import com.paymesh.shared.outbox.application.EventHandler;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -54,6 +56,19 @@ public class AuditConfiguration {
     @Bean
     AuditRecorder auditRecorder(RecordAuditEventService record, Clock clock) {
         return new AuditRecorderAdapter(record, clock);
+    }
+
+    /**
+     * The consumer half of ADR-042 section 4: webhook (now its own deployable) appends
+     * {@code webhook.secret_rotated.audited} to its own outbox in the same transaction as a
+     * rotation; this handler is what turns that event back into the {@code audit_events} row the
+     * in-process call used to write directly. Registered as an {@link EventHandler} bean like every
+     * other consumer -- the monolith's {@code KafkaEventListener} already dispatches to all of them,
+     * so no listener wiring changes.
+     */
+    @Bean
+    EventHandler recordWebhookSecretRotationAuditHandler(AuditRecorder auditRecorder) {
+        return new RecordWebhookSecretRotationAuditHandler(auditRecorder);
     }
 
     @Bean

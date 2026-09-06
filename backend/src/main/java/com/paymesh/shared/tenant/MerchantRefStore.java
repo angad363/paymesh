@@ -33,16 +33,20 @@ import java.util.List;
 public final class MerchantRefStore implements MerchantStatusGate {
 
     /**
-     * The service schemas that carry a {@code merchant_ref} copy (V39). Every real service that held
-     * the {@code * -> merchants} FK; {@code platform} is excluded because it splits per-service at
-     * extraction and a single copy there could not lift.
+     * The service schemas that carry a {@code merchant_ref} copy (V39), MINUS {@code webhook}
+     * (ADR-042, PR 7): that capability left this process, runs its own consumer group, and feeds
+     * its own copy from its own {@code SharedConfiguration} now. Writing it from here as well would
+     * mean this process needs write grants into a schema it no longer owns any code for, and a
+     * revoked grant would fail this whole upsert -- rolling back the other five schemas' copies and
+     * the inbox row along with it. {@code platform} was already excluded because it splits
+     * per-service at extraction and a single copy there could not lift.
      * <p>
-     * ponytail: fan-out write to six schema copies; at extraction each service keeps only its own,
-     * fed from Kafka, and this list collapses to one. The names are a fixed constant, never input,
-     * so interpolating them into SQL carries no injection risk.
+     * ponytail: fan-out write to five schema copies; at further extraction each remaining service
+     * keeps only its own, fed from Kafka, and this list keeps collapsing. The names are a fixed
+     * constant, never input, so interpolating them into SQL carries no injection risk.
      */
     private static final List<String> SCHEMAS =
-        List.of("payment", "ledger", "settlement", "risk", "webhook", "engagement");
+        List.of("payment", "ledger", "settlement", "risk", "engagement");
 
     private final JdbcTemplate jdbc;
 

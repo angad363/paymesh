@@ -24,11 +24,10 @@ import java.util.List;
  * than one check with siblings bolted on, and the next secret is a line in {@link #GUARDED} plus a
  * case in {@code ReconciliationApiKeyStartupTest} and its siblings.
  * <p>
- * <b>The fifth points outward rather than inward, which is new.</b> The webhook master key derives
- * every merchant's signing secret (ADR-028 §2). Publishing it does not let an attacker move money
- * on PayMesh -- it lets them sign as PayMesh to people who are not on PayMesh, who have no way to
- * tell and every reason to act on it. The blast radius is every merchant at once, which is the cost
- * of one master key and is why per-endpoint rotation exists separately.
+ * <b>NO {@code paymesh.webhook.master-key} HERE ANY MORE (ADR-042, PR 7).</b> Webhook is a separate
+ * deployable now, same shape as provider-sim's split: its own {@code DevelopmentSecretGuard} guards
+ * its own copy of that property on the other side of that door. A secret guarded twice, once on
+ * each side, is more confusing than one guard per door.
  * <p>
  * <b>The reconciliation key shares a VALUE with provider-sim's simulator key without sharing a
  * meaning, or a guard.</b> They are the same string today because the provider is the bundled
@@ -75,15 +74,6 @@ public class DevelopmentSecretGuard {
             "is the only authentication on the endpoint that marks refunds SUCCEEDED, which posts "
                 + "a ledger reversal -- so anyone could forge money back out of any merchant's "
                 + "balance"
-        ),
-        new GuardedSecret(
-            "paymesh.webhook.master-key",
-            "dev-only-insecure-webhook-master-key-change-me",
-            "PAYMESH_WEBHOOK_MASTER_KEY",
-            "derives EVERY merchant's webhook signing secret (ADR-028 section 2), so a published "
-                + "value lets anyone sign as PayMesh to every merchant at once -- and unlike the "
-                + "callback secrets, the merchants who would act on those forged events are "
-                + "outside this platform entirely"
         ),
         new GuardedSecret(
             "paymesh.reconciliation.api-key",

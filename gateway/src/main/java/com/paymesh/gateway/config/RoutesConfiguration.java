@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.web.servlet.function.HandlerFilterFunction;
@@ -75,6 +76,41 @@ public class RoutesConfiguration {
         return route("paymesh-internal")
             .route(path("/internal/**"), http())
             .before(uri(backendUri))
+            .build();
+    }
+
+    /**
+     * THE SECOND RE-POINTED ROUTE (ADR-042, PR 7), same shape as {@link #providerSimRoutes}: webhook
+     * left the monolith for its own deployable, so its prefix now forwards to that deployable's own
+     * port instead of {@code backend-uri}.
+     * <p>
+     * {@code @Order} IS LOAD-BEARING HERE, UNLIKE ANY OTHER ROUTE IN THIS CLASS. Every other pair of
+     * predicates in this file is disjoint ({@code /api/**} versus {@code /internal/**} versus
+     * {@code /sim/**}), so which {@code RouterFunction} bean the mapping tries first never mattered.
+     * {@code /api/v1/webhook-endpoints/**} is a SUBSET of {@link #apiRoutes}' {@code /api/**}, so
+     * without an explicit order the two could compose in either direction and every webhook request
+     * would silently fall through to the monolith on an unlucky bean-registration order. An explicit
+     * value below {@link #apiRoutes}' default (unordered = lowest precedence) is what actually
+     * guarantees this one is tried first, not source position in this file.
+     * <p>
+     * Rate limited, same as every other {@code /api/**} route: it is authenticated client traffic,
+     * not a callback.
+     */
+    @Bean
+    @Order(0)
+    RouterFunction<ServerResponse> webhookRoutes(
+        @Value("${paymesh.gateway.webhook-uri}") String webhookUri,
+        @Value("${paymesh.gateway.rate-limit.capacity:100}") long capacity,
+        @Value("${paymesh.gateway.rate-limit.period-seconds:60}") long periodSeconds
+    ) {
+        return route("paymesh-webhook")
+            .route(path("/api/v1/webhook-endpoints/**"), http())
+            .before(uri(webhookUri))
+            .filter(rateLimitGuard(rateLimit(config -> config
+                .setCapacity(capacity)
+                .setPeriod(Duration.ofSeconds(periodSeconds))
+                .setStatusCode(HttpStatus.TOO_MANY_REQUESTS)
+                .setKeyResolver(RoutesConfiguration::clientKey))))
             .build();
     }
 

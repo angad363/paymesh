@@ -1,6 +1,6 @@
 # PayMesh — Project Status
 
-_Last updated: 5 September 2026._
+_Last updated: 6 September 2026._
 
 This is the pick-up-here document: what's built, what each PR decided and what it cost, phase by
 phase, ending with where to start next. Full ADRs live in `docs/decisions/`; this is the
@@ -448,11 +448,46 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
   dual-path *relay* (ADR-037) was never in this module's critical path to begin with, since the
   simulator never spoke Kafka.
 
-- **PR 7 — Webhook.** *(ADR-042, planned)* Goal: the first *merchant-facing* leaf to leave the
-  process. Planned shape: Kafka-fed from `payment.*`/`refund.*`/`order.*`, its own delivery-dispatch
-  timer, per-tenant secret derivation carried over unchanged (nothing to migrate — ADR-028's secrets
-  were never stored anywhere to begin with). Verification target: a merchant endpoint being down
-  never touches a payment, now literally proven across two processes rather than one.
+- **PR 7 — Webhook.** *(ADR-042)* Delivers: the first *merchant-facing* leaf out of the process
+  (`webhook/`, port 8083) — same package (`com.paymesh.webhook`), same tests where they could move
+  unchanged, own pom, own `webhook` schema reached as the fenced `webhook_svc` role, own Flyway
+  history that *adopts* the schema's existing three tables plus its `merchant_ref` copy
+  (`baseline-on-migrate`) and then *creates*, fresh, the three platform tables (`processed_events`,
+  `idempotency_records`, `outbox_events`) this deployable now needs its own copy of — ADR-038 kept
+  those three in one shared `platform` schema specifically until "3B+", and this is that split, for
+  webhook alone. Decision: the copied `shared.*` subtree (~30 classes across `api`, `outbox`,
+  `idempotency`, `security`, `tenant`) keeps its original package names unchanged, rather than being
+  renamed the way the pilot renamed its one shared class — rewriting ~30 imports for no behavior
+  change would be exactly the busywork the recipe exists to avoid, and the duplication is the
+  accepted, stated cost until `shared/` becomes a real library (PR 16). Security is JWT-only at this
+  boundary (no `ApiKeyAuthenticationFilter`): minting a JWT from an `ApiKey` needs `api_credentials`,
+  which is in the `merchant` schema and out of `webhook_svc`'s reach until Merchant is extracted (PR
+  11), so a raw `ApiKey` presented directly to webhook is out of scope for this PR — the gateway
+  fronts it. Auditing a secret rotation could no longer be an in-process `AuditRecorder.record(...)`
+  call (`audit_events` is in the `engagement` schema now): `RotateWebhookSecretService` appends a
+  `webhook.secret_rotated.audited` event to webhook's own outbox in the same transaction as the
+  rotation instead, and one new monolith-side handler
+  (`RecordWebhookSecretRotationAuditHandler`, wired into `AuditConfiguration`) turns it back into the
+  same `audit_events` row the in-process call used to write — PR 8's mechanism (ADR-043), pulled
+  forward one action early. Webhook is a genuinely independent second consumer of the event stream
+  now: its own Kafka consumer group (`paymesh-webhook`, not the monolith's `paymesh-monolith`), its
+  own `MerchantRefStore` copy trimmed from the monolith's six-schema fan-out to just `webhook` (the
+  monolith's own copy drops `webhook` from its list in the same PR, for the same fencing reason).
+  `ModuleBoundaryTest`'s webhook allowances were removed rather than left vacuous, the same call
+  ADR-041 made for the simulator's. Gateway: `RoutesConfiguration` gained a `webhookRoutes` bean for
+  `/api/v1/webhook-endpoints/**` → `webhook-uri` (default `:8083`) — the one route in that class where
+  bean ordering is load-bearing rather than incidental (`/api/v1/webhook-endpoints/**` is a *subset*
+  of `apiRoutes`' `/api/**`, unlike every other pair of predicates there), pinned with an explicit
+  `@Order` and proven by a dedicated WireMock-backed routing test rather than left to bean-declaration
+  luck. Tests: `WebhookIntegrationTest`/`WebhookEndpointPersistenceTest` moved to the module against a
+  real PostgreSQL, their merchant fixtures replaced with a bare `MerchantId.generate()` (the FK to
+  `merchants` was already dropped in V39, so nothing needs a real merchant row); the rotation test now
+  asserts a `webhook.secret_rotated.audited` row in webhook's own `outbox_events`, not an `audit_events`
+  row it can no longer write; a new monolith test proves the consumer half end to end. Tradeoff: the
+  `shared` subtree is now duplicated between `backend` and `webhook` until PR 16 makes it a library —
+  drift is possible and only a boundary test on each side catches it; webhook runs the full outbox
+  relay for the one event type it produces today, the established pattern's fixed cost rather than a
+  bespoke one-off publish.
 
 - **PR 8 — Engagement (Notification + Reporting + Audit).** *(ADR-043, planned)* Goal: move the
   three read-side consumers out together. The one hard part: Audit isn't a pure event consumer today
@@ -527,21 +562,26 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
 
 **On `main`.** Phase 1 and Phase 2 are complete. Phase 3 wave 3A (PR 1–5) is merged — Kafka
 backbone, dual-path relay, schema-per-service, merchant reference projection, API gateway. Phase 3B
-PR 6 (the pilot) is also merged: the Provider Simulator now runs as its own deployable
-(`provider-sim/`, port 8082, ADR-041) — three independently-built Maven modules now exist
-(`backend/`, `gateway/`, `provider-sim/`), each with its own `pom.xml` and its own `./mvnw`. 41 ADRs,
-the monolith's migrations still V1–V39 (provider-sim's own history starts a separate V1 in the
-`simulator` schema, adopting the tables the monolith's V13/V38 already created there). 1531 backend
-tests + 82 provider-sim tests + 9 gateway tests, all green — the ~82 that used to be counted inside
-the monolith's total moved to `provider-sim` with the package, and the two cross-boundary tests that
-could not move as-is (`SimulatorCallbackDeliveryIntegrationTest`,
-`ReconciliationIntegrationTest`) were adapted in place with a WireMock stub standing in for whichever
-side moved out of reach.
+PR 6 (the pilot) and PR 7 (Webhook) are both merged: the Provider Simulator (`provider-sim/`, port
+8082, ADR-041) and Webhook (`webhook/`, port 8083, ADR-042) now run as their own deployables — four
+independently-built Maven modules now exist (`backend/`, `gateway/`, `provider-sim/`, `webhook/`),
+each with its own `pom.xml` and its own `./mvnw`. 42 ADRs. The monolith's migrations are still
+V1–V39; `provider-sim`'s own Flyway history starts a separate V1 in the `simulator` schema (adopting
+the tables the monolith's V13/V38 already created there); `webhook`'s own history adopts the
+`webhook` schema's existing tables at V1 the same way, then creates its own copies of
+`processed_events`/`idempotency_records`/`outbox_events` at V2 (new physical tables, not moved ones).
+1325 backend tests + 122 webhook tests + 92 provider-sim tests + 11 gateway tests, all green — the
+webhook capability's own tests moved to `webhook` with the package, one monolith-side test
+(`WebhookMasterKeyStartupTest`) was retired in favour of webhook's own copy of that guard test, one
+new monolith test (`RecordWebhookSecretRotationAuditHandlerIntegrationTest`) proves the audit-event
+consumer half, and two gateway tests (`GatewayWebhookRouteTest`) prove the new route's precedence
+over the `/api/**` catch-all.
 
-**Next up: PR 7** — extract Webhook into its own deployable (ADR-042, planned). Unlike PR 6 it is
-Kafka-fed from real domain events (`payment.*`/`refund.*`/`order.*`), so it is the first extraction
-that actually exercises the dual-path relay's promise rather than merely being compatible with it.
+**Next up: PR 8** — extract Engagement (Notification + Reporting + Audit) into its own deployable
+(ADR-043, planned). The one hard part, named in the plan: Audit is not a pure event consumer today,
+and PR 7 already pulled its replacement mechanism forward for webhook's one audited action
+(`*.audited` event on the acting capability's own outbox, consumed through the new service's inbox) —
+PR 8 generalizes that same mechanism to every remaining privileged action. Read
+`docs/phase-3-microservices-extraction-plan.md` §"PR 8 — Engagement" before starting it.
+
 Read `docs/phase-3-microservices-extraction-plan.md` §"PR 7 — Webhook" before starting it.
-
-Read `docs/phase-3-microservices-extraction-plan.md` §"PR 6 — Provider Simulator (the pilot)" before
-starting it.
