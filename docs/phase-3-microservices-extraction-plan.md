@@ -293,7 +293,7 @@ sequence (ADR-036+).
 | 4 | `feature/merchant-ref-projection` | `merchant_ref` read model + merchant lifecycle events; consumers stop FKing to `merchants` | 3 | ADR-039 |
 | 5 | `feature/api-gateway` | Gateway: auth, routing, rate limit; all north-south traffic through it | 2 | ADR-040 |
 | **3B — Extraction wave 1: the pilot and the leaves** ||||
-| 6 | `service/provider-sim` | **Pilot.** Provider Simulator becomes its own deployable + repo module | 3A | ADR-041 |
+| 6 | `service/provider-sim` | **Pilot, built.** Provider Simulator becomes its own deployable + repo module | 3A | ADR-041 |
 | 7 | `service/webhook` | Webhook service, Kafka-fed | 6 | ADR-042 |
 | 8 | `service/engagement` | Notification + Reporting + Audit as one service; Audit's recorder becomes an event (see below) | 6 | ADR-043 |
 | 9 | `service/risk` | Risk service; payment's confirm calls it synchronously via gateway/mesh | 6 | ADR-044 |
@@ -437,24 +437,45 @@ one service:
 5. Deploy it alongside the monolith; re-point the gateway route; turn off the
    monolith's in-process copy for that capability.
 
-#### PR 6 — Provider Simulator (the pilot)
+#### PR 6 — Provider Simulator (the pilot) — built
 
 **Branch:** `service/provider-sim` · **ADR-041**
 
 - **Goal:** prove the whole extraction recipe on the *safest possible* service —
   the one with an empty cross-capability allowlist in both directions and no money
   authority at all.
-- **Includes:** the simulator as its own deployable; its inbound "process a
-  payment/payout/refund" requests arrive by event or gateway call; its outbound
-  callbacks (already an outbox-driven dispatcher) publish to Kafka; its callback
-  ordering/dedup (ADR-012) is re-proven across the wire.
-- **DB:** the `provider_*` tables as their own schema (from 3A).
-- **Comms:** consumes provider-request events, emits callback events; correlation
-  by id (the FK to payouts/refunds is already gone).
-- **Verification:** end-to-end — a payment in the monolith drives a real callback
-  from the now-separate simulator, deduped and ordered per aggregate.
-- **Rollback:** re-enable the in-process simulator; the dual path makes this a
-  flag flip.
+- **Built, and one thing corrected from this table's original prose.** "Outbound
+  callbacks publish to Kafka" and "consumes provider-request events" describe a
+  transport the simulator never had: ADR-017 built it as a scheduled dispatcher
+  POSTing an HMAC-signed body directly at PayMesh's callback route, with **no
+  outbox and no event consumption at all**, and it predates the Kafka backbone
+  (ADR-036) by nineteen ADRs. The pilot's job was to prove the *process move* is
+  cheap, not to also rewire a working, already-network-shaped protocol —
+  bundling both would have put an unrelated redesign of ADR-012's ordering/dedup
+  contract inside the PR meant to de-risk extraction itself. What actually
+  shipped: the simulator as its own deployable (`provider-sim/`), its inbound
+  `/sim/v1/**` reached directly (by gateway route or by a caller who knows its
+  port), its outbound callbacks the same signed HTTP POST as before, now crossing
+  a real process boundary instead of a loopback one. ADR-012's ordering/dedup is
+  re-proven across that real wire in `provider-sim`'s own delivery test (a
+  WireMock stub stands in for the monolith, mirroring how the gateway's tests
+  already stand WireMock in for it).
+- **DB:** the `simulator` schema (already carved in 3A), reached as the fenced
+  `simulator_svc` role; its own Flyway history adopts the existing five tables
+  rather than re-creating them.
+- **Comms:** unchanged in shape — inbound is a direct HTTP call to `/sim/v1/**`,
+  outbound is a signed HTTP POST to the monolith's callback route; correlation by
+  id (the FK to payouts/refunds is already gone).
+- **Verification:** `provider-sim`'s own delivery test proves signing, retry,
+  duplicate and out-of-order handling against a stubbed receiver; the monolith's
+  `ProviderCallbackApiTest`/`ProviderCallbackIntegrationTest` independently prove
+  a signed callback still moves a payment intent to `SUCCEEDED` (hand-signed,
+  same pattern ADR-019 uses for Refund) — the two together cover what one
+  single-process test used to, now that no one test can compile both sides.
+- **Rollback:** re-point the gateway's `provider-sim-uri` at a monolith still
+  carrying the old package (preserved in git history, not deployed alongside).
+  Not a flag flip: the dual-path relay (ADR-037) was never in this module's path,
+  since the simulator never spoke Kafka to begin with.
 - **Why first:** if the recipe is wrong, it is wrong here, where nothing
   financial can be lost while we find out.
 

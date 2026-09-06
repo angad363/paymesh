@@ -13,27 +13,28 @@ import java.util.List;
  * that requirement while achieving nothing. The failure is silent, which is what makes it worth a
  * startup check.
  * <p>
- * <b>Five secrets now, and none of them is the lesser one.</b> The JWT key signs every access
+ * <b>Four secrets now, and none of them is the lesser one.</b> The JWT key signs every access
  * token; the provider callback key is the ONLY authentication on the endpoint that moves payments to
  * SUCCEEDED; the refund callback key is the same for money going back out, which posts a ledger
- * reversal; the simulator key is the ONLY authentication on the routes that queue such a callback,
- * which is the same power reached one step earlier and without needing to sign anything; and the
- * reconciliation key is the caller's copy of that last one. A published value in any of them means
- * anyone can move money on this platform -- so the guard is a loop over a list rather than one check
- * with siblings bolted on, and the next secret is a line in {@link #GUARDED} plus a case in
- * {@code ReconciliationApiKeyStartupTest} and its siblings.
+ * reversal; and the reconciliation key is this application's own copy of the provider simulator's
+ * shared key -- the caller's side of a credential that key's OWN guard now lives on the other side
+ * of (ADR-041: {@code provider-sim} is a separate deployable with its own
+ * {@code DevelopmentSecretGuard} for {@code paymesh.simulator.api-key}). A published value in any of
+ * these means anyone can move money on this platform -- so the guard is a loop over a list rather
+ * than one check with siblings bolted on, and the next secret is a line in {@link #GUARDED} plus a
+ * case in {@code ReconciliationApiKeyStartupTest} and its siblings.
  * <p>
- * <b>The sixth points outward rather than inward, which is new.</b> The webhook master key derives
+ * <b>The fifth points outward rather than inward, which is new.</b> The webhook master key derives
  * every merchant's signing secret (ADR-028 §2). Publishing it does not let an attacker move money
  * on PayMesh -- it lets them sign as PayMesh to people who are not on PayMesh, who have no way to
  * tell and every reason to act on it. The blast radius is every merchant at once, which is the cost
  * of one master key and is why per-endpoint rotation exists separately.
  * <p>
- * <b>Two entries may share a VALUE without sharing a meaning.</b> The simulator key and the
- * reconciliation key are the same string today because the provider is bundled -- one is what the
- * provider expects, the other is what the caller sends -- and they stop being the same string the
- * day the provider is external. Guarding them separately is what makes that split a config change
- * rather than a security regression.
+ * <b>The reconciliation key shares a VALUE with provider-sim's simulator key without sharing a
+ * meaning, or a guard.</b> They are the same string today because the provider is the bundled
+ * simulator -- one is what the provider expects, the other is what this application sends -- and
+ * they stop being the same string the day the provider is external. Each deployable guards its own
+ * copy, which is what makes that split a config change rather than a security regression.
  * <p>
  * This lives in {@code shared} rather than in a capability module because it is a deployment rule,
  * not a payment or identity rule -- it says where a value may come from, not what the value means.
@@ -76,14 +77,6 @@ public class DevelopmentSecretGuard {
                 + "balance"
         ),
         new GuardedSecret(
-            "paymesh.simulator.api-key",
-            "dev-only-insecure-simulator-api-key-change-me",
-            "PAYMESH_SIMULATOR_API_KEY",
-            "is the only authentication on /sim/v1/**, and POST /sim/v1/payments queues a callback "
-                + "that marks a payment SUCCEEDED -- so anyone could collect any payment on the "
-                + "platform without ever forging a signature"
-        ),
-        new GuardedSecret(
             "paymesh.webhook.master-key",
             "dev-only-insecure-webhook-master-key-change-me",
             "PAYMESH_WEBHOOK_MASTER_KEY",
@@ -97,8 +90,8 @@ public class DevelopmentSecretGuard {
             "dev-only-insecure-simulator-api-key-change-me",
             "PAYMESH_RECONCILIATION_API_KEY",
             "is the CALLER's copy of the provider's API key, so a published value hands over "
-                + "whatever that key opens -- today the same /sim/v1/** access as the entry above, "
-                + "reached from the other side of the same door"
+                + "whatever that key opens -- today the same /sim/v1/** access provider-sim's own "
+                + "DevelopmentSecretGuard guards on the other side of the same door (ADR-041)"
         )
     );
 

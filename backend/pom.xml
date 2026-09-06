@@ -166,6 +166,18 @@
             <artifactId>testcontainers-kafka</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- Stands in for the provider simulator's own HTTP surface (ADR-041). Before extraction,
+             ReconciliationIntegrationTest read a real /sim/v1/reconciliation/{date} from the same
+             process; the simulator is now a separate deployable this module cannot compile against,
+             so its report is a hand-built JSON document served by a WireMock stub, the same
+             dependency and version the gateway module already pins for the identical reason. -->
+        <dependency>
+            <groupId>org.wiremock</groupId>
+            <artifactId>wiremock-standalone</artifactId>
+            <version>3.13.0</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
 	<build>

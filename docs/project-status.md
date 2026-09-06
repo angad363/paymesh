@@ -424,15 +424,29 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
   predates Lettuce 7), and Spring Cloud's Boot-4.0-only compatibility check disabled for Boot 4.1 —
   each a specific, load-bearing workaround rather than a style choice.
 
-### 3B — Extraction wave 1: the pilot and the leaves (planned, not yet built)
+### 3B — Extraction wave 1: the pilot and the leaves
 
-- **PR 6 — Provider Simulator (the pilot).** *(ADR-041, planned)* Goal: prove the whole extraction
-  recipe on the safest possible service — the one with an empty cross-capability allowlist in *both*
-  directions and no money authority at all, so if the recipe is wrong, it's wrong here, where nothing
-  financial is at risk while that's discovered. Planned shape: its own deployable, its own
-  `provider_*` schema, inbound requests arrive by event or gateway call, outbound callbacks publish
-  to Kafka with ADR-012's ordering/dedup re-proven across a real wire. Rollback: the dual-path relay
-  makes this a flag flip back to the in-process simulator.
+- **PR 6 — Provider Simulator (the pilot).** *(ADR-041)* Delivers: the simulator as its own
+  deployable (`provider-sim/`, port 8082) — same package (`com.paymesh.simulator`), same tests
+  where they could move unchanged, own pom, own `simulator` schema reached as the fenced
+  `simulator_svc` role ADR-038 minted for exactly this day, own Flyway history that *adopts*
+  the schema's existing five tables (`baseline-on-migrate`) rather than re-creating them.
+  Decision: the wire protocol does not change — outbound callbacks stay the HTTP-POST-signed-body
+  ADR-017 already built (never Kafka; the simulator predates the Kafka backbone and was never
+  wired to it), because rewiring the transport *and* moving the process in one PR would bundle an
+  unrelated redesign of ADR-012's ordering/dedup contract into the pilot whose only job is proving
+  the move itself is cheap. `ReconciliationConfiguration`'s `base-url` and
+  `SubmitPayoutsService`'s payout URL were already real HTTP calls to the simulator's own port
+  ("loopback" by coincidence, not by construction) — extraction changes one number in each
+  (8080 → 8082), nothing else. Two backend tests that drove the simulator in-process
+  (`SimulatorCallbackDeliveryIntegrationTest`, `ReconciliationIntegrationTest`) could not survive
+  as single-JVM tests once the classpaths split; both were adapted rather than deleted, with a
+  WireMock stub standing in for whichever side moved out of reach — the same substitution the
+  gateway's own tests already made for the monolith (ADR-040). Tradeoff: rollback is no longer a
+  flag — it's re-pointing the gateway's `provider-sim-uri` at a monolith still carrying the old
+  code, which git history preserves but which this PR does not leave running side-by-side; the
+  dual-path *relay* (ADR-037) was never in this module's critical path to begin with, since the
+  simulator never spoke Kafka.
 
 - **PR 7 — Webhook.** *(ADR-042, planned)* Goal: the first *merchant-facing* leaf to leave the
   process. Planned shape: Kafka-fed from `payment.*`/`refund.*`/`order.*`, its own delivery-dispatch
@@ -512,15 +526,22 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
 ## Where we are now
 
 **On `main`.** Phase 1 and Phase 2 are complete. Phase 3 wave 3A (PR 1–5) is merged — Kafka
-backbone, dual-path relay, schema-per-service, merchant reference projection, API gateway. 40 ADRs,
-migrations V1–V39, 1533 backend tests + 9 gateway tests, all green.
+backbone, dual-path relay, schema-per-service, merchant reference projection, API gateway. Phase 3B
+PR 6 (the pilot) is also merged: the Provider Simulator now runs as its own deployable
+(`provider-sim/`, port 8082, ADR-041) — three independently-built Maven modules now exist
+(`backend/`, `gateway/`, `provider-sim/`), each with its own `pom.xml` and its own `./mvnw`. 41 ADRs,
+the monolith's migrations still V1–V39 (provider-sim's own history starts a separate V1 in the
+`simulator` schema, adopting the tables the monolith's V13/V38 already created there). 1531 backend
+tests + 82 provider-sim tests + 9 gateway tests, all green — the ~82 that used to be counted inside
+the monolith's total moved to `provider-sim` with the package, and the two cross-boundary tests that
+could not move as-is (`SimulatorCallbackDeliveryIntegrationTest`,
+`ReconciliationIntegrationTest`) were adapted in place with a WireMock stub standing in for whichever
+side moved out of reach.
 
-**Next up: PR 6** — extract the Provider Simulator into its own deployable (`service/provider-sim`,
-ADR-041). It's the pilot because it already has zero shared code with the rest of the app in either
-direction (`ModuleBoundaryTest` enforces an empty allowlist both ways), so it's the cheapest place to
-prove the extraction mechanics — its own repo module, its own datasource, its own schema, talking to
-the monolith only over the same signed HTTP it uses today — before repeating them on services that
-actually share event traffic.
+**Next up: PR 7** — extract Webhook into its own deployable (ADR-042, planned). Unlike PR 6 it is
+Kafka-fed from real domain events (`payment.*`/`refund.*`/`order.*`), so it is the first extraction
+that actually exercises the dual-path relay's promise rather than merely being compatible with it.
+Read `docs/phase-3-microservices-extraction-plan.md` §"PR 7 — Webhook" before starting it.
 
 Read `docs/phase-3-microservices-extraction-plan.md` §"PR 6 — Provider Simulator (the pilot)" before
 starting it.

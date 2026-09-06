@@ -27,7 +27,6 @@ import com.paymesh.simulator.infrastructure.security.SimulatorApiKeyFilter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.boot.security.autoconfigure.web.servlet.SecurityFilterProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -40,23 +39,24 @@ import java.time.Clock;
 
 /**
  * Explicit wiring for the provider simulator (no component scanning of application/domain classes).
- * The Clock, the ObjectMapper and the TransactionTemplate are injected, not declared:
- * {@code SharedConfiguration} owns them because every capability needs them and none owns them.
+ * The Clock and the TransactionTemplate are injected, not declared: {@link SharedBeansConfiguration}
+ * owns them, this module's own stand-in for the monolith's {@code SharedConfiguration}.
  *
- * <h2>NOTHING IN THIS FILE IMPORTS ANOTHER CAPABILITY, AND THAT IS THE MODULE'S WHOLE POINT</h2>
+ * <h2>NOTHING IN THIS FILE IMPORTS ANOTHER CAPABILITY, AND THAT IS WHAT MADE EXTRACTION A MOVE
+ * RATHER THAN A REWRITE (ADR-041)</h2>
  *
- * In every other configuration class in this codebase, a cross-module dependency is visible here as
- * an import -- {@code PaymentConfiguration} names Order's services, which is exactly what the
- * {@code OrderLookup} port exists to make legible. This class names nobody, because SDD 13.2 says the
- * simulator does not own PayMesh state and SDD 13.6 wants it independently deployable. A single
- * imported type would make extracting it a rewrite instead of a move.
+ * Inside the monolith, every other configuration class named a cross-module dependency as an import
+ * -- {@code PaymentConfiguration} named Order's services, which is exactly what the
+ * {@code OrderLookup} port existed to make legible. This class named nobody, because SDD 13.2 says
+ * the simulator does not own PayMesh state and SDD 13.6 wants it independently deployable. That
+ * discipline is what let the package move to its own deployable unchanged; a single imported type
+ * would have made this a rewrite instead.
  * <p>
  * The one place that could have slipped is the callback signing secret, which the receiver also
- * reads. It is bound by {@link Value} from {@code paymesh.provider.callback-secret} rather than by
- * injecting Payment's {@code ProviderProperties} bean. A property name is a string the two sides
- * agree on -- the same kind of agreement as the JSON contract in {@code CallbackBody} -- whereas the
- * bean is a Java type from a package this module may not see. {@code ModuleBoundaryTest} would fail
- * on the import; it cannot fail on a string, so the reason is written here instead.
+ * reads. It is bound by {@link Value} from {@code paymesh.provider.callback-secret} rather than by a
+ * shared Java type -- there is no such type reachable from here at all now, only a property name both
+ * deployables' `application.yaml` agree on, the same kind of agreement as the JSON contract in
+ * {@code CallbackBody}.
  */
 @Configuration
 @EnableConfigurationProperties({SimulatorProperties.class, SimulatorDispatchProperties.class})
@@ -269,23 +269,20 @@ public class SimulatorConfiguration {
     /**
      * THE AUTHENTICATION FOR {@code /sim/v1/**}. There is no other.
      * <p>
-     * Ordered one after the Spring Security chain, exactly like
-     * {@code ProviderCallbackSignatureFilter}: the chain runs first and says {@code permitAll()} for
-     * this prefix -- there is no bearer token to evaluate -- and this filter is what actually decides.
-     * Registering it before the chain would put an unauthenticated filter in front of every route in
-     * the application, not just this one.
+     * No order is set (ADR-041). Inside the monolith this had to run one step after the Spring
+     * Security chain, which said {@code permitAll()} for this prefix and left the actual decision
+     * to this filter -- registering it before the chain would have put an unauthenticated filter in
+     * front of every route in the application, not just this one. Extracted, this deployable carries
+     * no Spring Security chain at all: {@link SimulatorApiKeyFilter} is the only filter in the
+     * servlet pipeline, so there is nothing left to order it relative to.
      */
     @Bean
     FilterRegistrationBean<SimulatorApiKeyFilter> simulatorApiKeyFilterRegistration(
         SimulatorProperties simulatorProperties,
         ObjectMapper objectMapper
     ) {
-        FilterRegistrationBean<SimulatorApiKeyFilter> registration =
-            new FilterRegistrationBean<>(new SimulatorApiKeyFilter(
-                simulatorProperties.apiKey(), objectMapper
-            ));
-
-        registration.setOrder(SecurityFilterProperties.DEFAULT_FILTER_ORDER + 2);
-        return registration;
+        return new FilterRegistrationBean<>(new SimulatorApiKeyFilter(
+            simulatorProperties.apiKey(), objectMapper
+        ));
     }
 }

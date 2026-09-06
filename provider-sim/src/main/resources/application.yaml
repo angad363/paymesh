@@ -1,0 +1,116 @@
+# ============================================================================
+#  PayMesh provider simulator (ADR-017, ADR-041)
+#
+#  A separate deployable beside the monolith and the gateway (ADR-041, PR 6, the
+#  extraction pilot). It listens on 8082. It shares the monolith's PostgreSQL
+#  cluster but owns exactly one schema (`simulator`), connects as the fenced
+#  `simulator_svc` role ADR-038 already created, and cannot see any other
+#  schema's tables even by accident.
+# ============================================================================
+
+spring:
+  application:
+    name: paymesh-provider-sim
+
+  # --- Datasource: the fenced `simulator_svc` role, one schema only ----------
+  datasource:
+    url: jdbc:postgresql://localhost:5432/paymesh
+    # Empty here for the same reason as the monolith's: this file is committed.
+    # The dev profile supplies the throwaway `simulator_svc` credential; every
+    # other environment supplies its own via SPRING_DATASOURCE_USERNAME/PASSWORD.
+    username:
+    password:
+    hikari:
+      # ONE SCHEMA, NOT TEN. Unlike the monolith (which still spans every
+      # service's schema in one process), this deployable has no reason to
+      # resolve an unqualified table name anywhere but `simulator` -- and
+      # `simulator_svc`'s grants (ADR-038 section 4) do not extend past it
+      # regardless of what search_path claims. `public` stays for
+      # `is_prefixed_id`, if a later migration here ever needs it.
+      connection-init-sql: SET search_path TO simulator, public
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        jdbc:
+          # Same reason as the monolith's: with entities carrying no explicit schema,
+          # ddl-auto=validate must look each mapped table up on its own rather than
+          # reading one schema's whole catalogue.
+          jdbc_metadata_extraction_strategy: individually
+
+  # --- Flyway: this module's OWN history, in its OWN schema (ADR-041) --------
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # `simulator`, not `public`. This is a NEW deployable with no legacy history
+    # to stay pinned to -- unlike the monolith, whose Flyway history predates the
+    # schema split and must stay in `public` for that reason.
+    schemas: simulator
+    # ADOPTS THE EXISTING TABLES rather than re-running their DDL. The shared dev
+    # database already has these five tables (the monolith's V13, moved into the
+    # `simulator` schema by V38) with no `simulator.flyway_schema_history` yet.
+    # Against that database this baselines at V1 and SKIPS it -- V1 in
+    # db/migration is byte-for-byte the DDL that already ran, kept only so a
+    # genuinely fresh database (a new environment, Testcontainers) bootstraps
+    # identically. Any V2+ added later runs normally on both.
+    baseline-on-migrate: true
+    baseline-version: "1"
+
+# --- Web server ---------------------------------------------------------------
+server:
+  port: 8082
+  shutdown: graceful
+
+paymesh:
+  simulator:
+    # THE ONLY AUTHENTICATION ON /sim/v1/**. Declared but deliberately EMPTY, and
+    # the application refuses to start without it (@NotBlank on SimulatorProperties,
+    # DevelopmentSecretGuard's own copy of the startup check).
+    #
+    # POST /sim/v1/payments queues a callback that will mark a PayMesh payment
+    # SUCCEEDED, so anyone holding this value can collect any payment on the
+    # platform -- the same outcome as forging a callback, reached one step
+    # earlier and without signing anything. Supply it as:
+    #     PAYMESH_SIMULATOR_API_KEY=<32+ random bytes>
+    # or run the dev profile, which supplies a throwaway value.
+    api-key:
+    # Where signed callbacks are POSTed -- the MONOLITH, still on 8080. Configurable
+    # rather than derived, because this module is built to be deployed away from
+    # PayMesh entirely (SDD 13.6); a URL computed from local settings could only
+    # ever reach a PayMesh in the same process.
+    callback-url: http://localhost:8080/internal/v1/provider-callbacks/simulator
+    # Where PAYOUT callbacks go. A second URL rather than a path derived from the
+    # first, for the same reason.
+    payout-callback-url: http://localhost:8080/internal/v1/payout-callbacks/simulator
+    dispatch:
+      # true: register the scheduled bean. Off -> the timer does not exist at all
+      # (@ConditionalOnProperty). ON BY DEFAULT, OFF under dev -- dev is the
+      # profile the test suite runs under, and a dispatcher POSTing callbacks
+      # mid-test is the purest flake generator in this codebase.
+      enabled: true
+      interval: 2s
+      batch-size: 20
+      max-attempts: 5
+      retry-delay: 5s
+      read-timeout: 2s
+    # THE CALLBACK SIGNING SECRET. Bound by @Value from this property, not from a
+    # ProviderProperties bean -- there is no such bean here, and the property name
+    # is the agreement the two sides share (SimulatorConfiguration's own javadoc,
+    # carried over unchanged). Must equal the monolith's paymesh.provider.callback-secret.
+  provider:
+    callback-secret:
+
+# --- Actuator ------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        include:
+          - health
+          - info
+  endpoint:
+    health:
+      show-details: never

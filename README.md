@@ -120,10 +120,13 @@ dead-letter and no alert, which is the largest known hole in the delivery design
 
 ## Architecture
 
-One deployable, strict module boundaries, extract later — the modular-monolith-first plan
-from [ADR-001](docs/decisions/ADR-001-start-with-modular-monolith.md) and SDD §30.1.
-Nothing has been extracted into a service and nothing should be until the API and event
-contracts are proven.
+Started as one deployable with strict module boundaries, extracted only once a module's
+interface and its own scaling needs were proven — the modular-monolith-first plan from
+[ADR-001](docs/decisions/ADR-001-start-with-modular-monolith.md) and SDD §30.1. Phase 3 is
+that extraction, one capability at a time (`docs/phase-3-microservices-extraction-plan.md`):
+the API gateway (`gateway/`, port 8081, ADR-040) and the provider simulator
+(`provider-sim/`, port 8082, ADR-041) are now separate deployables; every other capability
+below still lives in the one monolith (`backend/`, port 8080).
 
 Code is organized **by business capability, not by technical layer**
 ([ADR-002](docs/decisions/ADR-002-use-package-by-feature.md)). There is no
@@ -145,7 +148,6 @@ com.paymesh
 ├── payment              + infrastructure/order      ← the OrderLookup adapter
 ├── ledger               + infrastructure/events     ← the payment.succeeded consumer
 ├── refund               + infrastructure/payment    ← the PaymentLookup adapter
-├── simulator            the fake provider; imports no other capability and none imports it
 └── shared
     ├── api              ApiErrorResponse
     ├── security         SecurityConfiguration, AuthenticatedCaller, argument resolver
@@ -337,6 +339,38 @@ cd backend
 ./mvnw clean package            # build the jar
 ./mvnw verify                   # full build + tests
 ```
+
+### The other deployables (gateway, provider-sim)
+
+Two more Maven modules, each with its own `pom.xml` and its own `./mvnw` — not part of the
+`backend` build, and each optional until a client needs the door they open
+([ADR-040](docs/decisions/ADR-040-api-gateway.md),
+[ADR-041](docs/decisions/ADR-041-extract-the-provider-simulator.md)):
+
+```bash
+cd gateway
+./mvnw spring-boot:run          # port 8081 — needs backend up and `docker compose up -d redis`
+
+cd provider-sim
+./mvnw spring-boot:run          # port 8082 — needs the same PostgreSQL as backend, and
+                                 # backend up to receive the callbacks it sends
+```
+
+`provider-sim` shares the monolith's PostgreSQL cluster but owns only the `simulator` schema,
+connecting as the fenced `simulator_svc` role ADR-038 already created. That role is `NOLOGIN`
+by default; give it a password once, locally, the same way `paymesh_app` was granted
+`CREATEROLE` below:
+
+```bash
+psql -d paymesh -c "ALTER ROLE simulator_svc LOGIN PASSWORD 'simulator_dev_password';"
+psql -d paymesh -c "GRANT CREATE ON SCHEMA simulator TO simulator_svc;"
+```
+
+Postman's `{{baseUrl}}` (`http://localhost:8080`) still addresses the monolith directly for
+every folder except **Provider Simulator**, whose requests use `{{simBaseUrl}}`
+(`http://localhost:8082`) now that `/sim/v1/**` is no longer served by the monolith. Both
+work with or without the gateway in front — the gateway is optional until a whole client
+workflow needs to stop knowing which port serves which prefix.
 
 **One-time dev bootstrap for schema-per-service (ADR-038).** The test suite runs V38 as the
 Testcontainers superuser and needs nothing. To run the app against a **local native PostgreSQL**,

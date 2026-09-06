@@ -23,20 +23,23 @@ import static org.springframework.cloud.gateway.server.mvc.handler.HandlerFuncti
 import static org.springframework.web.servlet.function.RequestPredicates.path;
 
 /**
- * The route table. Today every route points at the one monolith on {@code backend-uri}; in 3B each
- * prefix re-points at its own service and nothing else in this class changes. That re-pointing being
- * a one-line edit here, not a client change, is the entire reason the gateway exists before the
- * services do.
+ * The route table. {@code /sim/**} is the first prefix to actually re-point (ADR-041, PR 6): the
+ * provider simulator left the monolith for its own deployable, and this is the one line that
+ * changed to make that true from the client's side -- no client, no Postman request, addressed the
+ * simulator directly, only through this gateway or the monolith's own (now-removed) route. Every
+ * other prefix still points at the one monolith on {@code backend-uri}; each re-points the same way,
+ * in its own PR, as its capability leaves.
  *
  * <p>Two route groups, split by whether the rate limit applies:
  * <ul>
  *   <li><b>API traffic</b> ({@code /api/**}) is rate limited. This is client traffic, and the one
  *       genuinely unauthenticated write on it -- {@code POST /api/v1/merchants} -- is the abuse
  *       vector the monolith always flagged as needing a limit.</li>
- *   <li><b>Callbacks and the simulator</b> ({@code /internal/**}, {@code /sim/**}) are forwarded
- *       without a limit. A provider retrying a delivery it is contractually required to retry must
- *       not be throttled into a failure that strands money already moved; these authenticate by HMAC
- *       / shared key at the monolith and are not a public abuse surface.</li>
+ *   <li><b>Callbacks and the simulator</b> ({@code /internal/**} to the monolith, {@code /sim/**} to
+ *       provider-sim) are forwarded without a limit. A provider retrying a delivery it is
+ *       contractually required to retry must not be throttled into a failure that strands money
+ *       already moved; these authenticate by HMAC / shared key at the receiving service and are not
+ *       a public abuse surface.</li>
  * </ul>
  */
 @Configuration
@@ -66,13 +69,30 @@ public class RoutesConfiguration {
     }
 
     @Bean
-    RouterFunction<ServerResponse> passthroughRoutes(
+    RouterFunction<ServerResponse> internalCallbackRoutes(
         @Value("${paymesh.gateway.backend-uri}") String backendUri
     ) {
-        return route("paymesh-passthrough")
+        return route("paymesh-internal")
             .route(path("/internal/**"), http())
-            .route(path("/sim/**"), http())
             .before(uri(backendUri))
+            .build();
+    }
+
+    /**
+     * THE FIRST RE-POINTED ROUTE (ADR-041). Every other group in this class still forwards to
+     * {@code backend-uri}; this one forwards to the provider simulator's own deployable, because it
+     * is the first capability to actually leave the monolith's process. A separate
+     * {@code RouterFunction} bean rather than a branch inside {@link #internalCallbackRoutes} for the
+     * same reason the two were never one route to begin with: they point at different backends now,
+     * not just different paths.
+     */
+    @Bean
+    RouterFunction<ServerResponse> providerSimRoutes(
+        @Value("${paymesh.gateway.provider-sim-uri}") String providerSimUri
+    ) {
+        return route("paymesh-provider-sim")
+            .route(path("/sim/**"), http())
+            .before(uri(providerSimUri))
             .build();
     }
 

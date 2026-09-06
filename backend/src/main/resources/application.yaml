@@ -28,11 +28,19 @@ spring:
       # SCHEMA-PER-SERVICE search_path (ADR-038). Every table moved out of public
       # into its service schema (V38), but entities keep bare @Table(name=...), so
       # each app connection must be able to resolve an unqualified name across all
-      # ten schemas. This is safe because all 46 table names are GLOBALLY UNIQUE
-      # (they shared one schema until V38), so nothing a wrong schema could shadow.
-      # public stays last, for the shared functions (is_prefixed_id) and anything
-      # not yet moved. Flyway pins itself to public (below) and is unaffected.
-      connection-init-sql: SET search_path TO identity, merchant, payment, ledger, settlement, risk, simulator, webhook, engagement, platform, public
+      # the schemas this deployable still owns. This is safe because all table
+      # names are GLOBALLY UNIQUE (they shared one schema until V38), so nothing a
+      # wrong schema could shadow. public stays last, for the shared functions
+      # (is_prefixed_id) and anything not yet moved. Flyway pins itself to public
+      # (below) and is unaffected.
+      #
+      # NO `simulator` HERE (ADR-041). The provider simulator left this process
+      # in PR 6 -- its own deployable owns that schema now, connecting as the
+      # fenced `simulator_svc` role (ADR-038 section 4) rather than sharing this
+      # connection's broad search_path. This app maps no entity into it and
+      # reaches the simulator only over HTTP (ReconciliationConfiguration,
+      # SubmitPayoutsService), same as it would reach a real acquirer.
+      connection-init-sql: SET search_path TO identity, merchant, payment, ledger, settlement, risk, webhook, engagement, platform, public
 
   # --- JPA / Hibernate -------------------------------------------------------
   jpa:
@@ -314,16 +322,13 @@ paymesh:
     # is a plain bean either way, so tests call reconcile(date) directly. To watch it:
     #     PAYMESH_RECONCILIATION_ENABLED=true
     enabled: true
-    # WHERE THE PROVIDER LIVES. Points at this application's own port, because the
-    # provider is the bundled simulator -- so the fetch is a loopback HTTP call.
-    #
-    # THAT IS DELIBERATE AND NOT AN OVERSIGHT. ModuleBoundaryTest forbids any
-    # capability from importing the simulator, SDD 13.2 says the simulator owns no
-    # PayMesh state, and ADR-017 makes it removable from a deployment. Calling
-    # ExportReconciliationService directly would break all three silently and weld
-    # reconciliation to the one "provider" that can never be a real one. Point this at
-    # a real acquirer and only the adapter changes.
-    base-url: http://localhost:8080
+    # WHERE THE PROVIDER LIVES. The provider simulator's own deployable (ADR-041),
+    # not this application's port -- extraction (PR 6) made this a REAL network
+    # hop rather than the loopback call it used to be, and nothing here had to
+    # change to make that true: this property was always a URL, never a method
+    # call, precisely so pointing it at a real acquirer someday is a config
+    # change and not a rewrite.
+    base-url: http://localhost:8082
     # The provider's name, and HALF OF THE CALLBACK DEDUPLICATION KEY. It must match
     # the name real callbacks arrive under (the {provider} path variable on
     # /internal/v1/provider-callbacks/{provider}), or a reconciled event and a real
@@ -385,9 +390,10 @@ paymesh:
       interval: 5m
       initial-delay: 11m
 
-      # Where a payout is submitted. The simulator today; a real acquirer is the
-      # point of it being a URL rather than a call.
-      url: http://localhost:8080/sim/v1/payouts
+      # Where a payout is submitted. The simulator's own deployable today
+      # (ADR-041, port 8082, no longer this application's own port); a real
+      # acquirer is the point of it being a URL rather than a call.
+      url: http://localhost:8082/sim/v1/payouts
 
       # SEPARATE PROPERTIES THAT HAPPEN TO SHARE A VALUE IN dev. The day payouts
       # move to another provider, or a leaked secret is rotated, exactly one of
@@ -535,11 +541,6 @@ paymesh:
       # How many abandoned intents one sweep may take. Each is its own transaction.
       batch-size: 100
 
-  # --- Provider simulator (SDD 13, ADR-017) -----------------------------------
-  # The fake card/UPI/bank provider the payment flow can be driven against
-  # deterministically. It is a module in this deployable, but it is built as though it
-  # were not: it writes no PayMesh table, imports no other capability, and its only
-  # influence is an HTTP POST of a signed body at /internal/v1/provider-callbacks.
   refund:
     # THE HMAC SECRET FOR /internal/v1/refund-callbacks/**, and its own property rather than a
     # reuse of paymesh.provider.callback-secret even though dev supplies the same value to both.
@@ -653,69 +654,12 @@ paymesh:
       # the ceiling that stops a platform-wide year-long window becoming a multi-megabyte column. An
       # export over the cap is FAILED with a reason naming this number rather than retried forever.
       max-rows: 50000
-  simulator:
-    # THE ONLY AUTHENTICATION ON /sim/v1/**. Declared but deliberately EMPTY, and the
-    # application refuses to start without it (@NotBlank on SimulatorProperties).
-    #
-    # This is a third money-moving secret and not a lesser one. POST /sim/v1/payments
-    # queues a callback that will mark a PayMesh payment SUCCEEDED, so anyone holding
-    # this value can collect any payment on the platform -- the same outcome as forging
-    # a callback, reached one step earlier and without signing anything. Supply it as:
-    #     PAYMESH_SIMULATOR_API_KEY=<32+ random bytes>
-    # or run the dev profile, which supplies a throwaway value from application-dev.yaml.
-    #
-    # It is deliberately NOT paymesh.provider.callback-secret. One value doing both jobs
-    # means one leak does both, and it would make per-provider secrets harder rather than
-    # easier -- the single secret would then carry two unrelated meanings and could not be
-    # split without changing both directions at once. ADR-017 section 3.1.
-    api-key:
-    # Where signed callbacks are POSTed. Configurable rather than derived from server.port,
-    # because a URL computed from local settings could only ever reach a PayMesh in the same
-    # process -- precisely the coupling this module is designed without (SDD 13.6).
-    callback-url: http://localhost:8080/internal/v1/provider-callbacks/simulator
-
-    # Where PAYOUT callbacks go. A second URL rather than a path this module
-    # derives from the first: the simulator is built to be deployed away from
-    # PayMesh, and deriving one route from another assumes both sit behind the
-    # same host at paths the simulator gets to know about.
-    payout-callback-url: http://localhost:8080/internal/v1/payout-callbacks/simulator
-    dispatch:
-      # true: register the scheduled bean. Off -> the timer does not exist at all (the bean
-      # is @ConditionalOnProperty), rather than running and doing nothing.
-      #
-      # ON BY DEFAULT for the same reason as the sweeps above, and OFF UNDER dev for a
-      # sharper one: dev is the profile the whole test suite runs under, and a dispatcher
-      # POSTing callbacks at PayMesh while a test asserts on a payment intent is the purest
-      # flake generator in this codebase. DispatchProviderCallbacksService is a plain bean
-      # that exists either way, and every test calls dispatch() directly.
-      enabled: true
-      # How long after one pass FINISHES the next begins (fixedDelay, not fixedRate: a slow
-      # batch must never be re-entered). Resolved by Spring straight from the environment
-      # into @Scheduled -- NOT bound into SimulatorDispatchProperties, because two places to
-      # read one value means one of them eventually drifts. Same note as OrderExpiryProperties.
-      #
-      # Two seconds, not the sweeps' five minutes. This is a test fixture: a callback that
-      # takes minutes to arrive makes the module useless for the thing it exists for.
-      interval: 2s
-      # How many due callbacks one pass may take. Each is its own transaction and its own
-      # socket, so this bounds how many calls one pass makes rather than lock duration.
-      batch-size: 20
-      # How many times one callback may be delivered before it is ABANDONED. A real provider's
-      # retry budget is finite; unbounded retries against a 401 would be an infinite loop
-      # wearing the costume of resilience.
-      max-attempts: 5
-      # How far deliver_after is pushed out after a failed attempt. A 404 is expected and
-      # retried on purpose -- ADR-012 section 7 says it most likely means the callback
-      # overtook the transaction that created the intent it names.
-      retry-delay: 5s
-      # How long to wait for PayMesh to answer.
-      #
-      # SHORT ON PURPOSE, and the first number to look at if callbacks start piling up. The
-      # HTTP call happens INSIDE the row's transaction, so this is also the longest a hung
-      # receiver can hold one row lock and one database connection. The shape that does not
-      # have this property is claim-then-send-then-ack with a lease expiry; ADR-017 lists it
-      # under accepted costs rather than pretending the cost is not there.
-      read-timeout: 2s
+  # NO `simulator:` HERE (ADR-041). The provider simulator's own configuration
+  # (its api-key, its callback URLs, its dispatch timer) now lives in
+  # `provider-sim/src/main/resources/application.yaml` -- a separate deployable,
+  # a separate pom, a separate `./mvnw run`. This application still names
+  # `paymesh.reconciliation.base-url` and `paymesh.settlement.payouts.url` above,
+  # because those are this application's own outbound calls to it.
 
 # --- Web server --------------------------------------------------------------
 server:

@@ -181,6 +181,13 @@ Gateway commands from `gateway/`:
 ./mvnw spring-boot:run
 ```
 
+Provider simulator commands from `provider-sim/` (ADR-041, its own deployable since Phase 3B PR 6):
+
+```bash
+./mvnw test
+./mvnw spring-boot:run
+```
+
 ## Phase 3 execution workflow
 
 Work **one PR at a time**, in the order specified by `project-status.md` / the Phase 3 plan.

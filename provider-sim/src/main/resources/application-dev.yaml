@@ -1,0 +1,32 @@
+# ============================================================================
+#  Local development overrides for the provider simulator.
+#
+#  Every @SpringBootTest here carries @ActiveProfiles("dev") (SimulatorApiTest,
+#  SimulatorConfigurationTest); the dispatcher timer is OFF for exactly the
+#  reason the monolith's is: a timer POSTing signed callbacks mid-test would
+#  mutate rows a test is asserting on. DispatchProviderCallbacksService is a
+#  plain bean either way, and every test drives dispatch() directly.
+# ============================================================================
+
+spring:
+  datasource:
+    # The fenced role ADR-038 already created (NOLOGIN by default). A one-time
+    # `ALTER ROLE simulator_svc LOGIN PASSWORD '...'` is a README step, same
+    # shape as the CREATEROLE grant that step already documents for paymesh_app.
+    username: simulator_svc
+    password: simulator_dev_password
+
+paymesh:
+  simulator:
+    # Byte-for-byte the monolith's dev value for paymesh.reconciliation.api-key
+    # and DevelopmentSecretGuard's committed dev string -- this IS the caller's
+    # copy, now read from the other side of the same door (ADR-041). Refused
+    # outside the dev profile by this module's own DevelopmentSecretGuard.
+    api-key: dev-only-insecure-simulator-api-key-change-me
+    dispatch:
+      enabled: false
+  provider:
+    # Byte-for-byte the monolith's paymesh.provider.callback-secret dev value.
+    # If these drift, a dev simulator's callbacks stop verifying at the dev
+    # monolith -- they are meant to be identical.
+    callback-secret: dev-only-insecure-provider-callback-secret-change-me
