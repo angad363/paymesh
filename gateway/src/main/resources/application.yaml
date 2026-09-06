@@ -29,6 +29,9 @@ paymesh:
     # Where /sim/** forwards (ADR-041, PR 6): the provider simulator's own deployable,
     # the first capability to actually leave the monolith's process.
     provider-sim-uri: ${PAYMESH_GATEWAY_PROVIDER_SIM_URI:http://localhost:8082}
+    # Where /api/v1/webhook-endpoints/** forwards (ADR-042, PR 7): webhook's own
+    # deployable, the first *merchant-facing* capability to leave the process.
+    webhook-uri: ${PAYMESH_GATEWAY_WEBHOOK_URI:http://localhost:8083}
     # Redis backs the distributed rate limiter so N gateway instances share one
     # limit instead of admitting N times the traffic.
     redis-uri: ${PAYMESH_GATEWAY_REDIS_URI:redis://localhost:6379}

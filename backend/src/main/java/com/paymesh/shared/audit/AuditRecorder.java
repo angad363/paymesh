@@ -5,12 +5,19 @@ package com.paymesh.shared.audit;
  *
  * <h2>THIS PORT LIVES IN {@code shared}, AND THAT IS WHAT KEEPS AUDIT A LEAF</h2>
  *
- * Merchant, Identity and Webhook call {@link #record} without importing anything from
- * {@code com.paymesh.audit} -- they depend on this interface, exactly as they depend on
- * {@code MerchantId} and {@code Clock}. The single implementation lives in the Audit module's
- * infrastructure and is the only thing that reaches the other way. {@code ModuleBoundaryTest} keeps
- * every arrow pointing at Audit, never out of it, the same shape {@code AuditRecorder}'s siblings
- * ({@code HoldingPeriodPolicy}, the event {@code EventHandler}) have.
+ * Merchant and Identity call {@link #record} without importing anything from {@code com.paymesh.audit}
+ * -- they depend on this interface, exactly as they depend on {@code MerchantId} and {@code Clock}.
+ * The single implementation lives in the Audit module's infrastructure and is the only thing that
+ * reaches the other way. {@code ModuleBoundaryTest} keeps every arrow pointing at Audit, never out of
+ * it, the same shape {@code AuditRecorder}'s siblings ({@code HoldingPeriodPolicy}, the event
+ * {@code EventHandler}) have.
+ * <p>
+ * WEBHOOK USED TO BE A THIRD CALLER AND IS NOT ANY MORE (ADR-042, PR 7). Extracted to its own
+ * deployable, {@code webhook_svc} cannot write {@code audit_events} at all -- that call became
+ * {@code RotateWebhookSecretService} appending a {@code webhook.secret_rotated.audited} event to
+ * webhook's own outbox instead, consumed back into this same {@link #record} by
+ * {@code RecordWebhookSecretRotationAuditHandler} in this module. The port itself is unchanged;
+ * only who calls it directly did.
  *
  * <h2>CALLED INSIDE THE CALLER'S TRANSACTION, ON PURPOSE</h2>
  *

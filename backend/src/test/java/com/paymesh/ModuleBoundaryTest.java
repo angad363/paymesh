@@ -550,12 +550,19 @@ class ModuleBoundaryTest {
     }
 
     /**
-     * AUDIT IS A LEAF THAT IS REACHED THROUGH A SHARED PORT, NEVER IMPORTED. Merchant, Identity and
-     * Webhook record privileged actions by depending on {@code com.paymesh.shared.audit.AuditRecorder}
-     * -- the port lives in {@code shared}, exactly like {@code MerchantId} and {@code Clock} -- so no
+     * AUDIT IS A LEAF THAT IS REACHED THROUGH A SHARED PORT, NEVER IMPORTED. Merchant and Identity
+     * record privileged actions by depending on {@code com.paymesh.shared.audit.AuditRecorder} -- the
+     * port lives in {@code shared}, exactly like {@code MerchantId} and {@code Clock} -- so no
      * capability names {@code com.paymesh.audit}. This is what keeps ADR-035's "a failure to record
      * is a failure to act, and nothing else couples to Audit" true at the type level: the recorder's
      * single implementation is the only thing on the other side of that interface.
+     * <p>
+     * WEBHOOK NO LONGER APPEARS HERE (ADR-042, PR 7). Extracted to its own deployable, it cannot
+     * write {@code audit_events} and does not import {@code com.paymesh.shared.audit} at all any
+     * more -- rotation now appends an event to its own outbox instead, and the capability that DOES
+     * import {@code com.paymesh.audit}'s port for it is Audit itself
+     * ({@code RecordWebhookSecretRotationAuditHandler}), which is exempted from this test the same
+     * way every other capability's own package is.
      */
     @Test
     void auditImportsNoOtherCapability() throws IOException {
@@ -595,16 +602,17 @@ class ModuleBoundaryTest {
         );
 
     /**
-     * The fuller set, used by the Audit boundary tests: {@link #CAPABILITIES} plus the two leaves
-     * added after it was written ({@code webhook}, {@code reporting}), so "no capability imports
-     * Audit" genuinely means no capability -- including the ones that record.
+     * The fuller set, used by the Audit boundary tests: {@link #CAPABILITIES} plus the one leaf added
+     * after it was written ({@code reporting}), so "no capability imports Audit" genuinely means no
+     * capability -- including the ones that record.
      * <p>
-     * NOT {@code simulator} (ADR-041): that directory no longer exists in this module at all, and
-     * {@code assertOnlyTheseImport} walks a real path -- naming a capability with no directory here
-     * would fail on a missing path rather than assert anything about a boundary.
+     * NOT {@code simulator} (ADR-041) OR {@code webhook} (ADR-042): neither directory exists in this
+     * module any more, and {@code assertOnlyTheseImport} walks a real path -- naming a capability
+     * with no directory here would fail on a missing path rather than assert anything about a
+     * boundary.
      */
     private static final List<String> OTHER_CAPABILITIES =
-        Stream.concat(CAPABILITIES.stream(), Stream.of("webhook", "reporting")).toList();
+        Stream.concat(CAPABILITIES.stream(), Stream.of("reporting")).toList();
 
     private static void assertOnlyTheseImport(
         String moduleDirectory,
