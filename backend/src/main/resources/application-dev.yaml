@@ -94,24 +94,11 @@ paymesh:
     #     PAYMESH_RECONCILIATION_ENABLED=true
     # ReconcileProviderDayService is a plain bean, so tests call reconcile(date) directly.
     enabled: false
-    # The caller's copy of the simulator's throwaway dev key. Same value, different
-    # meaning: paymesh.simulator.api-key is what the provider EXPECTS, this is what the
+    # The caller's copy of the provider simulator's throwaway dev key -- that module's own
+    # application-dev.yaml (ADR-041), not this one's. Same value, different meaning:
+    # provider-sim's paymesh.simulator.api-key is what the provider EXPECTS, this is what the
     # caller SENDS. DevelopmentSecretGuard refuses both outside the dev profile.
     api-key: dev-only-insecure-simulator-api-key-change-me
-
-  simulator:
-    # Same deal again, and it matters as much as the callback secret rather than less: this key
-    # is the only authentication on /sim/v1/**, and POST /sim/v1/payments queues the callback
-    # that marks a payment SUCCEEDED. DevelopmentSecretGuard refuses this exact value unless the
-    # dev profile is the sole active one.
-    api-key: dev-only-insecure-simulator-api-key-change-me
-    dispatch:
-      # OFF under dev, and this one is not optional. Every @SpringBootTest runs under this
-      # profile, and a timer POSTing signed callbacks at PayMesh while a test asserts on a
-      # payment intent would mutate the very rows under assertion. To watch it locally:
-      #     PAYMESH_SIMULATOR_DISPATCH_ENABLED=true
-      # The service is a plain bean, so the tests drive dispatch() directly and never need it.
-      enabled: false
   webhook:
     # The master key every merchant's signing secret is derived from (ADR-028 section 2). One
     # value, every secret -- so a published one lets anyone sign as PayMesh to every merchant at
@@ -163,7 +150,7 @@ paymesh:
     sweep:
       enabled: false
     payouts:
-      url: http://localhost:8080/sim/v1/payouts
+      url: http://localhost:8082/sim/v1/payouts
       # The same two values the simulator and the payment callback route use in
       # dev, spelled out rather than referenced -- these are separate properties
       # that happen to agree today, and a YAML anchor would hide that.

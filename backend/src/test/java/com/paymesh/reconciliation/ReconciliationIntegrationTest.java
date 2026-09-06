@@ -1,5 +1,6 @@
 package com.paymesh.reconciliation;
 
+import com.github.tomakehurst.wiremock.WireMockServer;
 import com.paymesh.TestcontainersConfiguration;
 import com.paymesh.merchant.application.MerchantRepository;
 import com.paymesh.merchant.domain.Merchant;
@@ -27,14 +28,12 @@ import com.paymesh.reconciliation.infrastructure.refund.RefundModuleRepair;
 import com.paymesh.refund.application.RecordRefundCallbackService;
 import com.paymesh.shared.outbox.application.PublishOutboxEventsService;
 import com.paymesh.shared.tenant.MerchantId;
-import com.paymesh.simulator.application.CreateSimulatedPaymentCommand;
-import com.paymesh.simulator.application.CreateSimulatedPaymentService;
-import com.paymesh.simulator.domain.SimulatedCaptureMethod;
-import com.paymesh.simulator.domain.SimulatedMethod;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
@@ -47,43 +46,51 @@ import java.time.ZoneOffset;
 import java.util.Map;
 import java.util.UUID;
 
+import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
+import static com.github.tomakehurst.wiremock.client.WireMock.equalTo;
+import static com.github.tomakehurst.wiremock.client.WireMock.get;
+import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
+import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * THE JOB ADR-015 NAMED, PROVED END TO END AGAINST A REAL PROVIDER AND A REAL POSTGRESQL (ADR-026).
+ * THE JOB ADR-015 NAMED, PROVED END TO END AGAINST A REAL POSTGRESQL (ADR-026), ADAPTED FOR
+ * EXTRACTION (ADR-041).
  *
  * <h2>What is actually being demonstrated</h2>
  *
- * The scenario is the one that costs a merchant real money, and every step of it is reachable from
- * outside for the first time:
+ * The scenario is the one that costs a merchant real money:
  * <ol>
  *   <li>PayMesh confirms an intent into PROCESSING.</li>
- *   <li>The provider takes the payment and COLLECTS IT. It queues a callback.</li>
- *   <li><b>The callback is never delivered.</b> The dispatcher is off under the {@code dev} profile
- *       this suite runs on, which is exactly what a lost callback looks like from PayMesh's side.</li>
+ *   <li>The provider takes the payment and COLLECTS IT. Its callback is never delivered.</li>
  *   <li>ADR-015's sweeper does what it was built to do and times the intent out to FAILED --
  *       <b>with no evidence the payment failed</b>, which its own javadoc admits.</li>
  *   <li>Reconciliation reads the provider's own daily record, sees CAPTURED, and repairs it.</li>
  * </ol>
- * Between steps 4 and 5 PayMesh believes a collected payment failed. That is not an untidy row: the
- * Ledger never posts, so the merchant's balance is short by the amount, permanently, and nothing
- * anywhere reports it.
  *
- * <h2>It runs on a real port, and that is the point of the design</h2>
+ * <h2>What changed at extraction, and why the seam moved rather than the coverage</h2>
  *
- * {@code ModuleBoundaryTest} forbids any capability from importing the simulator, so the fetch is a
- * real HTTP GET against a real server -- through {@code SimulatorApiKeyFilter}, through Jackson,
- * through the same adapter production uses. A test that called {@code ExportReconciliationService}
- * directly would prove the job works against the one "provider" that can never be a real one.
+ * Before the provider simulator left this process (ADR-041), step 4's "provider's own daily
+ * record" was fetched over a real loopback HTTP call to the SAME running application, because the
+ * simulator was a module of it. This module can no longer compile
+ * {@code com.paymesh.simulator}'s classes at all, so there is no in-process way left to manufacture
+ * that record. The fetch was ALWAYS an HTTP call through {@link ProviderReconciliationSource} --
+ * {@code ModuleBoundaryTest} forbade the alternative from the start, specifically so a real
+ * acquirer's file needs only a new adapter, never a rewrite of this job. So the day's report is now
+ * a hand-built JSON document served by a WireMock stub, in exactly the shape
+ * {@link HttpProviderReconciliationSource} parses -- the same pattern ADR-019 already uses for
+ * refund callbacks ("hand-signed HMAC in tests"), now applied to the provider's report instead of
+ * its callback.
  * <p>
- * The service is CONSTRUCTED here rather than injected, for the same reason
- * {@code SimulatorCallbackDeliveryIntegrationTest} rebuilds its dispatcher: the wired bean points at
- * {@code paymesh.reconciliation.base-url}, which names port 8080, and this server is on a random
- * one. Exactly one collaborator differs -- a {@code RestClient} aimed at the live port. Both
- * adapters, the HTTP source and the job itself are the production objects.
+ * What this test is actually responsible for is unchanged and untouched by the move:
+ * {@link ReconcileProviderDayService}, {@link PaymentModuleRepair} and the real
+ * {@code RecordProviderCallbackService}/Ledger consumer chain they drive are the exact production
+ * objects, exercised against a real PostgreSQL. Only the shape of "what the provider says" moved
+ * from a live simulator response to a stubbed one -- the same substitution the now-separate
+ * {@code provider-sim} module makes in the other direction for its own delivery test.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 @Import(TestcontainersConfiguration.class)
 @ActiveProfiles("dev")
 class ReconciliationIntegrationTest {
@@ -94,8 +101,22 @@ class ReconciliationIntegrationTest {
     private static final Instant CREATED_AT = Instant.parse("2026-08-01T10:15:30Z");
     private static final long AMOUNT_MINOR = 1999;
 
-    @LocalServerPort
-    private int port;
+    private static final WireMockServer PROVIDER_STUB = new WireMockServer(options().dynamicPort());
+
+    @BeforeAll
+    static void startStub() {
+        PROVIDER_STUB.start();
+    }
+
+    @AfterAll
+    static void stopStub() {
+        PROVIDER_STUB.stop();
+    }
+
+    @AfterEach
+    void resetStub() {
+        PROVIDER_STUB.resetAll();
+    }
 
     @Autowired
     private MerchantRepository merchants;
@@ -111,9 +132,6 @@ class ReconciliationIntegrationTest {
 
     @Autowired
     private ConfirmPaymentIntentService confirmPaymentIntentService;
-
-    @Autowired
-    private CreateSimulatedPaymentService createSimulatedPaymentService;
 
     @Autowired
     private RecordProviderCallbackService paymentCallbacks;
@@ -144,10 +162,6 @@ class ReconciliationIntegrationTest {
     @Test
     void repairsAPaymentPayMeshTimedOutThatTheProviderActuallyCollected() {
         String intentId = processingIntent();
-        createSimulatedPayment(intentId, "tok_sim_success");
-
-        // The callback is queued and never dispatched. This is the lost callback.
-        assertThat(statusOf(intentId)).isEqualTo("PROCESSING");
 
         // ADR-015's sweeper gives up on it. The guess is wrong, and nothing knows.
         strand(intentId);
@@ -155,6 +169,8 @@ class ReconciliationIntegrationTest {
         assertThat(statusOf(intentId))
             .as("the sweeper failed a payment the provider had already collected")
             .isEqualTo("FAILED");
+
+        stubCapturedPayment(today(), intentId, AMOUNT_MINOR);
 
         ReconciliationResult result = reconciliation().reconcile(today());
 
@@ -164,18 +180,13 @@ class ReconciliationIntegrationTest {
 
     /**
      * THE REPAIR MUST REACH THE LEDGER, or it has corrected a status column and left the money wrong.
-     * <p>
-     * Nothing here calls the Ledger. The repair goes through the ordinary callback service, which
-     * writes {@code payment.succeeded} to the outbox in the same transaction, and the Ledger's
-     * consumer posts a balanced journal when the relay delivers it. That the reused entry point
-     * carries all of this for free is the entire argument for replaying rather than diffing.
      */
     @Test
     void postsTheRepairedPaymentToTheLedger() {
         String intentId = processingIntent();
-        createSimulatedPayment(intentId, "tok_sim_success");
         strand(intentId);
         timeOutProcessingPayments.sweep();
+        stubCapturedPayment(today(), intentId, AMOUNT_MINOR);
 
         reconciliation().reconcile(today());
         drain();
@@ -186,9 +197,7 @@ class ReconciliationIntegrationTest {
     }
 
     /**
-     * RE-RUNNING A DAY MUST NOT APPLY ANYTHING TWICE. The schedule reconciles the same recent days
-     * on every pass and an operator will re-run one by hand; without the deterministic event id each
-     * run would look like a new provider event. On the capture path that means collecting twice.
+     * RE-RUNNING A DAY MUST NOT APPLY ANYTHING TWICE.
      * <p>
      * <b>Sabotage that must turn this red:</b> put a UUID or the clock into the minted event id. The
      * second run then reports a second repair and inserts a second callback row.
@@ -196,9 +205,9 @@ class ReconciliationIntegrationTest {
     @Test
     void reconcilingTheSameDayTwiceRepairsNothingTheSecondTime() {
         String intentId = processingIntent();
-        createSimulatedPayment(intentId, "tok_sim_success");
         strand(intentId);
         timeOutProcessingPayments.sweep();
+        stubCapturedPayment(today(), intentId, AMOUNT_MINOR);
 
         ReconcileProviderDayService reconciliation = reconciliation();
 
@@ -214,30 +223,18 @@ class ReconciliationIntegrationTest {
 
     /**
      * A CONFIRMED FAILURE IS NOT THE SAME ROW AS A GUESSED ONE, AND THIS IS WHERE THE GUESS CLOSES.
-     * <p>
-     * The provider timed out: it collected nothing and said nothing. PayMesh's sweeper reached the
-     * same conclusion, so the status does not move -- FAILED before, FAILED after. What DOES move is
-     * the reason, and it is the more important half. {@code provider_no_response} means "we gave up
-     * waiting and this may still have succeeded"; {@code provider_reported_no_collection} means "the
-     * provider's own record says nothing was collected". Only the second is a settled fact.
-     * <p>
-     * <b>That also closes the intent to further revision, which is the safety property.</b>
-     * ADR-026 lets a provider outcome speak into FAILED only while the failure code is the sweeper's
-     * guess ({@code PaymentIntent.isUnansweredTimeout}). Overwriting the code with a confirmation is
-     * what takes the payment back out of that window -- so a payment stays revisable exactly as long
-     * as it is genuinely unresolved, and no longer.
      */
     @Test
     void replacesTheSweepersGuessWithTheProvidersConfirmationAndClosesTheIntent() {
         String intentId = processingIntent();
-        createSimulatedPayment(intentId, "tok_sim_timeout");
-
         strand(intentId);
         timeOutProcessingPayments.sweep();
         assertThat(statusOf(intentId)).isEqualTo("FAILED");
         assertThat(failureCodeOf(intentId))
             .as("the sweeper's own code: nobody answered, and this MAY still have succeeded")
             .isEqualTo("provider_no_response");
+
+        stubTimedOutPayment(today(), intentId);
 
         ReconciliationResult result = reconciliation().reconcile(today());
 
@@ -249,20 +246,17 @@ class ReconciliationIntegrationTest {
             .as("but the guess is now a confirmation, which is a different fact")
             .isEqualTo("provider_reported_no_collection");
 
-        // And now it is genuinely terminal. A late outcome after this point is absorbed, because the
-        // failure is no longer the sweeper's guess.
         assertThat(reconciliation().reconcile(today()).repaired())
             .as("re-running finds a payment that is settled rather than merely given up on")
             .isZero();
     }
 
     /**
-     * A provider row naming a payment PayMesh never created is REPORTED, never invented. Conjuring a
-     * local intent from a provider's file would be manufacturing money movement out of a document.
+     * A provider row naming a payment PayMesh never created is REPORTED, never invented.
      */
     @Test
     void reportsAProviderPaymentPayMeshHasNoRecordOf() {
-        createSimulatedPayment("pi_" + UUID.randomUUID(), "tok_sim_success");
+        stubCapturedPayment(today(), "pi_" + UUID.randomUUID(), AMOUNT_MINOR);
 
         ReconciliationResult result = reconciliation().reconcile(today());
 
@@ -271,10 +265,7 @@ class ReconciliationIntegrationTest {
     }
 
     /**
-     * AN UNREACHABLE PROVIDER MUST NOT LOOK LIKE A CLEAN DAY. Pointed at a port nothing is listening
-     * on, the adapter must raise rather than return an empty report -- zero examined and zero
-     * repaired is precisely what a quiet day looks like, and a provider that has been down for a
-     * week would otherwise report success every night.
+     * AN UNREACHABLE PROVIDER MUST NOT LOOK LIKE A CLEAN DAY.
      */
     @Test
     void refusesToReportACleanDayWhenTheProviderCannotBeReached() {
@@ -285,23 +276,31 @@ class ReconciliationIntegrationTest {
     }
 
     /**
-     * THE API KEY IS REAL AUTHENTICATION AND THIS PROVES IT IS BEING SENT. Without the header
-     * {@code SimulatorApiKeyFilter} rejects the request, which the adapter turns into "the provider
-     * could not be read" -- correctly, and loudly, rather than into an empty file.
+     * THE API KEY IS REAL AUTHENTICATION AND THIS PROVES IT IS BEING SENT. No stub matches a request
+     * missing the correct key, so it falls through to WireMock's unmatched-request 404 -- which the
+     * adapter turns into "the provider could not be read", correctly and loudly, rather than an
+     * empty file.
      */
     @Test
     void cannotReadTheReportWithoutTheProvidersApiKey() {
+        LocalDate day = today();
+        PROVIDER_STUB.stubFor(get(urlEqualTo("/sim/v1/reconciliation/" + day))
+            .withHeader(API_KEY_HEADER, equalTo(DEV_API_KEY))
+            .willReturn(aResponse().withStatus(200)
+                .withHeader("Content-Type", "application/json")
+                .withBody("{\"payments\":[],\"refunds\":[]}")));
+
         ProviderReconciliationSource unauthenticated = new HttpProviderReconciliationSource(
             RestClient.builder().baseUrl(baseUrl()).build(), API_KEY_HEADER, "the-wrong-key"
         );
 
-        assertThatThrownBy(() -> unauthenticated.fetch(today()))
+        assertThatThrownBy(() -> unauthenticated.fetch(day))
             .isInstanceOf(ProviderReportUnavailableException.class);
     }
 
     // ------------------------------------------------------------------ helpers
 
-    /** The production objects, with one collaborator aimed at this test's port. */
+    /** The production objects, with one collaborator aimed at the WireMock stub. */
     private ReconcileProviderDayService reconciliation() {
         return reconciliationAgainst(baseUrl());
     }
@@ -318,41 +317,54 @@ class ReconciliationIntegrationTest {
     }
 
     private String baseUrl() {
-        return "http://localhost:" + port;
+        return "http://localhost:" + PROVIDER_STUB.port();
     }
 
-    /** The export is keyed on the provider's own created_at, so the day is the application's day. */
     private LocalDate today() {
         return LocalDate.ofInstant(clock.instant(), ZoneOffset.UTC);
     }
 
-    /**
-     * Takes the payment at the provider and then LOSES the callback it queued.
-     * <p>
-     * Deleting the outbound row is not cleanup, it is the scenario: a lost callback is one that never
-     * arrives, and leaving it queued would model a merely delayed one. The provider's own
-     * {@code provider_payments} record -- which is what the reconciliation export reads -- is
-     * untouched, which is exactly the asymmetry this job exists to exploit.
-     * <p>
-     * It also keeps this test from polluting {@code SimulatorCallbackDeliveryIntegrationTest}, which
-     * shares the container and asserts on how many callbacks one dispatch pass delivered. Rows left
-     * pending here would be counted there.
-     */
-    private void createSimulatedPayment(String callbackReference, String token) {
-        var payment = createSimulatedPaymentService.create(new CreateSimulatedPaymentCommand(
-            "idem-" + UUID.randomUUID(),
-            callbackReference,
-            SimulatedMethod.CARD,
-            token,
-            AMOUNT_MINOR,
-            "INR",
-            SimulatedCaptureMethod.AUTOMATIC
-        )).payment();
+    /** One CAPTURED row, in the exact shape {@code HttpProviderReconciliationSource} parses. */
+    private void stubCapturedPayment(LocalDate day, String callbackReference, long capturedAmountMinor) {
+        stubReport(day, """
+            {"payments":[{
+              "providerPaymentId":"sim_pay_%s",
+              "callbackReference":"%s",
+              "status":"CAPTURED",
+              "amountMinor":%d,
+              "capturedAmountMinor":%d,
+              "failureCode":null,
+              "failureMessage":null,
+              "updatedAt":"%s"
+            }],"refunds":[]}
+            """.formatted(
+                UUID.randomUUID(), callbackReference, capturedAmountMinor, capturedAmountMinor,
+                clock.instant()
+            ));
+    }
 
-        jdbc.update(
-            "delete from provider_outbound_callbacks where provider_payment_id = ?",
-            payment.providerPaymentId().value()
-        );
+    /** A row the provider decided and never reported -- capturedAmountMinor is zero, per ADR-026. */
+    private void stubTimedOutPayment(LocalDate day, String callbackReference) {
+        stubReport(day, """
+            {"payments":[{
+              "providerPaymentId":"sim_pay_%s",
+              "callbackReference":"%s",
+              "status":"TIMED_OUT",
+              "amountMinor":%d,
+              "capturedAmountMinor":0,
+              "failureCode":null,
+              "failureMessage":null,
+              "updatedAt":"%s"
+            }],"refunds":[]}
+            """.formatted(UUID.randomUUID(), callbackReference, AMOUNT_MINOR, clock.instant()));
+    }
+
+    private void stubReport(LocalDate day, String body) {
+        PROVIDER_STUB.stubFor(get(urlEqualTo("/sim/v1/reconciliation/" + day))
+            .withHeader(API_KEY_HEADER, equalTo(DEV_API_KEY))
+            .willReturn(aResponse().withStatus(200)
+                .withHeader("Content-Type", "application/json")
+                .withBody(body)));
     }
 
     private String processingIntent() {
@@ -395,8 +407,7 @@ class ReconciliationIntegrationTest {
      * The sweep's predicate is {@code status = 'PROCESSING' and updated_at <= cutoff}, and the cutoff
      * is an hour by configuration. Rather than reconstruct the service with a one-millisecond age --
      * which would test a sweeper nobody runs -- this ages the ROW and lets the PRODUCTION sweeper,
-     * with its production configuration, decide it has waited long enough. A week clears any cutoff
-     * anyone would plausibly configure.
+     * with its production configuration, decide it has waited long enough.
      */
     private void strand(String paymentIntentId) {
         jdbc.update(

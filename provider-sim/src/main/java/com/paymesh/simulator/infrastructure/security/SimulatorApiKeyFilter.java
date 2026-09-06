@@ -1,6 +1,6 @@
 package com.paymesh.simulator.infrastructure.security;
 
-import com.paymesh.shared.api.ApiErrorResponse;
+import com.paymesh.simulator.api.ApiErrorResponse;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;

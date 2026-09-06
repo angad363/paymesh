@@ -23,9 +23,12 @@ spring:
 
 paymesh:
   gateway:
-    # Where every route forwards today: the one monolith. In 3B each prefix
-    # re-points at its own service and this single value fans out per route.
+    # Where /api/** and /internal/** forward: the one monolith. In 3B each remaining
+    # prefix re-points at its own service the same way /sim/** already did (ADR-041).
     backend-uri: ${PAYMESH_GATEWAY_BACKEND_URI:http://localhost:8080}
+    # Where /sim/** forwards (ADR-041, PR 6): the provider simulator's own deployable,
+    # the first capability to actually leave the monolith's process.
+    provider-sim-uri: ${PAYMESH_GATEWAY_PROVIDER_SIM_URI:http://localhost:8082}
     # Redis backs the distributed rate limiter so N gateway instances share one
     # limit instead of admitting N times the traffic.
     redis-uri: ${PAYMESH_GATEWAY_REDIS_URI:redis://localhost:6379}

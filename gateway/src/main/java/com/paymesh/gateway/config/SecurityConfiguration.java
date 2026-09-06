@@ -72,7 +72,9 @@ public class SecurityConfiguration {
                 .requestMatchers(POST, "/internal/v1/provider-callbacks/**").permitAll()
                 .requestMatchers(POST, "/internal/v1/refund-callbacks/**").permitAll()
                 .requestMatchers(POST, "/internal/v1/payout-callbacks/**").permitAll()
-                // The provider simulator authenticates by a shared key at the monolith, same reasoning.
+                // The provider simulator authenticates by a shared key at ITS OWN deployable now
+                // (ADR-041) rather than at the monolith, but the edge's reasoning is unchanged: no
+                // bearer token exists to evaluate here either.
                 .requestMatchers("/sim/v1/**").permitAll()
                 // Everything else under the API needs a valid token, proven here at the edge.
                 .anyRequest().authenticated()

@@ -447,44 +447,20 @@ class ModuleBoundaryTest {
     }
 
     /**
-     * THE SIMULATOR'S ALLOWLIST IS EMPTY IN BOTH DIRECTIONS, WHICH IS A STRICTER CLAIM THAN ANY
-     * ABOVE.
+     * THE SIMULATOR IS GONE FROM THIS MODULE ENTIRELY (ADR-041), WHICH IS WHAT ITS EMPTY
+     * TWO-DIRECTION ALLOWLIST PREDICTED.
      * <p>
-     * Every other pair in this file permits an adapter, because reading another module's data
-     * legitimately requires naming it. The simulator needs no such exception: SDD 13.2 says it does
-     * not own PayMesh state, and its only influence is an HTTP POST of a signed body at
-     * {@code /internal/v1/provider-callbacks} -- exactly what a third party's would be. If the
-     * simulator were deleted, every test outside its own package would still pass.
-     * <p>
-     * <b>The temptation this closes is a one-liner.</b> {@code CallbackBody} restates the wire
-     * contract that {@code ProviderCallbackRequest} defines, and {@code SimulatedOutcome} restates
-     * {@code ProviderOutcome}'s four names. Importing either would be shorter and would delete the
-     * boundary -- the two would then be one deployable by definition, contradicting SDD 13.6. The
-     * duplication is the contract being PUBLISHED rather than SHARED, as it would be if the
-     * simulator read an OpenAPI document; and when PayMesh changes the contract, the delivery
-     * integration test goes red, which is the notification a shared type would have suppressed.
+     * {@code theSimulatorImportsNoOtherCapability} and {@code noCapabilityImportsTheSimulator} used
+     * to live here, asserting that empty allowlist by scanning
+     * {@code src/main/java/com/paymesh/simulator} and every other capability for a cross-import.
+     * Both are deleted rather than left to pass vacuously: the directory they scanned no longer
+     * exists in this module at all -- it is {@code provider-sim/src/main/java/com/paymesh/simulator}
+     * now, its own deployable, its own repo module, its own {@code ModuleBoundaryTest} would be
+     * pointless to write, since that module imports nothing else in this repository by construction
+     * (it has no other module on its classpath to import). "If the simulator were deleted, every
+     * test outside its own package would still pass" was the claim ADR-017 made when this was one
+     * process; PR 6 is that claim cashed in.
      */
-    @Test
-    void theSimulatorImportsNoOtherCapability() throws IOException {
-        for (String capability : CAPABILITIES) {
-            assertOnlyTheseImport("com/paymesh/simulator", "com.paymesh." + capability + ".", List.of());
-        }
-    }
-
-    /**
-     * The reverse, and the one that would break silently. Nothing in PayMesh may reach into the
-     * simulator -- not a test helper promoted to main, not a shared enum, not the configuration.
-     * A dependency this way round would mean the simulator could not be removed from a production
-     * deployment, which is the first thing anyone would want to do with it.
-     */
-    @Test
-    void noCapabilityImportsTheSimulator() throws IOException {
-        for (String capability : CAPABILITIES) {
-            assertOnlyTheseImport("com/paymesh/" + capability, "com.paymesh.simulator.", List.of());
-        }
-
-        assertOnlyTheseImport("com/paymesh/shared", "com.paymesh.simulator.", List.of());
-    }
 
     /**
      * RECONCILIATION REACHES TWO CAPABILITIES, AND ONLY THROUGH ONE ADAPTER EACH.
@@ -611,7 +587,7 @@ class ModuleBoundaryTest {
         assertOnlyTheseImport("com/paymesh/shared", "com.paymesh.audit.", List.of());
     }
 
-    /** Every capability package except the simulator itself. */
+    /** Every capability package in this module. The simulator is no longer one of them (ADR-041). */
     private static final List<String> CAPABILITIES =
         List.of(
             "merchant", "identity", "customer", "order", "payment", "ledger", "refund",
@@ -619,12 +595,16 @@ class ModuleBoundaryTest {
         );
 
     /**
-     * The fuller set, used by the Audit boundary tests: {@link #CAPABILITIES} plus the three leaves
-     * added after it was written ({@code webhook}, {@code reporting}, {@code simulator}), so "no
-     * capability imports Audit" genuinely means no capability -- including the ones that record.
+     * The fuller set, used by the Audit boundary tests: {@link #CAPABILITIES} plus the two leaves
+     * added after it was written ({@code webhook}, {@code reporting}), so "no capability imports
+     * Audit" genuinely means no capability -- including the ones that record.
+     * <p>
+     * NOT {@code simulator} (ADR-041): that directory no longer exists in this module at all, and
+     * {@code assertOnlyTheseImport} walks a real path -- naming a capability with no directory here
+     * would fail on a missing path rather than assert anything about a boundary.
      */
     private static final List<String> OTHER_CAPABILITIES =
-        Stream.concat(CAPABILITIES.stream(), Stream.of("webhook", "reporting", "simulator")).toList();
+        Stream.concat(CAPABILITIES.stream(), Stream.of("webhook", "reporting")).toList();
 
     private static void assertOnlyTheseImport(
         String moduleDirectory,

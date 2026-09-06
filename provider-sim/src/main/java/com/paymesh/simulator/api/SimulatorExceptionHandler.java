@@ -1,6 +1,5 @@
 package com.paymesh.simulator.api;
 
-import com.paymesh.shared.api.ApiErrorResponse;
 import com.paymesh.simulator.application.IdempotencyKeyReusedException;
 import com.paymesh.simulator.application.SimulatedPaymentNotFoundException;
 import com.paymesh.simulator.domain.CaptureExceedsAuthorizedAmountException;

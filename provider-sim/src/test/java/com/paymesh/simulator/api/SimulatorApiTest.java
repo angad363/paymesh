@@ -16,7 +16,6 @@ import java.time.ZoneOffset;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -76,12 +75,16 @@ class SimulatorApiTest {
     /**
      * THE ONE THAT WOULD BE EASY TO GET WRONG. A merchant's access token must not be a way in: this
      * route queues a callback that marks a payment SUCCEEDED, so a merchant able to call it could
-     * authorize their own collection. The token is ignored entirely and the key is still required.
+     * authorize their own collection. Extracted (ADR-041), this deployable carries no JWT decoder at
+     * all -- there is no filter here that would even attempt to read one -- so a bearer header is
+     * exercised directly rather than through {@code SecurityMockMvcRequestPostProcessors.jwt()},
+     * which mints a token this module has no machinery to evaluate. The point survives unchanged:
+     * only {@code X-PayMesh-Simulator-Key} is a way in, and any other credential is ignored.
      */
     @Test
     void refusesAMerchantAccessTokenAsAWayIn() throws Exception {
         mockMvc.perform(post(PAYMENTS)
-                .with(jwt())
+                .header("Authorization", "Bearer not-a-simulator-key")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(createBody(freshKey(), 1999)))
             .andExpect(status().isUnauthorized())

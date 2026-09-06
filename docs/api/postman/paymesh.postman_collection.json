@@ -1,13 +1,17 @@
 {
   "info": {
     "name": "PayMesh API",
-    "description": "PayMesh Payment-as-a-Service API.\n\nSet `baseUrl` (defaults to http://localhost:8080). Run the folders top to bottom: onboarding creates a merchant, Identity & Auth attaches a user and captures a token, and Authenticated access uses it.\n\nCapabilities covered: Identity & Auth, Merchant, Customer, Order, Payment Intents, and the shared transactional outbox (ADR-010).",
+    "description": "PayMesh Payment-as-a-Service API.\n\nSet `baseUrl` (defaults to http://localhost:8080) and `simBaseUrl` (defaults to http://localhost:8082, the provider simulator's own deployable since ADR-041 -- only the Provider Simulator folder uses it). Run the folders top to bottom: onboarding creates a merchant, Identity & Auth attaches a user and captures a token, and Authenticated access uses it.\n\nCapabilities covered: Identity & Auth, Merchant, Customer, Order, Payment Intents, and the shared transactional outbox (ADR-010).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "baseUrl",
       "value": "http://localhost:8080"
+    },
+    {
+      "key": "simBaseUrl",
+      "value": "http://localhost:8082"
     },
     {
       "key": "merchantId",
@@ -8478,17 +8482,17 @@
       ]
     },
     {
-      "name": "Provider Simulator (/sim/v1, ADR-017)",
-      "description": "THE PROVIDER, NOT THE MERCHANT API. Everything here is under /sim/v1 and none of it is part of the surface a merchant integrates against.\n\nAuthentication is X-PayMesh-Simulator-Key and nothing else -- not a bearer token, which is refused on purpose: these routes queue the callback that marks a payment SUCCEEDED, so a merchant able to call them could authorize their own collection (ADR-017 section 3).\n\nThe first eighteen requests need no background job and run against a plain `./mvnw spring-boot:run`. The last six drive a real payment intent end to end and need the callback dispatcher, which the dev profile switches OFF so it cannot mutate rows under a test. Start the server with PAYMESH_SIMULATOR_DISPATCH_ENABLED=true for those.\n\nDepends on Identity & Auth having captured {{accessToken}}, like every other folder here.",
+      "name": "Provider Simulator (/sim/v1, ADR-017, ADR-041)",
+      "description": "THE PROVIDER, NOT THE MERCHANT API. Everything here is under /sim/v1 and none of it is part of the surface a merchant integrates against.\n\nAuthentication is X-PayMesh-Simulator-Key and nothing else -- not a bearer token, which is refused on purpose: these routes queue the callback that marks a payment SUCCEEDED, so a merchant able to call them could authorize their own collection (ADR-017 section 3).\n\nThe simulator is its own deployable now (ADR-041): `cd provider-sim && ./mvnw spring-boot:run`, port 8082, {{simBaseUrl}} below. The first eighteen requests need only that server up. The last six drive a real payment intent end to end, so the monolith (`cd backend && ./mvnw spring-boot:run`) must also be up to receive the callback, and the dispatcher -- OFF under the dev profile so it cannot mutate rows under a test -- must be started with PAYMESH_SIMULATOR_DISPATCH_ENABLED=true in provider-sim's own environment.\n\nDepends on Identity & Auth having captured {{accessToken}}, like every other folder here.",
       "item": [
         {
           "name": "Refuse a create carrying no simulator key",
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/payments",
+              "raw": "{{simBaseUrl}}/sim/v1/payments",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -8535,9 +8539,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/payments",
+              "raw": "{{simBaseUrl}}/sim/v1/payments",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -8588,9 +8592,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/payments",
+              "raw": "{{simBaseUrl}}/sim/v1/payments",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -8640,9 +8644,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/payments",
+              "raw": "{{simBaseUrl}}/sim/v1/payments",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -8701,9 +8705,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/payments",
+              "raw": "{{simBaseUrl}}/sim/v1/payments",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -8745,9 +8749,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/payments",
+              "raw": "{{simBaseUrl}}/sim/v1/payments",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -8789,9 +8793,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/payments",
+              "raw": "{{simBaseUrl}}/sim/v1/payments",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -8845,9 +8849,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/payments",
+              "raw": "{{simBaseUrl}}/sim/v1/payments",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -8898,9 +8902,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/payments",
+              "raw": "{{simBaseUrl}}/sim/v1/payments",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -8954,9 +8958,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/payments/{{simManualId}}/capture",
+              "raw": "{{simBaseUrl}}/sim/v1/payments/{{simManualId}}/capture",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -9011,9 +9015,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/payments/{{simManualId}}/capture",
+              "raw": "{{simBaseUrl}}/sim/v1/payments/{{simManualId}}/capture",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -9066,9 +9070,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/payments/sim_pay_00000000-0000-4000-8000-000000000000/capture",
+              "raw": "{{simBaseUrl}}/sim/v1/payments/sim_pay_00000000-0000-4000-8000-000000000000/capture",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -9121,9 +9125,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/refunds",
+              "raw": "{{simBaseUrl}}/sim/v1/refunds",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -9176,9 +9180,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/refunds",
+              "raw": "{{simBaseUrl}}/sim/v1/refunds",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -9229,9 +9233,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/failure-profile",
+              "raw": "{{simBaseUrl}}/sim/v1/failure-profile",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -9273,9 +9277,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/failure-profile",
+              "raw": "{{simBaseUrl}}/sim/v1/failure-profile",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -9318,9 +9322,9 @@
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/reconciliation/{{simToday}}",
+              "raw": "{{simBaseUrl}}/sim/v1/reconciliation/{{simToday}}",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -9371,9 +9375,9 @@
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/reconciliation/2020-01-01",
+              "raw": "{{simBaseUrl}}/sim/v1/reconciliation/2020-01-01",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -9645,9 +9649,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/payments",
+              "raw": "{{simBaseUrl}}/sim/v1/payments",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -10029,9 +10033,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/payments",
+              "raw": "{{simBaseUrl}}/sim/v1/payments",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -10525,9 +10529,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/payments",
+              "raw": "{{simBaseUrl}}/sim/v1/payments",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -11320,7 +11324,7 @@
     },
     {
       "name": "Reconciliation (the provider's record repairs PayMesh, ADR-026)",
-      "description": "THE JOB ADR-015 NAMED AND NOBODY WROTE, END TO END.\n\nGET /sim/v1/reconciliation/{date} has produced the provider's daily truth since ADR-017 and NOTHING READ IT. Three shipped pieces of code leaned on the job that did not exist: ADR-015 fails a stranded payment with no evidence it failed and names reconciliation as the mitigation; ADR-023 does the same for refunds and says outright the real answer 'does not exist yet'; ADR-019 lists a lost refund callback as Refund's known gap.\n\nThe cost was never an untidy row. When the provider had actually collected, PayMesh held a FAILED payment, the Ledger never posted, and the merchant was short -- permanently, and silently.\n\nWHAT THIS FOLDER REPRODUCES, in order: a payment is confirmed, the provider collects it in full, the callback is never delivered, PayMesh sits in PROCESSING knowing nothing -- and then reconciliation reads the provider's own record and puts it right, all the way through to the order reaching PAID and the Ledger posting the balance.\n\nIT REPLAYS, IT DOES NOT DIFF. There is no comparison against PayMesh's state anywhere in the job. Every terminal provider row is handed to the SAME callback service a real callback goes through, and the aggregate decides. So the amount check, the staleness guard, the attempt row and the outbox event that makes the Ledger post are all the existing ones -- a job that re-derived any of them would be a second copy of the transition rules on the money path.\n\nRUN THE APP LIKE THIS, or the last two requests exhaust their polls:\n\n    PAYMESH_RECONCILIATION_ENABLED=true \\\n    PAYMESH_RECONCILIATION_INITIAL_DELAY=3s \\\n    PAYMESH_RECONCILIATION_INTERVAL=5s \\\n    PAYMESH_EVENTS_OUTBOX_RELAY_ENABLED=true \\\n    ./mvnw spring-boot:run\n\nLEAVE THE SIMULATOR'S DISPATCHER OFF (the dev default). It is what makes the callback 'lost'; with it on, the payment succeeds normally and there is no divergence to repair.",
+      "description": "THE JOB ADR-015 NAMED AND NOBODY WROTE, END TO END.\n\nGET /sim/v1/reconciliation/{date} has produced the provider's daily truth since ADR-017 and NOTHING READ IT. Three shipped pieces of code leaned on the job that did not exist: ADR-015 fails a stranded payment with no evidence it failed and names reconciliation as the mitigation; ADR-023 does the same for refunds and says outright the real answer 'does not exist yet'; ADR-019 lists a lost refund callback as Refund's known gap.\n\nThe cost was never an untidy row. When the provider had actually collected, PayMesh held a FAILED payment, the Ledger never posted, and the merchant was short -- permanently, and silently.\n\nWHAT THIS FOLDER REPRODUCES, in order: a payment is confirmed, the provider collects it in full, the callback is never delivered, PayMesh sits in PROCESSING knowing nothing -- and then reconciliation reads the provider's own record and puts it right, all the way through to the order reaching PAID and the Ledger posting the balance.\n\nIT REPLAYS, IT DOES NOT DIFF. There is no comparison against PayMesh's state anywhere in the job. Every terminal provider row is handed to the SAME callback service a real callback goes through, and the aggregate decides. So the amount check, the staleness guard, the attempt row and the outbox event that makes the Ledger post are all the existing ones -- a job that re-derived any of them would be a second copy of the transition rules on the money path.\n\nTWO SERVERS NOW (ADR-041): the provider simulator is its own deployable, and reconciliation's base-url points at its port (8082), not the monolith's own.\n\nRUN THE MONOLITH LIKE THIS, or the last two requests exhaust their polls:\n\n    PAYMESH_RECONCILIATION_ENABLED=true \\\n    PAYMESH_RECONCILIATION_INITIAL_DELAY=3s \\\n    PAYMESH_RECONCILIATION_INTERVAL=5s \\\n    PAYMESH_EVENTS_OUTBOX_RELAY_ENABLED=true \\\n    cd backend && ./mvnw spring-boot:run\n\nAND START provider-sim PLAINLY, WITH ITS DISPATCHER OFF (the dev default):\n\n    cd provider-sim && ./mvnw spring-boot:run\n\nThe dispatcher being off is what makes the callback 'lost'; with it on, the payment succeeds normally over the real wire and there is no divergence to repair.",
       "item": [
         {
           "name": "Setup: an order the provider will collect and never mention (201)",
@@ -11540,9 +11544,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/payments",
+              "raw": "{{simBaseUrl}}/sim/v1/payments",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -11629,9 +11633,9 @@
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/reconciliation/{{rcToday}}",
+              "raw": "{{simBaseUrl}}/sim/v1/reconciliation/{{rcToday}}",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -11796,9 +11800,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/refunds",
+              "raw": "{{simBaseUrl}}/sim/v1/refunds",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
@@ -12256,9 +12260,9 @@
           "request": {
             "method": "POST",
             "url": {
-              "raw": "{{baseUrl}}/sim/v1/payments",
+              "raw": "{{simBaseUrl}}/sim/v1/payments",
               "host": [
-                "{{baseUrl}}"
+                "{{simBaseUrl}}"
               ],
               "path": [
                 "sim",
