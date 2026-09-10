@@ -1,0 +1,22 @@
+-- =============================================================================
+-- V40: outbox_events.merchant_id becomes nullable. ADR-043.
+--
+-- Every event so far has been about a real merchant, copied from its aggregate.
+-- ADR-043's audit mechanism adds a genuine exception: ManageUserAccessService
+-- grants and revokes a PLATFORM role (suspend, reactivate, close,
+-- platform_admin_granted/revoked) with no merchant in scope at all --
+-- AuditEntry.merchantId has always been nullable for exactly this case (V36's
+-- own audit_events.merchant_id). Once that call becomes
+-- identity.user_access.audited on the outbox (the same in-process-call-cannot-
+-- survive-extraction mechanism ADR-042 section 4 built for webhook), the
+-- outbox row for a platform-scoped grant has no merchant to carry either.
+--
+-- The FK to merchants (V7) is KEPT: a FOREIGN KEY does not fire on a NULL
+-- value, so a merchant-scoped event is still checked exactly as before and a
+-- platform-scoped one simply carries no reference to validate. The format
+-- CHECK (V26, ck_outbox_events_merchant_id_format) already tolerates NULL --
+-- is_prefixed_id is STRICT, so it returns NULL (not FALSE) on a NULL input,
+-- and a CHECK treats an unknown result as satisfied.
+-- =============================================================================
+
+ALTER TABLE platform.outbox_events ALTER COLUMN merchant_id DROP NOT NULL;

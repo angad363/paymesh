@@ -513,106 +513,24 @@ class ModuleBoundaryTest {
     }
 
     /**
-     * NOTIFICATION IS A LEAF. It consumes three event types as a {@code Map} through the shared
-     * dispatcher and imports nothing from any capability -- the same shape as the Ledger's consumer.
-     * This is what keeps ADR-033's "a notification failing never touches a payment" true at the type
-     * level: the handler cannot name a Payment or Refund type, so it cannot call into one.
+     * NEITHER NOTIFICATION NOR AUDIT HAS A DIRECTORY IN THIS MODULE ANY MORE (ADR-043, PR 8). Both
+     * moved to the {@code engagement} deployable alongside Reporting, following {@code simulator}
+     * (ADR-041) and {@code webhook} (ADR-042) out of this file's reach: {@code assertOnlyTheseImport}
+     * walks a real path, so a capability with no directory here cannot be asserted about, only
+     * relied on not existing. {@code shared.audit} left with them (Audit is now the sole writer, in
+     * its own process) -- what used to be enforced here (Audit reached only through the shared port,
+     * nothing reaching back into Notification) is now enforced by the compiler: neither package
+     * exists to import. Merchant's and Identity's own audit calls are proven instead by
+     * {@code ChangeMerchantStatusServiceTest} and {@code ManageUserAccessServiceTest} asserting the
+     * {@code *.audited} outbox event they append in its place.
      */
-    @Test
-    void notificationImportsNoOtherCapability() throws IOException {
-        for (String capability : CAPABILITIES) {
-            if (capability.equals("notification")) {
-                continue;
-            }
-
-            assertOnlyTheseImport(
-                "com/paymesh/notification", "com.paymesh." + capability + ".", List.of()
-            );
-        }
-    }
-
-    /**
-     * The reverse, and the empty allowlist is the claim: nothing reaches back into Notification. It
-     * produces no event and owns no port another module reads, so an import this way round would be a
-     * mistake rather than a boundary.
-     */
-    @Test
-    void noCapabilityImportsNotification() throws IOException {
-        for (String capability : CAPABILITIES) {
-            if (capability.equals("notification")) {
-                continue;
-            }
-
-            assertOnlyTheseImport("com/paymesh/" + capability, "com.paymesh.notification.", List.of());
-        }
-
-        assertOnlyTheseImport("com/paymesh/shared", "com.paymesh.notification.", List.of());
-    }
-
-    /**
-     * AUDIT IS A LEAF THAT IS REACHED THROUGH A SHARED PORT, NEVER IMPORTED. Merchant and Identity
-     * record privileged actions by depending on {@code com.paymesh.shared.audit.AuditRecorder} -- the
-     * port lives in {@code shared}, exactly like {@code MerchantId} and {@code Clock} -- so no
-     * capability names {@code com.paymesh.audit}. This is what keeps ADR-035's "a failure to record
-     * is a failure to act, and nothing else couples to Audit" true at the type level: the recorder's
-     * single implementation is the only thing on the other side of that interface.
-     * <p>
-     * WEBHOOK NO LONGER APPEARS HERE (ADR-042, PR 7). Extracted to its own deployable, it cannot
-     * write {@code audit_events} and does not import {@code com.paymesh.shared.audit} at all any
-     * more -- rotation now appends an event to its own outbox instead, and the capability that DOES
-     * import {@code com.paymesh.audit}'s port for it is Audit itself
-     * ({@code RecordWebhookSecretRotationAuditHandler}), which is exempted from this test the same
-     * way every other capability's own package is.
-     */
-    @Test
-    void auditImportsNoOtherCapability() throws IOException {
-        for (String other : OTHER_CAPABILITIES) {
-            if (other.equals("audit")) {
-                continue;
-            }
-
-            assertOnlyTheseImport("com/paymesh/audit", "com.paymesh." + other + ".", List.of());
-        }
-    }
-
-    /**
-     * The reverse, and the claim the shared port exists to make: privileged services depend on
-     * {@code com.paymesh.shared.audit}, so nothing imports {@code com.paymesh.audit} itself -- not a
-     * capability, not {@code shared}. An import appearing here means a call site reached past the
-     * port into the module, and the leaf has become a dependency.
-     */
-    @Test
-    void noCapabilityImportsAudit() throws IOException {
-        for (String other : OTHER_CAPABILITIES) {
-            if (other.equals("audit")) {
-                continue;
-            }
-
-            assertOnlyTheseImport("com/paymesh/" + other, "com.paymesh.audit.", List.of());
-        }
-
-        assertOnlyTheseImport("com/paymesh/shared", "com.paymesh.audit.", List.of());
-    }
 
     /** Every capability package in this module. The simulator is no longer one of them (ADR-041). */
     private static final List<String> CAPABILITIES =
         List.of(
             "merchant", "identity", "customer", "order", "payment", "ledger", "refund",
-            "reconciliation", "risk", "settlement", "notification"
+            "reconciliation", "risk", "settlement"
         );
-
-    /**
-     * The fuller set, used by the Audit boundary tests: {@link #CAPABILITIES} plus the one leaf added
-     * after it was written ({@code reporting}), so "no capability imports Audit" genuinely means no
-     * capability -- including the ones that record.
-     * <p>
-     * NOT {@code simulator} (ADR-041) OR {@code webhook} (ADR-042): neither directory exists in this
-     * module any more, and {@code assertOnlyTheseImport} walks a real path -- naming a capability
-     * with no directory here would fail on a missing path rather than assert anything about a
-     * boundary.
-     */
-    private static final List<String> OTHER_CAPABILITIES =
-        Stream.concat(CAPABILITIES.stream(), Stream.of("reporting")).toList();
 
     private static void assertOnlyTheseImport(
         String moduleDirectory,

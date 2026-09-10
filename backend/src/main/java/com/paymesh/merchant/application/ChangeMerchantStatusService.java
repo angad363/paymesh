@@ -3,9 +3,6 @@ package com.paymesh.merchant.application;
 import com.paymesh.merchant.domain.Merchant;
 import com.paymesh.merchant.domain.MerchantStatus;
 import com.paymesh.merchant.domain.MerchantStatusChange;
-import com.paymesh.shared.audit.ActorType;
-import com.paymesh.shared.audit.AuditEntry;
-import com.paymesh.shared.audit.AuditRecorder;
 import com.paymesh.shared.outbox.application.OutboxWriter;
 import com.paymesh.shared.tenant.MerchantId;
 import org.slf4j.Logger;
@@ -37,7 +34,6 @@ public final class ChangeMerchantStatusService {
     private final MerchantRepository merchants;
     private final MerchantStatusHistoryRepository history;
     private final GetMerchantService getMerchantService;
-    private final AuditRecorder auditRecorder;
     private final OutboxWriter outbox;
     private final TransactionTemplate transactions;
     private final Clock clock;
@@ -46,7 +42,6 @@ public final class ChangeMerchantStatusService {
         MerchantRepository merchants,
         MerchantStatusHistoryRepository history,
         GetMerchantService getMerchantService,
-        AuditRecorder auditRecorder,
         OutboxWriter outbox,
         TransactionTemplate transactions,
         Clock clock
@@ -54,7 +49,6 @@ public final class ChangeMerchantStatusService {
         this.merchants = merchants;
         this.history = history;
         this.getMerchantService = getMerchantService;
-        this.auditRecorder = auditRecorder;
         this.outbox = outbox;
         this.transactions = transactions;
         this.clock = clock;
@@ -110,15 +104,15 @@ public final class ChangeMerchantStatusService {
             // is Merchant's own record of ITS transitions; the audit log is the ONE place a
             // compliance reviewer reads every privileged action across every capability, immutable
             // by trigger. The overlap is the same shape as Reporting restating Ledger figures.
-            auditRecorder.record(
-                AuditEntry.builder("merchant." + action(saved.status()), ActorType.USER)
-                    .actorId(operatorId)
-                    .merchant(merchantId)
-                    .resource("merchant", merchantId.value())
-                    .reason(reason)
-                    .changing(from.name(), saved.status().name())
-                    .build()
-            );
+            //
+            // ADR-043: Audit moved to its own deployable, so the in-process AuditRecorder call this
+            // used to make cannot survive -- this appends merchant.status_changed.audited to THIS
+            // outbox instead, in the same transaction, and engagement's
+            // RecordMerchantStatusChangeAuditHandler turns it back into the audit_events row.
+            outbox.append(MerchantLifecycleEvents.auditedStatusChange(
+                merchantId, "merchant." + action(saved.status()), operatorId, reason,
+                from, saved.status(), now
+            ));
 
             // The lifecycle event, inside this same transaction, so a committed status change always
             // carries it (ADR-010/039). This is what feeds every consumer's merchant_ref projection;

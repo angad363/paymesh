@@ -5,9 +5,7 @@ import com.paymesh.identity.domain.SecurityEvent;
 import com.paymesh.identity.domain.SecurityEventType;
 import com.paymesh.identity.domain.User;
 import com.paymesh.identity.domain.UserId;
-import com.paymesh.shared.audit.ActorType;
-import com.paymesh.shared.audit.AuditEntry;
-import com.paymesh.shared.audit.AuditRecorder;
+import com.paymesh.shared.outbox.application.OutboxWriter;
 import com.paymesh.shared.tenant.MerchantId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -55,7 +53,7 @@ public final class ManageUserAccessService {
     private final UserRepository users;
     private final RefreshTokenRepository refreshTokens;
     private final SecurityEventRepository securityEvents;
-    private final AuditRecorder auditRecorder;
+    private final OutboxWriter outbox;
     private final TransactionTemplate transactions;
     private final Clock clock;
 
@@ -63,14 +61,14 @@ public final class ManageUserAccessService {
         UserRepository users,
         RefreshTokenRepository refreshTokens,
         SecurityEventRepository securityEvents,
-        AuditRecorder auditRecorder,
+        OutboxWriter outbox,
         TransactionTemplate transactions,
         Clock clock
     ) {
         this.users = users;
         this.refreshTokens = refreshTokens;
         this.securityEvents = securityEvents;
-        this.auditRecorder = auditRecorder;
+        this.outbox = outbox;
         this.transactions = transactions;
         this.clock = clock;
     }
@@ -403,19 +401,19 @@ public final class ManageUserAccessService {
      * transition, this runs below the HTTP boundary so no request is in scope, and {@code merchantId}
      * is null for a platform-scoped action.
      *
+     * <p>ADR-043: Audit moved to its own deployable, so the in-process {@code AuditRecorder} call
+     * this used to make cannot survive -- this appends {@code identity.user_access.audited} to THIS
+     * outbox instead, in the same transaction, and engagement's {@code RecordUserAccessAuditHandler}
+     * turns it back into the {@code audit_events} row.
+     *
      * @param merchantId the tenant for a merchant-scoped action, or null for a platform-scoped one
      * @param detail     an optional note for {@code reason}, e.g. the role granted
      */
     private void audit(
         String action, String operatorId, MerchantId merchantId, UserId target, String detail
     ) {
-        auditRecorder.record(
-            AuditEntry.builder(action, ActorType.USER)
-                .actorId(operatorId)
-                .merchant(merchantId)
-                .resource("user", target.value())
-                .reason(detail)
-                .build()
+        outbox.append(
+            UserAccessAuditEvents.of(action, operatorId, merchantId, target, detail, now())
         );
     }
 

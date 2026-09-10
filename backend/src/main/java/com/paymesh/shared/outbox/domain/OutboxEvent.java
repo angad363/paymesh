@@ -18,6 +18,12 @@ import java.util.Map;
  *                      rather than an enum because the outbox is shared platform code: an enum here
  *                      would have to be edited by every capability that ever emits an event, which
  *                      is the coupling the shared package exists to avoid.
+ * @param merchantId    the owning tenant, or {@code null} for a platform-scoped action with no
+ *                      tenant to copy it from ({@code identity.user_access.audited} for a platform
+ *                      role grant, ADR-043). Every event that names a real merchant still carries it;
+ *                      {@code null} is the deliberate exception, mirroring {@code AuditEntry}'s own
+ *                      "or null for a platform-wide action" (that type now lives in the engagement
+ *                      service, so this is a plain reference, not a {@code @link}).
  * @param eventVersion  the envelope version, always positive. Mirrors ck_outbox_events_version.
  */
 public record OutboxEvent(
@@ -34,10 +40,6 @@ public record OutboxEvent(
     public OutboxEvent {
         if (eventId == null) {
             throw new IllegalArgumentException("Event Identifier cannot be null");
-        }
-
-        if (merchantId == null) {
-            throw new IllegalArgumentException("Merchant Identifier cannot be null");
         }
 
         requireText(aggregateType, "Aggregate type");

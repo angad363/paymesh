@@ -1,0 +1,127 @@
+# ============================================================================
+#  PayMesh engagement service (ADR-033/034/035, ADR-043)
+#
+#  A separate deployable beside the monolith, the gateway, provider-sim and
+#  webhook (ADR-043, PR 8): Notification, Reporting and Audit, moved out
+#  together. It listens on 8084. It shares the monolith's PostgreSQL cluster
+#  but owns exactly one schema (`engagement`), connects as the fenced
+#  `engagement_svc` role ADR-038 already created, and cannot see any other
+#  schema's tables even by accident.
+# ============================================================================
+
+spring:
+  application:
+    name: paymesh-engagement
+
+  # --- Datasource: the fenced `engagement_svc` role, one schema only --------
+  datasource:
+    url: jdbc:postgresql://localhost:5432/paymesh
+    # Empty here for the same reason as the monolith's and webhook's: this file
+    # is committed. The dev profile supplies the throwaway `engagement_svc`
+    # credential; every other environment supplies its own via
+    # SPRING_DATASOURCE_USERNAME/PASSWORD.
+    username:
+    password:
+    hikari:
+      # ONE SCHEMA, NOT TEN. `public` stays for `is_prefixed_id`, which every
+      # CHECK constraint in this schema calls.
+      connection-init-sql: SET search_path TO engagement, public
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        jdbc:
+          # Same reason as every other deployable's: with entities carrying no
+          # explicit schema, ddl-auto=validate must look each mapped table up on
+          # its own rather than reading one schema's whole catalogue.
+          jdbc_metadata_extraction_strategy: individually
+
+  # --- Flyway: this module's OWN history, in its OWN schema (ADR-043) --------
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    schemas: engagement
+    # ADOPTS THE EXISTING notifications/report_facts/report_exports/audit_events/
+    # audit_exports tables (V1) rather than re-running their DDL, and CREATES the
+    # platform tables this deployable needs its own copy of (V2) -- the
+    # ADR-041/ADR-042 pattern unchanged.
+    baseline-on-migrate: true
+    baseline-version: "1"
+
+  # --- Kafka (ADR-036, ADR-037): this module's genuinely independent consumer
+  #     of the domain event stream AND the new `*.audited` events (ADR-043).
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      auto-offset-reset: earliest
+      properties:
+        metadata.max.age.ms: 5000
+
+# --- PayMesh security (JWT verification only, ADR-043 section 2) ------------
+paymesh:
+  security:
+    jwt:
+      # The SAME shared HS256 secret the monolith signs with and the gateway
+      # re-validates at the edge (ADR-040). Declared but deliberately EMPTY, and
+      # this application refuses to start without it (JwtConfiguration enforces
+      # the 32-byte floor), exactly as the monolith, the gateway and webhook do.
+      # Supply it as PAYMESH_SECURITY_JWT_SECRET, or run the dev profile.
+      secret: ${PAYMESH_SECURITY_JWT_SECRET:}
+
+  # --- Notification (ADR-033) -------------------------------------------------
+  notification:
+    dispatch:
+      enabled: true
+      interval: 30s
+      batch-size: 50
+      max-attempts: 5
+
+  # --- Reporting (ADR-034) ----------------------------------------------------
+  reporting:
+    export:
+      enabled: true
+      interval: 30s
+      batch-size: 5
+      max-rows: 50000
+
+  # --- Audit (ADR-035) ---------------------------------------------------------
+  audit:
+    export:
+      enabled: true
+      interval: 30s
+      batch-size: 5
+      max-rows: 50000
+
+  # --- Outbox relay (ADR-016, ADR-025, ADR-037) -------------------------------
+  # This module's own inbox/outbox. Present for platform parity with every
+  # other extracted service; Notification/Reporting/Audit are today terminal
+  # consumers and produce nothing of their own.
+  events:
+    delivery:
+      mode: both
+    outbox-relay:
+      enabled: true
+      interval: 2s
+      batch-size: 100
+      max-attempts: 25
+      backlog-alert-age: 5m
+
+# --- Web server --------------------------------------------------------------
+server:
+  port: 8084
+  shutdown: graceful
+
+# --- Actuator ------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        include:
+          - health
+          - info
+  endpoint:
+    health:
+      show-details: never

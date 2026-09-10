@@ -1,0 +1,46 @@
+# ============================================================================
+#  Local development overrides for the engagement service.
+#
+#  Every @SpringBootTest here carries @ActiveProfiles("dev"); the three export/
+#  dispatch timers and the outbox relay are OFF for exactly the reason the
+#  monolith's and webhook's are: a timer flipping a notification/export row
+#  mid-test would mutate rows a test is asserting on. Every generator/dispatch
+#  service is a plain bean either way, so tests call dispatch()/generate()
+#  directly rather than waiting for a tick.
+# ============================================================================
+
+spring:
+  datasource:
+    # The fenced role ADR-038 already created (NOLOGIN by default). A one-time
+    # `ALTER ROLE engagement_svc LOGIN PASSWORD '...'` is a README step, same
+    # shape as webhook's own bootstrap (ADR-042).
+    username: engagement_svc
+    password: engagement_dev_password
+
+paymesh:
+  security:
+    jwt:
+      # Byte-for-byte the monolith's, the gateway's and webhook's dev value --
+      # these MUST agree, or a dev token minted by the monolith stops
+      # validating here.
+      secret: dev-only-insecure-jwt-signing-secret-change-me
+  notification:
+    dispatch:
+      enabled: false
+  reporting:
+    export:
+      enabled: false
+  audit:
+    export:
+      enabled: false
+  events:
+    delivery:
+      mode: in-process
+    outbox-relay:
+      enabled: false
+
+# --- Actuator (dev only) ------------------------------------------------------
+management:
+  endpoint:
+    health:
+      show-details: always
