@@ -115,6 +115,60 @@ public class RoutesConfiguration {
     }
 
     /**
+     * THE THIRD RE-POINTED ROUTE (ADR-043, PR 8), same shape as {@link #webhookRoutes}: Notification,
+     * Reporting and Audit left the monolith together for the engagement deployable, so their two
+     * public prefixes now forward to that deployable's own port instead of {@code backend-uri}.
+     * <p>
+     * {@code @Order(0)} for the same reason {@link #webhookRoutes} carries it: {@code
+     * /api/v1/reports/**} and {@code /api/v1/report-exports/**} are SUBSETS of {@link #apiRoutes}'
+     * {@code /api/**}, so without an explicit order the two could compose in either direction and a
+     * reporting request could silently fall through to the monolith. Rate limited, same as every
+     * other {@code /api/**} route: it is authenticated client traffic, not a callback.
+     */
+    @Bean
+    @Order(0)
+    RouterFunction<ServerResponse> engagementRoutes(
+        @Value("${paymesh.gateway.engagement-uri}") String engagementUri,
+        @Value("${paymesh.gateway.rate-limit.capacity:100}") long capacity,
+        @Value("${paymesh.gateway.rate-limit.period-seconds:60}") long periodSeconds
+    ) {
+        return route("paymesh-engagement")
+            .route(path("/api/v1/reports/**").or(path("/api/v1/report-exports/**")), http())
+            .before(uri(engagementUri))
+            .filter(rateLimitGuard(rateLimit(config -> config
+                .setCapacity(capacity)
+                .setPeriod(Duration.ofSeconds(periodSeconds))
+                .setStatusCode(HttpStatus.TOO_MANY_REQUESTS)
+                .setKeyResolver(RoutesConfiguration::clientKey))))
+            .build();
+    }
+
+    /**
+     * THE INTERNAL HALF OF ADR-043's RE-POINT: the platform-staff read surfaces for Notification and
+     * Audit, forwarded to the engagement deployable unlimited -- the same posture
+     * {@link #internalCallbackRoutes} gives every {@code /internal/**} route, because these are
+     * authenticated by JWT + role, not a public abuse surface.
+     * <p>
+     * {@code @Order(0)} for the same subset reason {@link #engagementRoutes} carries it: these three
+     * prefixes are SUBSETS of {@link #internalCallbackRoutes}' {@code /internal/**}.
+     */
+    @Bean
+    @Order(0)
+    RouterFunction<ServerResponse> engagementInternalRoutes(
+        @Value("${paymesh.gateway.engagement-uri}") String engagementUri
+    ) {
+        return route("paymesh-engagement-internal")
+            .route(
+                path("/internal/v1/notifications/**")
+                    .or(path("/internal/v1/audit-events/**"))
+                    .or(path("/internal/v1/audit-exports/**")),
+                http()
+            )
+            .before(uri(engagementUri))
+            .build();
+    }
+
+    /**
      * THE FIRST RE-POINTED ROUTE (ADR-041). Every other group in this class still forwards to
      * {@code backend-uri}; this one forwards to the provider simulator's own deployable, because it
      * is the first capability to actually leave the monolith's process. A separate

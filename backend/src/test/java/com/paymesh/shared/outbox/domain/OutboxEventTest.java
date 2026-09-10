@@ -60,11 +60,20 @@ class OutboxEventTest {
         assertTrue(event(payload).payload().containsKey("customerId"));
     }
 
+    /**
+     * A null merchant is PERMITTED, not rejected -- the deliberate exception ADR-043 introduced for
+     * a platform-scoped audited action ({@code identity.user_access.audited} for a platform role
+     * grant), which has no tenant to carry. Every event about a real merchant still carries one;
+     * this proves the one genuine exception does not throw.
+     */
     @Test
-    void rejectsANullMerchant() {
-        assertThrows(IllegalArgumentException.class, () -> new OutboxEvent(
-            EventId.generate(), null, "ORDER", "ord_1", "order.created", 1, Map.of(), OCCURRED_AT
-        ));
+    void permitsANullMerchantForAPlatformScopedEvent() {
+        OutboxEvent event = new OutboxEvent(
+            EventId.generate(), null, "USER", "usr_1", "identity.user_access.audited", 1, Map.of(),
+            OCCURRED_AT
+        );
+
+        assertEquals(null, event.merchantId());
     }
 
     @Test

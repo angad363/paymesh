@@ -1,8 +1,10 @@
 package com.paymesh.merchant.application;
 
 import com.paymesh.merchant.domain.Merchant;
+import com.paymesh.merchant.domain.MerchantStatus;
 import com.paymesh.shared.outbox.domain.EventId;
 import com.paymesh.shared.outbox.domain.OutboxEvent;
+import com.paymesh.shared.tenant.MerchantId;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -47,6 +49,47 @@ final class MerchantLifecycleEvents {
             "MERCHANT",
             merchant.merchantId().value(),
             eventType,
+            VERSION,
+            payload,
+            occurredAt
+        );
+    }
+
+    /**
+     * {@code merchant.status_changed.audited} -- the consumer half lives in the engagement service's
+     * {@code RecordMerchantStatusChangeAuditHandler} (ADR-043, generalizing the mechanism ADR-042
+     * section 4 built for webhook's secret rotation). {@code ChangeMerchantStatusService} used to
+     * call {@code AuditRecorder.record(...)} in-process, inside this same transaction; once Audit
+     * left the process, that call became impossible, so this event carries the same plaintext facts
+     * the in-process {@code AuditEntry.builder(...)} call built -- the recorder on the other side
+     * still does the hashing, exactly once.
+     *
+     * @param action the full audit action string, e.g. {@code merchant.suspended}
+     */
+    static OutboxEvent auditedStatusChange(
+        MerchantId merchantId,
+        String action,
+        String operatorId,
+        String reason,
+        MerchantStatus before,
+        MerchantStatus after,
+        Instant occurredAt
+    ) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("action", action);
+        payload.put("actorId", operatorId);
+        payload.put("resourceType", "merchant");
+        payload.put("resourceId", merchantId.value());
+        payload.put("reason", reason);
+        payload.put("before", before.name());
+        payload.put("after", after.name());
+
+        return new OutboxEvent(
+            EventId.generate(),
+            merchantId,
+            "MERCHANT",
+            merchantId.value(),
+            "merchant.status_changed.audited",
             VERSION,
             payload,
             occurredAt

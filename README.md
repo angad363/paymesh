@@ -125,9 +125,10 @@ interface and its own scaling needs were proven — the modular-monolith-first p
 [ADR-001](docs/decisions/ADR-001-start-with-modular-monolith.md) and SDD §30.1. Phase 3 is
 that extraction, one capability at a time (`docs/phase-3-microservices-extraction-plan.md`):
 the API gateway (`gateway/`, port 8081, ADR-040), the provider simulator
-(`provider-sim/`, port 8082, ADR-041) and webhook (`webhook/`, port 8083, ADR-042) are now
-separate deployables; every other capability below still lives in the one monolith
-(`backend/`, port 8080).
+(`provider-sim/`, port 8082, ADR-041), webhook (`webhook/`, port 8083, ADR-042) and engagement
+(`engagement/`, port 8084, ADR-043 — Notification + Reporting + Audit) are now separate
+deployables; every other capability below still lives in the one monolith (`backend/`, port
+8080).
 
 Code is organized **by business capability, not by technical layer**
 ([ADR-002](docs/decisions/ADR-002-use-package-by-feature.md)). There is no
@@ -341,13 +342,14 @@ cd backend
 ./mvnw verify                   # full build + tests
 ```
 
-### The other deployables (gateway, provider-sim, webhook)
+### The other deployables (gateway, provider-sim, webhook, engagement)
 
-Three more Maven modules, each with its own `pom.xml` and its own `./mvnw` — not part of the
+Four more Maven modules, each with its own `pom.xml` and its own `./mvnw` — not part of the
 `backend` build, and each optional until a client needs the door they open
 ([ADR-040](docs/decisions/ADR-040-api-gateway.md),
 [ADR-041](docs/decisions/ADR-041-extract-the-provider-simulator.md),
-[ADR-042](docs/decisions/ADR-042-extract-the-webhook-service.md)):
+[ADR-042](docs/decisions/ADR-042-extract-the-webhook-service.md),
+[ADR-043](docs/decisions/ADR-043-extract-the-engagement-service.md)):
 
 ```bash
 cd gateway
@@ -359,6 +361,11 @@ cd provider-sim
 
 cd webhook
 ./mvnw spring-boot:run          # port 8083 — needs the same PostgreSQL as backend, the same
+                                 # PAYMESH_SECURITY_JWT_SECRET as backend/gateway, and Kafka up
+                                 # (`docker compose up -d kafka`) to consume domain events
+
+cd engagement
+./mvnw spring-boot:run          # port 8084 — needs the same PostgreSQL as backend, the same
                                  # PAYMESH_SECURITY_JWT_SECRET as backend/gateway, and Kafka up
                                  # (`docker compose up -d kafka`) to consume domain events
 ```
@@ -380,13 +387,22 @@ psql -d paymesh -c "ALTER ROLE webhook_svc LOGIN PASSWORD 'webhook_dev_password'
 psql -d paymesh -c "GRANT CREATE ON SCHEMA webhook TO webhook_svc;"
 ```
 
+`engagement` is the same shape again, one schema and one role, `engagement_svc` (ADR-038,
+ADR-043):
+
+```bash
+psql -d paymesh -c "ALTER ROLE engagement_svc LOGIN PASSWORD 'engagement_dev_password';"
+psql -d paymesh -c "GRANT CREATE ON SCHEMA engagement TO engagement_svc;"
+```
+
 Postman's `{{baseUrl}}` (`http://localhost:8080`) still addresses the monolith directly for
 every folder except **Provider Simulator**, whose requests use `{{simBaseUrl}}`
-(`http://localhost:8082`) now that `/sim/v1/**` is no longer served by the monolith, and
+(`http://localhost:8082`) now that `/sim/v1/**` is no longer served by the monolith,
 **Webhook**, whose `/api/v1/webhook-endpoints/**` requests use `{{webhookBaseUrl}}`
-(`http://localhost:8083`) for the same reason. All three work with or without the gateway in
-front — the gateway is optional until a whole client workflow needs to stop knowing which port
-serves which prefix.
+(`http://localhost:8083`) for the same reason, and the **Reporting** folder's
+`/api/v1/reports/**`/`/api/v1/report-exports/**` requests, which use `{{engagementBaseUrl}}`
+(`http://localhost:8084`). All four work with or without the gateway in front — the gateway is
+optional until a whole client workflow needs to stop knowing which port serves which prefix.
 
 **One-time dev bootstrap for schema-per-service (ADR-038).** The test suite runs V38 as the
 Testcontainers superuser and needs nothing. To run the app against a **local native PostgreSQL**,

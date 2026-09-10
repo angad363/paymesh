@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "PayMesh API",
-    "description": "PayMesh Payment-as-a-Service API.\n\nSet `baseUrl` (defaults to http://localhost:8080), `simBaseUrl` (defaults to http://localhost:8082, the provider simulator's own deployable since ADR-041 -- only the Provider Simulator folder uses it) and `webhookBaseUrl` (defaults to http://localhost:8083, webhook's own deployable since ADR-042 -- only the Webhook folder uses it). Run the folders top to bottom: onboarding creates a merchant, Identity & Auth attaches a user and captures a token, and Authenticated access uses it.\n\nCapabilities covered: Identity & Auth, Merchant, Customer, Order, Payment Intents, and the shared transactional outbox (ADR-010).",
+    "description": "PayMesh Payment-as-a-Service API.\n\nSet `baseUrl` (defaults to http://localhost:8080), `simBaseUrl` (defaults to http://localhost:8082, the provider simulator's own deployable since ADR-041 -- only the Provider Simulator folder uses it), `webhookBaseUrl` (defaults to http://localhost:8083, webhook's own deployable since ADR-042 -- only the Webhook folder uses it) and `engagementBaseUrl` (defaults to http://localhost:8084, the engagement deployable -- Notification + Reporting + Audit -- since ADR-043 -- only the reports/report-exports requests use it today). Run the folders top to bottom: onboarding creates a merchant, Identity & Auth attaches a user and captures a token, and Authenticated access uses it.\n\nCapabilities covered: Identity & Auth, Merchant, Customer, Order, Payment Intents, and the shared transactional outbox (ADR-010).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -16,6 +16,10 @@
     {
       "key": "webhookBaseUrl",
       "value": "http://localhost:8083"
+    },
+    {
+      "key": "engagementBaseUrl",
+      "value": "http://localhost:8084"
     },
     {
       "key": "merchantId",
@@ -13252,9 +13256,9 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/reports/payment-summary",
+              "raw": "{{engagementBaseUrl}}/api/v1/reports/payment-summary",
               "host": [
-                "{{baseUrl}}"
+                "{{engagementBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -13291,9 +13295,9 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/reports/settlements",
+              "raw": "{{engagementBaseUrl}}/api/v1/reports/settlements",
               "host": [
-                "{{baseUrl}}"
+                "{{engagementBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -13328,9 +13332,9 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/reports/payment-summary?from=not-an-instant",
+              "raw": "{{engagementBaseUrl}}/api/v1/reports/payment-summary?from=not-an-instant",
               "host": [
-                "{{baseUrl}}"
+                "{{engagementBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -13370,9 +13374,9 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/reports/payment-summary?from=2020-01-01T00:00:00Z&to=2026-01-01T00:00:00Z",
+              "raw": "{{engagementBaseUrl}}/api/v1/reports/payment-summary?from=2020-01-01T00:00:00Z&to=2026-01-01T00:00:00Z",
               "host": [
-                "{{baseUrl}}"
+                "{{engagementBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -13410,9 +13414,9 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/reports/payment-summary",
+              "raw": "{{engagementBaseUrl}}/api/v1/reports/payment-summary",
               "host": [
-                "{{baseUrl}}"
+                "{{engagementBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -13445,9 +13449,9 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/reports/payment-summary",
+              "raw": "{{engagementBaseUrl}}/api/v1/reports/payment-summary",
               "host": [
-                "{{baseUrl}}"
+                "{{engagementBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -13489,9 +13493,9 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/report-exports",
+              "raw": "{{engagementBaseUrl}}/api/v1/report-exports",
               "host": [
-                "{{baseUrl}}"
+                "{{engagementBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -13554,9 +13558,9 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/report-exports",
+              "raw": "{{engagementBaseUrl}}/api/v1/report-exports",
               "host": [
-                "{{baseUrl}}"
+                "{{engagementBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -13601,9 +13605,9 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/report-exports",
+              "raw": "{{engagementBaseUrl}}/api/v1/report-exports",
               "host": [
-                "{{baseUrl}}"
+                "{{engagementBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -13644,9 +13648,9 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/report-exports/{{rptExportId}}",
+              "raw": "{{engagementBaseUrl}}/api/v1/report-exports/{{rptExportId}}",
               "host": [
-                "{{baseUrl}}"
+                "{{engagementBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -13686,9 +13690,9 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/report-exports/{{rptExportId}}",
+              "raw": "{{engagementBaseUrl}}/api/v1/report-exports/{{rptExportId}}",
               "host": [
-                "{{baseUrl}}"
+                "{{engagementBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -13725,9 +13729,9 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/report-exports/not-an-id",
+              "raw": "{{engagementBaseUrl}}/api/v1/report-exports/not-an-id",
               "host": [
-                "{{baseUrl}}"
+                "{{engagementBaseUrl}}"
               ],
               "path": [
                 "api",
@@ -13857,9 +13861,9 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/report-exports/{{rptExportId}}",
+              "raw": "{{engagementBaseUrl}}/api/v1/report-exports/{{rptExportId}}",
               "host": [
-                "{{baseUrl}}"
+                "{{engagementBaseUrl}}"
               ],
               "path": [
                 "api",

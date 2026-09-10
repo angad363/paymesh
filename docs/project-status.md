@@ -1,6 +1,6 @@
 # PayMesh — Project Status
 
-_Last updated: 6 September 2026._
+_Last updated: 9 September 2026._
 
 This is the pick-up-here document: what's built, what each PR decided and what it cost, phase by
 phase, ending with where to start next. Full ADRs live in `docs/decisions/`; this is the
@@ -489,14 +489,54 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
   relay for the one event type it produces today, the established pattern's fixed cost rather than a
   bespoke one-off publish.
 
-- **PR 8 — Engagement (Notification + Reporting + Audit).** *(ADR-043, planned)* Goal: move the
-  three read-side consumers out together. The one hard part: Audit isn't a pure event consumer today
-  (ADR-035's subjects emit no domain event, only an in-process transactional call) — once the acting
-  capability is in another service, that in-process call can't survive. Planned fix: each privileged
-  action emits an `*.audited` event on its **own** outbox in the same local transaction as the action
-  itself, and engagement consumes it through its inbox — moving the atomicity guarantee from "same DB
-  transaction" to "same outbox transaction," which is strictly stronger than a synchronous cross-service
-  call that could fail after the action already committed.
+- **PR 8 — Engagement (Notification + Reporting + Audit).** *(ADR-043)* Delivers: the three
+  read-side consumers as one deployable (`engagement/`, port 8084) — same packages
+  (`com.paymesh.notification`/`.reporting`/`.audit`), same tests where they could move unchanged,
+  own pom, own `engagement` schema reached as the fenced `engagement_svc` role, own Flyway history
+  that *adopts* the schema's existing five tables (`notifications`, `report_facts`, `report_exports`,
+  `audit_events`, `audit_exports`, `baseline-on-migrate`) and then *creates*, fresh, its own copy of
+  the three platform tables (`processed_events`, `idempotency_records`, `outbox_events`) — the same
+  ADR-038 split PR 7 made for webhook. Notification and Reporting moved cleanly, pure event consumers
+  exactly as planned. The hard part, solved as planned: Audit's subjects (a merchant freeze, a
+  platform-role grant) emit no domain event, so `ChangeMerchantStatusService` (Merchant) and
+  `ManageUserAccessService` (Identity), both still in the monolith, each swap their in-process
+  `AuditRecorder.record(...)` call for `outbox.append(...)` — `merchant.status_changed.audited` and
+  `identity.user_access.audited` respectively, in the same transaction as the action — and three new
+  `EventHandler`s in engagement (`RecordMerchantStatusChangeAuditHandler`,
+  `RecordUserAccessAuditHandler`, plus `RecordWebhookSecretRotationAuditHandler` moved over from the
+  monolith) turn each back into the `audit_events` row the in-process call used to write. Identity had
+  no outbox producer before this PR; `OutboxWriter` is now wired into `IdentityConfiguration`.
+  A real blocker surfaced mid-PR and got a real fix: `ManageUserAccessService` has always called its
+  audit helper with a null `merchantId` for five of its seven actions (platform-scoped: suspend,
+  reactivate, close, both platform-role methods), but `OutboxEvent.merchantId` had never been allowed
+  to be null — every event since ADR-010 has named a real tenant. Rejected: a sentinel "platform"
+  merchant id (pollutes the format CHECK's meaning) and keeping the in-process call for just the
+  null-merchant cases (a permanent asymmetry that breaks again at Identity's own extraction, PR 10).
+  Chosen: make `OutboxEvent.merchantId` genuinely nullable, platform-wide — `V40` in the monolith
+  drops `platform.outbox_events.merchant_id`'s `NOT NULL` (the FK to `merchants` stays; FKs don't
+  fire on `NULL`), engagement's own `V2` defines the column nullable from the start, and
+  `OutboxEventJpaEntity`/`EventEnvelope`/`UnpublishedEvent` all guard the now-optional field. Security
+  is JWT-only (ADR-042's posture, no `ApiKeyAuthenticationFilter`) and — a genuine, stated narrowing
+  — carries no `MerchantStatusGate`/`merchant_ref` at all: none of the three capabilities ever
+  imported them, so `POST /api/v1/report-exports` is no longer refused for a suspended or
+  unprojected merchant the way the monolith's blanket filter incidentally refused it before.
+  Gateway: `RoutesConfiguration` gained `engagementRoutes` (`/api/v1/reports/**`,
+  `/api/v1/report-exports/**` → `engagement-uri`, default `:8084`, rate-limited) and
+  `engagementInternalRoutes` (`/internal/v1/notifications/**`, `/internal/v1/audit-events/**`,
+  `/internal/v1/audit-exports/**` → the same URI, unlimited), both `@Order(0)` for the same
+  subset-of-a-broader-route reason `webhookRoutes` carries it, proven by `GatewayEngagementRouteTest`.
+  Tests: merchant fixtures across the moved integration tests dropped `MerchantRepository` entirely
+  in favour of a bare `MerchantId.generate()` — these tables have carried no FK to `merchants` since
+  V39, and this deployable enforces no merchant-status gate to satisfy; `AuditRecordingIntegrationTest`
+  now dispatches a `merchant.status_changed.audited` envelope instead of driving
+  `ChangeMerchantStatusService` directly (a different deployable's capability); two new tests prove
+  the merchant-status and user-access audit consumers; `ModuleBoundaryTest`'s notification/audit
+  leaf-boundary tests were removed (the packages no longer exist in `backend` for them to walk), and
+  two monolith consumer-list tests (`LedgerConfigurationTest`, `RefundConfigurationTest`) dropped
+  `notification.*`/`reporting.*` from their exhaustive expectations. Tradeoff: the `shared` subtree
+  is now duplicated across four modules until PR 16; the report-export merchant-status narrowing is
+  accepted and stated, not silently dropped; `OutboxEvent.merchantId` being nullable is now a fact
+  every future reader of an outbox event must handle, not only engagement's own consumers.
 
 - **PR 9 — Risk.** *(ADR-044, planned)* Goal: the first *synchronous* extraction — payment's confirm
   needs a risk decision over the network, not a method call. Planned shape: Resilience4j around a
@@ -560,28 +600,41 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
 
 ## Where we are now
 
-**On `main`.** Phase 1 and Phase 2 are complete. Phase 3 wave 3A (PR 1–5) is merged — Kafka
-backbone, dual-path relay, schema-per-service, merchant reference projection, API gateway. Phase 3B
-PR 6 (the pilot) and PR 7 (Webhook) are both merged: the Provider Simulator (`provider-sim/`, port
-8082, ADR-041) and Webhook (`webhook/`, port 8083, ADR-042) now run as their own deployables — four
-independently-built Maven modules now exist (`backend/`, `gateway/`, `provider-sim/`, `webhook/`),
-each with its own `pom.xml` and its own `./mvnw`. 42 ADRs. The monolith's migrations are still
-V1–V39; `provider-sim`'s own Flyway history starts a separate V1 in the `simulator` schema (adopting
-the tables the monolith's V13/V38 already created there); `webhook`'s own history adopts the
-`webhook` schema's existing tables at V1 the same way, then creates its own copies of
-`processed_events`/`idempotency_records`/`outbox_events` at V2 (new physical tables, not moved ones).
-1325 backend tests + 122 webhook tests + 92 provider-sim tests + 11 gateway tests, all green — the
-webhook capability's own tests moved to `webhook` with the package, one monolith-side test
-(`WebhookMasterKeyStartupTest`) was retired in favour of webhook's own copy of that guard test, one
-new monolith test (`RecordWebhookSecretRotationAuditHandlerIntegrationTest`) proves the audit-event
-consumer half, and two gateway tests (`GatewayWebhookRouteTest`) prove the new route's precedence
-over the `/api/**` catch-all.
+**On branch `service/engagement`.** Phase 1 and Phase 2 are complete. Phase 3 wave 3A (PR 1–5) is
+merged — Kafka backbone, dual-path relay, schema-per-service, merchant reference projection, API
+gateway. Phase 3B PR 6 (the pilot), PR 7 (Webhook) and PR 8 (Engagement) are complete: the Provider
+Simulator (`provider-sim/`, port 8082, ADR-041), Webhook (`webhook/`, port 8083, ADR-042) and
+Engagement (`engagement/`, port 8084, ADR-043 — Notification + Reporting + Audit) now run as their
+own deployables — five independently-built Maven modules now exist (`backend/`, `gateway/`,
+`provider-sim/`, `webhook/`, `engagement/`), each with its own `pom.xml` and its own `./mvnw`. 43
+ADRs. The monolith's migrations are now V1–V40 (`V40` drops `NOT NULL` on
+`platform.outbox_events.merchant_id`, ADR-043 §4 — a platform-scoped audited action has no tenant to
+carry, mirroring `audit_events.merchant_id`'s own nullability since V36); `provider-sim`'s own
+Flyway history starts a separate V1 in the `simulator` schema; `webhook`'s own history adopts the
+`webhook` schema at V1 then creates its platform-table copies at V2; `engagement`'s own history
+adopts the `engagement` schema's five existing tables at V1 (`notifications`, `report_facts`,
+`report_exports`, `audit_events`, `audit_exports`) then creates its own
+`processed_events`/`idempotency_records`/`outbox_events` at V2, the same pattern, with
+`outbox_events.merchant_id` nullable from the start.
 
-**Next up: PR 8** — extract Engagement (Notification + Reporting + Audit) into its own deployable
-(ADR-043, planned). The one hard part, named in the plan: Audit is not a pure event consumer today,
-and PR 7 already pulled its replacement mechanism forward for webhook's one audited action
-(`*.audited` event on the acting capability's own outbox, consumed through the new service's inbox) —
-PR 8 generalizes that same mechanism to every remaining privileged action. Read
-`docs/phase-3-microservices-extraction-plan.md` §"PR 8 — Engagement" before starting it.
+1186 backend tests + 137 engagement tests + 122 webhook tests + 92 provider-sim tests + 18 gateway
+tests, all green. Backend's count dropped from 1325 (PR 7's count) as the three capabilities' own
+tests moved to `engagement` with the package; three monolith tests were adapted rather than left to
+fail: `LedgerConfigurationTest`/`RefundConfigurationTest` dropped `notification.*`/`reporting.*` from
+their exhaustive per-event consumer lists, and `OutboxEventTest.rejectsANullMerchant` became
+`permitsANullMerchantForAPlatformScopedEvent`. `ModuleBoundaryTest`'s notification and audit
+leaf-boundary tests were removed (ADR-041's precedent: neither package exists in `backend` any more
+for `assertOnlyTheseImport` to walk). Two new engagement tests
+(`RecordMerchantStatusChangeAuditHandlerIntegrationTest`'s equivalent —
+`AuditRecordingIntegrationTest`, adapted — and `RecordUserAccessAuditHandlerIntegrationTest`, new)
+prove the two generalized audit consumers end to end, alongside the `RecordWebhookSecretRotationAuditHandlerIntegrationTest`
+that moved over from the monolith unchanged. Two gateway tests
+(`GatewayEngagementRouteTest`, seven cases) prove the new routes' precedence over both the `/api/**`
+and `/internal/**` catch-alls.
+
+**Next up: PR 9 — Risk** (ADR-044, planned). The first *synchronous* extraction: payment's confirm
+needs a real network call to a risk decision, not a method call, wrapped in Resilience4j with
+ADR-030's fail-open/fail-closed-by-tier policy extended to cover "risk service unreachable." Read
+`docs/phase-3-microservices-extraction-plan.md` §"PR 9 — Risk" before starting it.
 
 Read `docs/phase-3-microservices-extraction-plan.md` §"PR 7 — Webhook" before starting it.

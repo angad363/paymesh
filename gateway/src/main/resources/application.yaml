@@ -32,6 +32,10 @@ paymesh:
     # Where /api/v1/webhook-endpoints/** forwards (ADR-042, PR 7): webhook's own
     # deployable, the first *merchant-facing* capability to leave the process.
     webhook-uri: ${PAYMESH_GATEWAY_WEBHOOK_URI:http://localhost:8083}
+    # Where /api/v1/reports/**, /api/v1/report-exports/**, /internal/v1/notifications/**,
+    # /internal/v1/audit-events/** and /internal/v1/audit-exports/** forward (ADR-043,
+    # PR 8): the engagement deployable (Notification + Reporting + Audit).
+    engagement-uri: ${PAYMESH_GATEWAY_ENGAGEMENT_URI:http://localhost:8084}
     # Redis backs the distributed rate limiter so N gateway instances share one
     # limit instead of admitting N times the traffic.
     redis-uri: ${PAYMESH_GATEWAY_REDIS_URI:redis://localhost:6379}
