@@ -169,6 +169,35 @@ public class RoutesConfiguration {
     }
 
     /**
+     * THE FOURTH RE-POINTED ROUTE (ADR-044, PR 9), and the first one fronting a SYNCHRONOUS
+     * extraction rather than an event consumer: Payment's confirm calls
+     * {@code /internal/v1/risk-evaluations} over the network now (via the shared mesh URL
+     * configured on the backend side, or directly when it happens to be this gateway).
+     * <p>
+     * {@code @Order(0)} for the same subset reason {@link #webhookRoutes} and
+     * {@link #engagementInternalRoutes} carry it: {@code /internal/v1/risk-evaluations/**} is a
+     * SUBSET of {@link #internalCallbackRoutes}' {@code /internal/**}, so without an explicit order
+     * a request could silently fall through to the monolith instead of the risk deployable.
+     * <p>
+     * Not rate limited, and -- UNLIKE {@link #engagementInternalRoutes} -- not JWT'd at the edge
+     * either ({@code SecurityConfiguration} permits it outright): a platform admin reads
+     * engagement's internal routes with a real bearer token through a browser or Postman, but no
+     * caller of this route is ever a human. Payment's confirm path calls it machine to machine, the
+     * same shape as the provider/refund/payout callback routes, and throttling or JWT-gating it
+     * would turn a healthy retry into the exact "silently hangs" failure ADR-044 exists to prevent.
+     */
+    @Bean
+    @Order(0)
+    RouterFunction<ServerResponse> riskRoutes(
+        @Value("${paymesh.gateway.risk-uri}") String riskUri
+    ) {
+        return route("paymesh-risk")
+            .route(path("/internal/v1/risk-evaluations").or(path("/internal/v1/risk-evaluations/**")), http())
+            .before(uri(riskUri))
+            .build();
+    }
+
+    /**
      * THE FIRST RE-POINTED ROUTE (ADR-041). Every other group in this class still forwards to
      * {@code backend-uri}; this one forwards to the provider simulator's own deployable, because it
      * is the first capability to actually leave the monolith's process. A separate

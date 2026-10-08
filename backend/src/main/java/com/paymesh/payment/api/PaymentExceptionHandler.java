@@ -7,6 +7,7 @@ import com.paymesh.payment.application.PaymentAttemptAlreadyStartedException;
 import com.paymesh.payment.application.PaymentIntentNotFoundException;
 import com.paymesh.payment.domain.CaptureAmountExceedsAuthorizedException;
 import com.paymesh.payment.application.PaymentBlockedByRiskException;
+import com.paymesh.payment.application.RiskUnavailableException;
 import com.paymesh.payment.domain.PaymentIntentNotCancellableException;
 import com.paymesh.payment.domain.PaymentIntentNotCapturableException;
 import com.paymesh.payment.domain.PaymentIntentNotConfirmableException;
@@ -127,6 +128,22 @@ public final class PaymentExceptionHandler {
             "PAYMENT_BLOCKED_BY_RISK",
             "This payment was refused by risk evaluation " + exception.assessmentId()
         );
+    }
+
+    /**
+     * Risk could not be reached at all (ADR-044) -- a timeout, a connection failure, or the
+     * circuit breaker already open -- as distinct from {@link PaymentBlockedByRiskException}, a
+     * real refusal. 503, not 422: this is retryable, and the merchant retrying is exactly the
+     * right response to a transient dependency outage.
+     * <p>
+     * Only reachable at all when {@code paymesh.risk.mode=http} and the amount met
+     * {@code RiskUnavailablePolicy}'s block-at-or-above threshold; below it, the same outage is
+     * absorbed and the confirm proceeds (see that class's javadoc).
+     */
+    @ExceptionHandler(RiskUnavailableException.class)
+    @ResponseStatus(HttpStatus.SERVICE_UNAVAILABLE)
+    ApiErrorResponse handleRiskUnavailable(RiskUnavailableException exception) {
+        return ApiErrorResponse.of("RISK_UNAVAILABLE", exception.getMessage());
     }
 
     /**

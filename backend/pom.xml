@@ -116,6 +116,21 @@
             <artifactId>spring-boot-starter-kafka</artifactId>
         </dependency>
 
+        <!-- Resilience4j (ADR-044, PR 9): the circuit breaker around RiskServiceHttpCheck, the
+             first synchronous call off this process's own confirm path. THE PROGRAMMATIC CORE API
+             ONLY: no resilience4j-spring-boot3 starter and no @CircuitBreaker annotation. This
+             codebase's application services are final classes with no interface specifically
+             because @Transactional cannot proxy them (ADR-010); the same reasoning rules out an
+             annotation-driven circuit breaker here, and PaymentConfiguration builds the
+             CircuitBreaker by hand instead, the same way it builds every other bean. No BOM exists
+             in this pom, so the version is pinned directly; resilience4j-core is a transitive
+             dependency of resilience4j-circuitbreaker and does not need its own line. -->
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-circuitbreaker</artifactId>
+            <version>2.2.0</version>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webmvc-test</artifactId>

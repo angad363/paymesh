@@ -14,8 +14,14 @@ import com.paymesh.payment.application.GetPaymentIntentService;
 import com.paymesh.payment.application.ListPaymentIntentsService;
 import com.paymesh.payment.application.OrderLookup;
 import com.paymesh.payment.application.RiskCheck;
+import com.paymesh.payment.infrastructure.risk.LoggingRiskFallbackRecorder;
 import com.paymesh.payment.infrastructure.risk.RiskModuleCheck;
+import com.paymesh.payment.infrastructure.risk.RiskServiceHttpCheck;
+import com.paymesh.payment.infrastructure.risk.RiskServiceProtocolException;
+import com.paymesh.payment.infrastructure.risk.RiskUnavailablePolicy;
 import com.paymesh.risk.application.EvaluateRiskService;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import com.paymesh.payment.application.PaymentAttemptRepository;
 import com.paymesh.payment.application.PaymentIntentRepository;
 import com.paymesh.payment.application.PaymentStateHistoryRepository;
@@ -43,10 +49,13 @@ import org.springframework.boot.security.autoconfigure.web.servlet.SecurityFilte
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.client.RestClient;
 import tools.jackson.databind.ObjectMapper;
 
 import java.time.Clock;
+import java.time.Duration;
 
 /**
  * Explicit wiring for the payment capability (no component scanning of application/domain classes).
@@ -62,7 +71,8 @@ import java.time.Clock;
 @EnableConfigurationProperties({
     ProviderProperties.class,
     ProcessingTimeoutProperties.class,
-    AbandonedIntentProperties.class
+    AbandonedIntentProperties.class,
+    RiskClientProperties.class
 })
 public class PaymentConfiguration {
 
@@ -143,12 +153,84 @@ public class PaymentConfiguration {
     }
 
     /**
-     * Payment's view of Risk. The adapter lives here, in the consumer's infrastructure, so
-     * Payment's application layer never names a Risk type -- same rule as {@code OrderLookup}.
+     * Payment's view of Risk, IN-PROCESS (ADR-008, ADR-030): the adapter lives here, in the
+     * consumer's infrastructure, so Payment's application layer never names a Risk type -- same
+     * rule as {@code OrderLookup}.
+     * <p>
+     * THE DEFAULT, AND THE DUAL-PATH SAFETY NET (ADR-044): {@code EvaluateRiskService} and
+     * {@code RiskConfiguration} stay wired in this module regardless of which mode is active, so
+     * this path keeps compiling and working even after {@code http} mode is the deployment target
+     * elsewhere -- rolling back is a property flip, not a redeploy of different code.
      */
     @Bean
-    RiskCheck riskCheck(EvaluateRiskService evaluateRiskService) {
+    @ConditionalOnProperty(
+        prefix = "paymesh.risk", name = "mode", havingValue = "in-process", matchIfMissing = true
+    )
+    RiskCheck inProcessRiskCheck(EvaluateRiskService evaluateRiskService) {
         return new RiskModuleCheck(evaluateRiskService);
+    }
+
+    /**
+     * Payment's view of Risk, OVER THE NETWORK (ADR-044) -- the first synchronous extraction.
+     * <p>
+     * Its own {@code RestClient} with its own short timeouts, the same instinct
+     * {@code SettlementConfiguration}'s {@code payoutGateway} bean states: a risk evaluation holds
+     * the confirm's row lock (see {@code ConfirmPaymentIntentService.requireAcceptableRisk}), so a
+     * risk service that never answers must cost the confirm seconds, not the JDK's default
+     * patience.
+     * <p>
+     * The breaker's SLOW-CALL threshold is set to the same duration as the read timeout: a call
+     * still running at that age is already going to end in the timeout branch, so counting it as a
+     * failure the moment it crosses that line -- rather than waiting for the exception -- is what
+     * lets a run of slow (not yet failed) calls open the breaker before every confirm queues up
+     * behind a degraded risk service instead of a down one.
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "paymesh.risk", name = "mode", havingValue = "http")
+    RiskCheck httpRiskCheck(RiskClientProperties properties, ObjectMapper objectMapper) {
+        // These are only read in http mode, so they are not bean-validated on the record (that
+        // would force every in-process deployment to carry them too). Validate them here instead,
+        // where the bean is only built in http mode -- a clear failure, not an NPE below.
+        Duration connectTimeout = required(properties.connectTimeout(), "paymesh.risk.connect-timeout");
+        Duration readTimeout = required(properties.readTimeout(), "paymesh.risk.read-timeout");
+        Duration breakerWait = required(
+            properties.breakerWaitDurationInOpenState(), "paymesh.risk.breaker-wait-duration-in-open-state"
+        );
+
+        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        requestFactory.setConnectTimeout((int) connectTimeout.toMillis());
+        requestFactory.setReadTimeout((int) readTimeout.toMillis());
+
+        CircuitBreakerConfig breakerConfig = CircuitBreakerConfig.custom()
+            .slidingWindowSize(properties.breakerSlidingWindowSize())
+            // WITHOUT THIS THE BREAKER NEVER OPENS. resilience4j defaults minimumNumberOfCalls to
+            // 100; a COUNT_BASED window of 10 can never reach 100 recorded calls, so the failure
+            // rate is never evaluated and CallNotPermittedException -- the whole fast-fail path --
+            // is dead code. Tie it to the window so the breaker can decide once the window is full.
+            .minimumNumberOfCalls(properties.breakerSlidingWindowSize())
+            .failureRateThreshold(properties.breakerFailureRateThreshold())
+            .waitDurationInOpenState(breakerWait)
+            .slowCallDurationThreshold(readTimeout)
+            .slowCallRateThreshold(properties.breakerFailureRateThreshold())
+            // A 4xx / malformed-body is our-side or a contract bug, not an outage: it must not
+            // count toward opening the breaker, and must propagate rather than hit the fallback.
+            .ignoreExceptions(RiskServiceProtocolException.class)
+            .build();
+
+        CircuitBreaker breaker = CircuitBreaker.of("risk-evaluation", breakerConfig);
+
+        RiskUnavailablePolicy fallback = new RiskUnavailablePolicy(
+            properties.fallbackBlockAtOrAboveMinor(), new LoggingRiskFallbackRecorder()
+        );
+
+        return new RiskServiceHttpCheck(
+            RestClient.builder().requestFactory(requestFactory).build(),
+            properties.evaluateUrl(),
+            properties.evaluateKey(),
+            breaker,
+            fallback,
+            objectMapper
+        );
     }
 
     @Bean
@@ -402,5 +484,14 @@ public class PaymentConfiguration {
         ApplyRefundSucceededService applyRefundSucceededService
     ) {
         return new RefundSucceededHandler(applyRefundSucceededService);
+    }
+
+    /** An http-mode risk property that is only validated when that bean is actually built. */
+    private static Duration required(Duration value, String name) {
+        if (value == null) {
+            throw new IllegalStateException(name + " must be set when paymesh.risk.mode=http");
+        }
+
+        return value;
     }
 }
