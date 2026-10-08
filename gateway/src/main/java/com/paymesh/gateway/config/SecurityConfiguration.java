@@ -76,6 +76,13 @@ public class SecurityConfiguration {
                 // (ADR-041) rather than at the monolith, but the edge's reasoning is unchanged: no
                 // bearer token exists to evaluate here either.
                 .requestMatchers("/sim/v1/**").permitAll()
+                // Payment's confirm path calls the risk service directly, machine to machine
+                // (ADR-044) -- the same shape as the provider/refund/payout callbacks above, not
+                // like engagement's /internal/v1/audit-events/** (a platform-admin HUMAN reads
+                // those with a real bearer token, so the edge still checks one there). No caller of
+                // this route ever holds a merchant or platform token; RiskEvaluationKeyFilter is the
+                // authentication, at the risk deployable itself.
+                .requestMatchers(POST, "/internal/v1/risk-evaluations/**").permitAll()
                 // Everything else under the API needs a valid token, proven here at the edge.
                 .anyRequest().authenticated()
             )

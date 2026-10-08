@@ -1,6 +1,6 @@
 # PayMesh — Project Status
 
-_Last updated: 9 September 2026._
+_Last updated: 8 October 2026._
 
 This is the pick-up-here document: what's built, what each PR decided and what it cost, phase by
 phase, ending with where to start next. Full ADRs live in `docs/decisions/`; this is the
@@ -538,12 +538,35 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
   accepted and stated, not silently dropped; `OutboxEvent.merchantId` being nullable is now a fact
   every future reader of an outbox event must handle, not only engagement's own consumers.
 
-- **PR 9 — Risk.** *(ADR-044, planned)* Goal: the first *synchronous* extraction — payment's confirm
-  needs a risk decision over the network, not a method call. Planned shape: Resilience4j around a
-  gateway/mesh call, with ADR-030's fail-open/fail-closed-by-tier policy (specified for a Redis
-  outage) extended to also cover "risk service unreachable." Verification target: a risk timeout
-  applies the documented policy and records that it did — payments must neither hang nor silently
-  allow through an unreachable risk check.
+- **PR 9 — Risk.** *(ADR-044)* Delivers: the first *synchronous* extraction (`risk/`, port 8085, the
+  sixth deployable) — payment's confirm gets its risk decision over HTTP, not a method call. Same
+  package (`com.paymesh.risk`), own pom, own `risk` schema reached as the fenced `risk_svc` role, own
+  Kafka consumer group (`paymesh-risk`), own Flyway history: `V1` adopts `risk_assessments` +
+  `denylist_entries` (`baseline-on-migrate`), `V2` creates the platform-table copies, `V3` creates
+  the new `payment_intent_ref` read model. Decision: **the seam does not move, only the transport**
+  — `RiskCheck` (ADR-008) and `ConfirmPaymentIntentService` are unchanged; a second
+  implementation, `RiskServiceHttpCheck`, joins the in-process `RiskModuleCheck`, and
+  `paymesh.risk.mode` (default `in-process`) picks between them. This is **dual path**: the
+  in-process code stays wired in the monolith, so rollback is a property flip, not a redeploy — which
+  is why, uniquely among the extractions, there is **no monolith migration** and the `payment → risk`
+  boundary allowance stays. Risk owns `POST /internal/v1/risk-evaluations`, authenticated by a shared
+  key (`RiskEvaluationKeyFilter`, the simulator's minimal shape, not JWT — no merchant token reaches
+  it). Velocity becomes **event-fed**: `PaymentModuleVelocityLookup`'s in-process reach into Payment
+  is replaced by a `payment_intent_ref` read model fed by a `PaymentCreatedProjector` on
+  `payment.created` — accepting a stated eventual-consistency lag rather than re-coupling Payment and
+  Risk. Resilience: the confirm→risk call is wrapped in a Resilience4j circuit breaker (programmatic,
+  hand-wired, not the AOP starter) plus socket timeouts; ADR-030's fail-**closed-uniformly** policy
+  (written for a Redis outage that was never built) is **not extended but replaced** by a by-tier
+  policy *defined here* for "risk unreachable" — below `fallback-block-at-or-above-minor` (default
+  50000) fail **open** (allow + record), at/above fail **closed** (`RiskUnavailableException` → 503,
+  distinct from a real block's 422). Genuine unavailability (timeout/5xx/connection/breaker-open)
+  reaches the by-tier fallback; a 4xx or a malformed 2xx body is `RiskServiceProtocolException` and
+  fails **loud** (500), never a silent risk bypass. Gateway: `riskRoutes` (`@Order(0)`,
+  subset-of-`/internal/**`) → `risk-uri` (:8085), proven by `GatewayRiskRouteTest`; the edge permits
+  the path unauthenticated (shared-key'd at the deployable). Tradeoff: the `shared` subtree is now
+  duplicated across six modules until PR 16; the velocity lag and the placeholder 50000 threshold are
+  accepted and stated; the monolith keeps risk's code and schema access until a later PR fences it —
+  the price of property-flip rollback.
 
 ### 3C — Extraction wave 2: supporting core (planned)
 
@@ -600,41 +623,31 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
 
 ## Where we are now
 
-**On branch `service/engagement`.** Phase 1 and Phase 2 are complete. Phase 3 wave 3A (PR 1–5) is
+**On branch `service/risk`.** Phase 1 and Phase 2 are complete. Phase 3 wave 3A (PR 1–5) is
 merged — Kafka backbone, dual-path relay, schema-per-service, merchant reference projection, API
-gateway. Phase 3B PR 6 (the pilot), PR 7 (Webhook) and PR 8 (Engagement) are complete: the Provider
-Simulator (`provider-sim/`, port 8082, ADR-041), Webhook (`webhook/`, port 8083, ADR-042) and
-Engagement (`engagement/`, port 8084, ADR-043 — Notification + Reporting + Audit) now run as their
-own deployables — five independently-built Maven modules now exist (`backend/`, `gateway/`,
-`provider-sim/`, `webhook/`, `engagement/`), each with its own `pom.xml` and its own `./mvnw`. 43
-ADRs. The monolith's migrations are now V1–V40 (`V40` drops `NOT NULL` on
-`platform.outbox_events.merchant_id`, ADR-043 §4 — a platform-scoped audited action has no tenant to
-carry, mirroring `audit_events.merchant_id`'s own nullability since V36); `provider-sim`'s own
-Flyway history starts a separate V1 in the `simulator` schema; `webhook`'s own history adopts the
-`webhook` schema at V1 then creates its platform-table copies at V2; `engagement`'s own history
-adopts the `engagement` schema's five existing tables at V1 (`notifications`, `report_facts`,
-`report_exports`, `audit_events`, `audit_exports`) then creates its own
-`processed_events`/`idempotency_records`/`outbox_events` at V2, the same pattern, with
-`outbox_events.merchant_id` nullable from the start.
+gateway. Phase 3B PR 6–9 are complete: the Provider Simulator (`provider-sim/`, port 8082, ADR-041),
+Webhook (`webhook/`, port 8083, ADR-042), Engagement (`engagement/`, port 8084, ADR-043) and **Risk**
+(`risk/`, port 8085, ADR-044 — the first *synchronous* extraction) now run as their own deployables —
+**six** independently-built Maven modules now exist (`backend/`, `gateway/`, `provider-sim/`,
+`webhook/`, `engagement/`, `risk/`), each with its own `pom.xml` and its own `./mvnw`. 44 ADRs. The
+monolith's migrations are unchanged at V1–V40 — PR 9 adds **no** monolith migration, because its
+dual path keeps the in-process risk code and its `risk`-schema access alive in the monolith (rollback
+is `paymesh.risk.mode=in-process`, a property flip). `risk`'s own Flyway history adopts the `risk`
+schema's two existing tables (`risk_assessments`, `denylist_entries`) at V1, creates its
+`processed_events`/`idempotency_records`/`outbox_events` copies at V2, and creates the new
+`payment_intent_ref` velocity read model at V3.
 
-1186 backend tests + 137 engagement tests + 122 webhook tests + 92 provider-sim tests + 18 gateway
-tests, all green. Backend's count dropped from 1325 (PR 7's count) as the three capabilities' own
-tests moved to `engagement` with the package; three monolith tests were adapted rather than left to
-fail: `LedgerConfigurationTest`/`RefundConfigurationTest` dropped `notification.*`/`reporting.*` from
-their exhaustive per-event consumer lists, and `OutboxEventTest.rejectsANullMerchant` became
-`permitsANullMerchantForAPlatformScopedEvent`. `ModuleBoundaryTest`'s notification and audit
-leaf-boundary tests were removed (ADR-041's precedent: neither package exists in `backend` any more
-for `assertOnlyTheseImport` to walk). Two new engagement tests
-(`RecordMerchantStatusChangeAuditHandlerIntegrationTest`'s equivalent —
-`AuditRecordingIntegrationTest`, adapted — and `RecordUserAccessAuditHandlerIntegrationTest`, new)
-prove the two generalized audit consumers end to end, alongside the `RecordWebhookSecretRotationAuditHandlerIntegrationTest`
-that moved over from the monolith unchanged. Two gateway tests
-(`GatewayEngagementRouteTest`, seven cases) prove the new routes' precedence over both the `/api/**`
-and `/internal/**` catch-alls.
+1201 backend tests + 28 risk tests + 137 engagement tests + 122 webhook tests + 92 provider-sim tests
++ 20 gateway tests, all green. Backend rose from 1186 with 15 new payment-side tests
+(`RiskServiceHttpCheckTest` — clean decision, below/at-threshold unreachable, timeout-not-hang, 4xx/
+malformed-2xx fail-loud, and the breaker actually reaching OPEN; `RiskUnavailablePolicyTest`;
+`PaymentExceptionHandlerTest` for the 503). Risk's 28 are the moved module suite plus new coverage of
+`PaymentCreatedProjector` (idempotent, guest-skip), the `payment_intent_ref` velocity count, and the
+shared-key filter. Two gateway tests (`GatewayRiskRouteTest`) prove the risk route's precedence over
+the `/internal/**` catch-all. The `payment → risk` `ModuleBoundaryTest` allowance **stays** (unlike
+the earlier leaf extractions, which removed theirs) because the in-process dependency is still real.
 
-**Next up: PR 9 — Risk** (ADR-044, planned). The first *synchronous* extraction: payment's confirm
-needs a real network call to a risk decision, not a method call, wrapped in Resilience4j with
-ADR-030's fail-open/fail-closed-by-tier policy extended to cover "risk service unreachable." Read
-`docs/phase-3-microservices-extraction-plan.md` §"PR 9 — Risk" before starting it.
-
-Read `docs/phase-3-microservices-extraction-plan.md` §"PR 7 — Webhook" before starting it.
+**Next up: PR 10 — Identity** (ADR-045, planned). Authentication becomes its own service, since every
+other service depends on validating its tokens: token *issuance* moves there, token *validation*
+stays distributed (gateway and each service verify independently). Read
+`docs/phase-3-microservices-extraction-plan.md` §"PR 10 — Identity" before starting it.

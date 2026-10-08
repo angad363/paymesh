@@ -53,6 +53,12 @@ paymesh:
     # profile is the sole active one, so copying it into a real environment variable fails startup
     # loudly rather than letting anyone forge a callback for any payment.
     callback-secret: dev-only-insecure-provider-callback-secret-change-me
+  risk:
+    # Byte-for-byte the risk deployable's own dev value (risk/application-dev.yaml) -- these two
+    # MUST agree, or a test that flips paymesh.risk.mode to http gets a 401 from the risk service.
+    # Mode stays in-process (application.yaml's default) under this profile; this key is inert
+    # unless a test overrides the mode.
+    evaluate-key: dev-only-insecure-risk-evaluate-key-change-me
   events:
     # in-process, not the both default (ADR-037). This is the profile the whole
     # test suite runs under, so this is what keeps ~450 tests needing no broker:

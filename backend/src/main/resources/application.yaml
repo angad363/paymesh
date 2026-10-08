@@ -456,6 +456,25 @@ paymesh:
     # the affected rows rather than invisible in all of them.
     velocity-window: 1h
 
+    # --- ADR-044: how Payment's confirm reaches a risk decision -----------------
+    # SAFE DEFAULT: in-process, the dual-path safety net. A deployment topology
+    # that has actually extracted the risk service (risk/, port 8085) flips this
+    # to `http` -- see application-dev.yaml and the risk deployable's own
+    # application.yaml for the shared key both sides must agree on.
+    mode: in-process
+    evaluate-url: http://localhost:8085/internal/v1/risk-evaluations
+    evaluate-key:
+    connect-timeout: 2s
+    read-timeout: 3s
+    # The by-tier fallback threshold RiskUnavailablePolicy applies when Risk
+    # cannot be reached at all (RiskServiceHttpCheck, http mode only). See
+    # RiskClientProperties' own javadoc for why 50000 is a placeholder
+    # proportionate figure, not a risk-modelled one.
+    fallback-block-at-or-above-minor: 50000
+    breaker-sliding-window-size: 10
+    breaker-failure-rate-threshold: 50
+    breaker-wait-duration-in-open-state: 10s
+
   # --- Order expiry sweep (ADR-014) -------------------------------------------
   # orders.expires_at is a deadline the merchant sets and, until this sweep existed,
   # nothing ever acted on: the status stayed PENDING forever. This is the job that

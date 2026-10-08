@@ -185,6 +185,17 @@ public final class ConfirmPaymentIntentService {
      * lost and confirming anyway would only mean confirming into a database that is not answering.
      * A fail-open default would matter if Risk were a network call to somewhere else, and if it
      * ever becomes one, this line is the one to revisit.
+     * <p>
+     * <b>IT HAS BECOME ONE (ADR-044).</b> {@code paymesh.risk.mode=http} routes {@link #risk}
+     * through {@code RiskServiceHttpCheck} instead of the in-process {@code RiskModuleCheck} this
+     * paragraph originally described -- this method itself is unchanged, because {@link RiskCheck}
+     * is the seam ADR-008 built for exactly this substitution. What changed is what happens on
+     * FAILURE to reach Risk: that case is no longer "the transaction is already lost" (a network
+     * call failing says nothing about this database connection), so it is handled one layer down,
+     * inside {@code RiskServiceHttpCheck}, by a by-amount fail-open/fail-closed policy
+     * ({@code RiskUnavailablePolicy}) rather than by this method's fail-closed default. This method
+     * still fails closed for the one failure it can still see: an exception this call does not
+     * catch and convert (a bug, not an outage) still fails the confirm, same as before.
      */
     private void requireAcceptableRisk(PaymentIntent intent, String device) {
         RiskCheck.Decision decision = risk.evaluate(

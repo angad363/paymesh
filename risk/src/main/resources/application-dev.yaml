@@ -1,0 +1,34 @@
+# ============================================================================
+#  Local development overrides for the risk service.
+#
+#  Every @SpringBootTest here carries @ActiveProfiles("dev"); the outbox relay
+#  is OFF for the same reason the monolith's is: a relay ticking mid-test could
+#  mutate rows a test is asserting on. PublishOutboxEventsService is a plain
+#  bean either way, and every test that needs it drives publish() directly.
+# ============================================================================
+
+spring:
+  datasource:
+    # The fenced role ADR-038 already created (NOLOGIN by default). A one-time
+    # `ALTER ROLE risk_svc LOGIN PASSWORD '...'` is a README step, same shape as
+    # every other deployable's own bootstrap (ADR-041/042/043).
+    username: risk_svc
+    password: risk_dev_password
+
+paymesh:
+  risk:
+    # A throwaway value, byte-for-byte agreed with the monolith's own dev
+    # RiskServiceHttpCheck configuration (backend's application-dev.yaml) --
+    # these two MUST match, or a dev confirm calling this service 401s.
+    evaluate-key: dev-only-insecure-risk-evaluate-key-change-me
+  events:
+    delivery:
+      mode: in-process
+    outbox-relay:
+      enabled: false
+
+# --- Actuator (dev only) ------------------------------------------------------
+management:
+  endpoint:
+    health:
+      show-details: always

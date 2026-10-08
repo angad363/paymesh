@@ -36,6 +36,10 @@ paymesh:
     # /internal/v1/audit-events/** and /internal/v1/audit-exports/** forward (ADR-043,
     # PR 8): the engagement deployable (Notification + Reporting + Audit).
     engagement-uri: ${PAYMESH_GATEWAY_ENGAGEMENT_URI:http://localhost:8084}
+    # Where /internal/v1/risk-evaluations/** forwards (ADR-044, PR 9): the risk deployable, the
+    # first *synchronous* capability to leave the monolith's process -- Payment's confirm calls it
+    # over the network rather than in-process.
+    risk-uri: ${PAYMESH_GATEWAY_RISK_URI:http://localhost:8085}
     # Redis backs the distributed rate limiter so N gateway instances share one
     # limit instead of admitting N times the traffic.
     redis-uri: ${PAYMESH_GATEWAY_REDIS_URI:redis://localhost:6379}
