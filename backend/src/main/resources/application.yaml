@@ -47,7 +47,11 @@ spring:
       # resolve an unqualified table name in. This app maps no entity into it
       # and never calls it: webhook now consumes domain events over Kafka
       # (ADR-042 section 5), never a call this application makes.
-      connection-init-sql: SET search_path TO identity, merchant, payment, ledger, settlement, risk, engagement, platform, public
+      # `platform` FIRST (PR 13). outbox_events, processed_events and idempotency_records now also exist
+      # in every extracted service's own schema, so an unqualified name must resolve to the monolith's
+      # platform copy, not whichever service schema comes first. The "globally unique" premise above
+      # no longer holds for those three names; every other name still does.
+      connection-init-sql: SET search_path TO platform, identity, merchant, payment, ledger, settlement, risk, engagement, public
 
   # --- JPA / Hibernate -------------------------------------------------------
   jpa:

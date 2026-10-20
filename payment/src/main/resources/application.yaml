@@ -1,0 +1,146 @@
+# ============================================================================
+#  PayMesh payment service (ADR-048)
+#
+#  A separate deployable beside the monolith, the gateway, provider-sim,
+#  webhook, engagement, risk, identity, merchant and settlement: customers,
+#  orders, payment intents, provider callbacks and refunds, moved out together
+#  because they share one transactional boundary. Listens on 8089. Shares the
+#  monolith's PostgreSQL cluster but owns exactly one schema (`payment`) and
+#  connects as the fenced `payment_svc` role ADR-038 already created.
+#
+#  It never calls the ledger: payment.succeeded / refund.succeeded events are
+#  what the ledger posts from (ADR-048 section 1). Risk is reached over HTTP
+#  (ADR-044). ApiKey callers are verified against the local api_credential_ref
+#  projection (ADR-048 section 4, option 3).
+#
+#  EXCLUSIVE OWNERSHIP OF THE SWEEPERS (ADR-048 section 7): exactly ONE process
+#  runs each of the order-expiry, PROCESSING-timeout, abandoned-intent and
+#  refund-timeout sweeps. Here they default FALSE: a stock start must never run them beside
+#  the monolith. The cutover step turns them on here and off in the monolith, in one move. Two processes running the
+#  PROCESSING timeout can each fail a live intent.
+# ============================================================================
+
+spring:
+  application:
+    name: paymesh-payment
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/paymesh
+    # Empty: this file is committed. The dev profile supplies the throwaway
+    # `payment_svc` credential; other environments use
+    # SPRING_DATASOURCE_USERNAME/PASSWORD.
+    username:
+    password:
+    hikari:
+      # `public` stays for `is_prefixed_id` and the refund trigger functions.
+      connection-init-sql: SET search_path TO payment, public
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        jdbc:
+          jdbc_metadata_extraction_strategy: individually
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    schemas: payment
+    # ADOPTS the existing customers/orders/payment_intents/refunds/... and
+    # merchant_ref tables (V1); V2 creates the platform tables, V3 the
+    # api_credential_ref projection.
+    baseline-on-migrate: true
+    baseline-version: "1"
+
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      auto-offset-reset: earliest
+      properties:
+        metadata.max.age.ms: 5000
+
+paymesh:
+  security:
+    jwt:
+      # Verify-only here (identity mints). The SAME shared HS256 secret the gateway and every
+      # other deployable verifies with (ADR-040). Empty by default; supply
+      # PAYMESH_SECURITY_JWT_SECRET or run the dev profile.
+      secret: ${PAYMESH_SECURITY_JWT_SECRET:}
+
+  provider:
+    # HMAC-SHA256 key for POST /internal/v1/provider-callbacks/{provider}: the ONLY authentication
+    # on the endpoint that marks a payment SUCCEEDED. Empty by default (@NotBlank refuses to start);
+    # supply PAYMESH_PROVIDER_CALLBACK_SECRET or run the dev profile.
+    callback-secret: ${PAYMESH_PROVIDER_CALLBACK_SECRET:}
+
+  refund:
+    # HMAC-SHA256 key for /internal/v1/refund-callbacks/**, its own property so the two can rotate
+    # independently. Supply PAYMESH_REFUND_CALLBACK_SECRET or run the dev profile.
+    callback-secret: ${PAYMESH_REFUND_CALLBACK_SECRET:}
+
+  risk:
+    # `http` is the only mode that exists in this service (ADR-048 section 3); the by-amount
+    # fail-closed policy of ADR-044 is unchanged.
+    mode: http
+    evaluate-url: http://localhost:8085/internal/v1/risk-evaluations
+    evaluate-key: ${PAYMESH_RISK_EVALUATE_KEY:}
+    connect-timeout: 2s
+    read-timeout: 3s
+    fallback-block-at-or-above-minor: 50000
+    breaker-sliding-window-size: 10
+    breaker-failure-rate-threshold: 50
+    breaker-wait-duration-in-open-state: 10s
+
+  # The four sweepers. Each flag is a single switch of exclusive ownership (ADR-048 section 7).
+  orders:
+    expiry-sweep:
+      enabled: false
+      interval: 5m
+      batch-size: 200
+
+  payments:
+    processing-timeout:
+      enabled: false
+      interval: 5m
+      # Lower only with a reconciliation job in place (ADR-015 section 4).
+      age: 1h
+      batch-size: 100
+    abandoned-intents:
+      enabled: false
+      interval: 5m
+      age: 30m
+      batch-size: 100
+
+  refunds:
+    processing-timeout:
+      enabled: false
+      age: 6h
+      interval: 5m
+      batchSize: 100
+
+  events:
+    delivery:
+      mode: both
+    outbox-relay:
+      enabled: true
+      interval: 2s
+      batch-size: 100
+      max-attempts: 25
+      backlog-alert-age: 5m
+
+server:
+  port: 8089
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include:
+          - health
+          - info
+  endpoint:
+    health:
+      show-details: never

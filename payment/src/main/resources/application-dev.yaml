@@ -1,0 +1,51 @@
+# Local development overrides for the payment service. Every @SpringBootTest carries
+# @ActiveProfiles("dev"). The outbox relay is ON so payment.* / refund.* events reach the monolith's
+# ledger when run by hand; every SWEEPER is OFF, because this is the profile the suite runs under
+# and a timer failing intents or expiring orders mid-assertion is a flake generator. The sweep
+# services are plain beans, so tests call them directly. (ADR-048 section 7: in a real topology
+# exactly one process has each sweeper flag true.)
+
+spring:
+  datasource:
+    # The fenced role ADR-038 created (NOLOGIN by default); a one-time
+    # `ALTER ROLE payment_svc LOGIN PASSWORD '...'` is the README step.
+    username: payment_svc
+    password: payment_dev_password
+
+paymesh:
+  security:
+    jwt:
+      # Byte-for-byte every other deployable's dev value; these MUST agree.
+      secret: dev-only-insecure-jwt-signing-secret-change-me
+  provider:
+    # Byte-for-byte the monolith's and provider-sim's dev values.
+    callback-secret: dev-only-insecure-provider-callback-secret-change-me
+  refund:
+    callback-secret: dev-only-insecure-refund-callback-secret-change-me
+  risk:
+    # Byte-for-byte risk/application-dev.yaml's evaluate key.
+    evaluate-key: dev-only-insecure-risk-evaluate-key-change-me
+  orders:
+    expiry-sweep:
+      enabled: false
+  payments:
+    processing-timeout:
+      enabled: false
+    abandoned-intents:
+      enabled: false
+  refunds:
+    processing-timeout:
+      enabled: false
+  events:
+    delivery:
+      # `both` so a hand-run service reaches the monolith's ledger over Kafka. pom.xml's surefire
+      # config overrides this to in-process (and the relay off) for the suite: no broker, no timer
+      # moving orders to PAID under an assertion. Tests drive publish() directly.
+      mode: both
+    outbox-relay:
+      enabled: true
+
+management:
+  endpoint:
+    health:
+      show-details: always

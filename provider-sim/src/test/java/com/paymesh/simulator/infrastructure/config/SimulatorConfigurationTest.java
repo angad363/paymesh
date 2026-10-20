@@ -107,6 +107,15 @@ class SimulatorConfigurationTest {
         assertThat(properties.callbackUrl()).contains("/internal/v1/provider-callbacks");
     }
 
+    /** ADR-048 section 5: callbacks go through the gateway (:8081), never straight at a service. */
+    @Test
+    void pointsBothCallbackUrlsAtTheGatewayNotAService() {
+        SimulatorProperties properties = context.getBean(SimulatorProperties.class);
+
+        assertThat(properties.callbackUrl()).startsWith("http://localhost:8081/");
+        assertThat(properties.payoutCallbackUrl()).startsWith("http://localhost:8081/");
+    }
+
     @Test
     void bindsTheDispatchTuning() {
         SimulatorDispatchProperties properties = context.getBean(SimulatorDispatchProperties.class);

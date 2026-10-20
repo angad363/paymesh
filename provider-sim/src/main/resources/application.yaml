@@ -77,14 +77,15 @@ paymesh:
     #     PAYMESH_SIMULATOR_API_KEY=<32+ random bytes>
     # or run the dev profile, which supplies a throwaway value.
     api-key:
-    # Where signed callbacks are POSTed -- the MONOLITH, still on 8080. Configurable
+    # Where signed callbacks are POSTed -- the GATEWAY (:8081, ADR-048 section 5), which decides
+    # whether the payment service or the monolith answers each prefix. Configurable
     # rather than derived, because this module is built to be deployed away from
     # PayMesh entirely (SDD 13.6); a URL computed from local settings could only
     # ever reach a PayMesh in the same process.
-    callback-url: http://localhost:8080/internal/v1/provider-callbacks/simulator
+    callback-url: http://localhost:8081/internal/v1/provider-callbacks/simulator
     # Where PAYOUT callbacks go. A second URL rather than a path derived from the
     # first, for the same reason.
-    payout-callback-url: http://localhost:8080/internal/v1/payout-callbacks/simulator
+    payout-callback-url: http://localhost:8081/internal/v1/payout-callbacks/simulator
     dispatch:
       # true: register the scheduled bean. Off -> the timer does not exist at all
       # (@ConditionalOnProperty). ON BY DEFAULT, OFF under dev -- dev is the

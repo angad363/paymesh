@@ -304,6 +304,65 @@ public class RoutesConfiguration {
     }
 
     /**
+     * THE EIGHTH RE-POINTED ROUTE (ADR-048, PR 13): customers, orders, payment intents and refunds
+     * leave the monolith together for the payment deployable. Dual path by re-point: rollback is
+     * setting {@code payment-uri} back to {@code backend-uri} (together with flipping the four
+     * sweeper flags between the two processes in the same step -- ADR-048 section 7).
+     * <p>
+     * {@code @Order(0)} is LOAD-BEARING, for the same subset reason as {@link #settlementRoutes}:
+     * each prefix below is a SUBSET of {@link #apiRoutes}' {@code /api/**}, so without an explicit
+     * order a request could silently fall through to the monolith. Rate limited like every other
+     * {@code /api} group: authenticated client traffic.
+     */
+    @Bean
+    @Order(0)
+    RouterFunction<ServerResponse> paymentRoutes(
+        @Value("${paymesh.gateway.payment-uri}") String paymentUri,
+        @Value("${paymesh.gateway.rate-limit.capacity:100}") long capacity,
+        @Value("${paymesh.gateway.rate-limit.period-seconds:60}") long periodSeconds
+    ) {
+        return route("paymesh-payment")
+            .route(
+                path("/api/v1/customers").or(path("/api/v1/customers/**"))
+                    .or(path("/api/v1/orders")).or(path("/api/v1/orders/**"))
+                    .or(path("/api/v1/payment-intents")).or(path("/api/v1/payment-intents/**"))
+                    .or(path("/api/v1/refunds")).or(path("/api/v1/refunds/**")),
+                http()
+            )
+            .before(uri(paymentUri))
+            .filter(rateLimitGuard(rateLimit(config -> config
+                .setCapacity(capacity)
+                .setPeriod(Duration.ofSeconds(periodSeconds))
+                .setStatusCode(HttpStatus.TOO_MANY_REQUESTS)
+                .setKeyResolver(RoutesConfiguration::clientKey))))
+            .build();
+    }
+
+    /**
+     * THE INTERNAL HALF OF ADR-048's RE-POINT: the provider callback and the refund callback, which
+     * now land on the payment deployable. NOT rate limited and NOT JWT'd at the edge
+     * ({@code SecurityConfiguration} permits both; the HMAC filter at the deployable is the
+     * authentication): a provider retrying an outcome it is entitled to retry must not be throttled
+     * into a payment stranded in PROCESSING. {@code @Order(0)}: both are SUBSETS of {@link
+     * #internalCallbackRoutes}' {@code /internal/**}. provider-sim's callback URLs point at THIS
+     * gateway (ADR-048 section 5), so this is the single place that decides which process answers.
+     */
+    @Bean
+    @Order(0)
+    RouterFunction<ServerResponse> paymentInternalRoutes(
+        @Value("${paymesh.gateway.payment-uri}") String paymentUri
+    ) {
+        return route("paymesh-payment-internal")
+            .route(
+                path("/internal/v1/provider-callbacks").or(path("/internal/v1/provider-callbacks/**"))
+                    .or(path("/internal/v1/refund-callbacks")).or(path("/internal/v1/refund-callbacks/**")),
+                http()
+            )
+            .before(uri(paymentUri))
+            .build();
+    }
+
+    /**
      * THE FOURTH RE-POINTED ROUTE (ADR-044, PR 9), and the first one fronting a SYNCHRONOUS
      * extraction rather than an event consumer: Payment's confirm calls
      * {@code /internal/v1/risk-evaluations} over the network now (via the shared mesh URL

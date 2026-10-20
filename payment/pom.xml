@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+	<parent>
+		<groupId>org.springframework.boot</groupId>
+		<artifactId>spring-boot-starter-parent</artifactId>
+		<version>4.1.0</version>
+		<relativePath/>
+	</parent>
+
+	<!-- A SEPARATE DEPLOYABLE, NOT A MODULE OF backend (ADR-048, PR 13). Customer, order, payment
+	     and refund move here together; same recipe as ADR-041..047. JWT is verify-only (identity
+	     mints); ApiKey is verified locally against the api_credential_ref projection. Build with
+	     its own `./mvnw` here. -->
+	<groupId>com.paymesh</groupId>
+	<artifactId>payment</artifactId>
+	<version>0.0.1-SNAPSHOT</version>
+	<name>payment</name>
+	<description>PayMesh payment service (customer, order, payment, refund), extracted (ADR-048)</description>
+
+	<properties>
+		<java.version>21</java.version>
+	</properties>
+
+	<dependencies>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-actuator</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-validation</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-webmvc</artifactId>
+		</dependency>
+
+		<!-- JWT verify-only (shared HS256 secret, ADR-040) plus the ApiKey filter's Jwt carrier. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-security</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.springframework.security</groupId>
+			<artifactId>spring-security-oauth2-jose</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.springframework.security</groupId>
+			<artifactId>spring-security-oauth2-resource-server</artifactId>
+		</dependency>
+
+		<!-- Producer of payment.* / refund.* / order.* events; consumer group paymesh-payment. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-kafka</artifactId>
+		</dependency>
+
+		<!-- Persistence: this module's own schema (`payment`), its own Flyway history, no other
+		     capability's tables. -->
+		<!-- Circuit breaker around RiskServiceHttpCheck (ADR-044): programmatic core API only. -->
+		<dependency>
+			<groupId>io.github.resilience4j</groupId>
+			<artifactId>resilience4j-circuitbreaker</artifactId>
+			<version>2.2.0</version>
+		</dependency>
+
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-data-jpa</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.postgresql</groupId>
+			<artifactId>postgresql</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-core</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-database-postgresql</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-flyway</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-webmvc-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>org.springframework.security</groupId>
+			<artifactId>spring-security-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-testcontainers</artifactId>
+			<scope>test</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-junit-jupiter</artifactId>
+			<scope>test</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-postgresql</artifactId>
+			<scope>test</scope>
+		</dependency>
+
+		<!-- Stubs the risk service for RiskServiceHttpCheckTest (same artifact and version as backend). -->
+		<dependency>
+			<groupId>org.wiremock</groupId>
+			<artifactId>wiremock-standalone</artifactId>
+			<version>3.13.0</version>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<!-- The suite runs under the dev profile, whose relay is ON and delivery mode `both`
+					     (right for a hand-run service). Tests drive PublishOutboxEventsService directly;
+					     a 2s timer moving orders to PAID under an assertion is a flake generator, and
+					     the Kafka listener would need a broker. System properties outrank the yaml. -->
+					<systemPropertyVariables>
+						<paymesh.events.outbox-relay.enabled>false</paymesh.events.outbox-relay.enabled>
+						<paymesh.events.delivery.mode>in-process</paymesh.events.delivery.mode>
+						<!-- No risk service runs under test: unreachable risk must FAIL OPEN for every amount
+						     so confirm-path fixtures work. RiskUnavailablePolicyTest and
+						     RiskServiceHttpCheckTest pin the real by-amount policy. -->
+						<paymesh.risk.fallback-block-at-or-above-minor>9223372036854775807</paymesh.risk.fallback-block-at-or-above-minor>
+					</systemPropertyVariables>
+				</configuration>
+			</plugin>
+			<plugin>
+				<groupId>org.springframework.boot</groupId>
+				<artifactId>spring-boot-maven-plugin</artifactId>
+				<configuration>
+					<!-- Same reason as every other deployable's: application.yaml ships no secrets,
+					     so a plain `mvn spring-boot:run` refuses to start. -->
+					<profiles>
+						<profile>dev</profile>
+					</profiles>
+				</configuration>
+			</plugin>
+		</plugins>
+	</build>
+
+</project>
