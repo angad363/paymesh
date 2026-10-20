@@ -15,6 +15,7 @@ import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.access.AccessDeniedHandler;
 import tools.jackson.databind.ObjectMapper;
 
+import static org.springframework.http.HttpMethod.GET;
 import static org.springframework.http.HttpMethod.POST;
 
 /**
@@ -110,6 +111,10 @@ public class SecurityConfiguration {
                 // merchant's token either -- this route decides that PayMesh's own cash left the
                 // building, and a merchant able to call it could confirm their own payouts.
                 .requestMatchers(POST, "/internal/v1/payout-callbacks/**").permitAll()
+                // Settlement's read of the ledger (ADR-047 section 1a): machine to machine, no
+                // PayMesh token, authenticated by LedgerReadKeyFilter's shared key and unreachable
+                // from the gateway (it routes no /internal/v1/ledger prefix).
+                .requestMatchers(GET, "/internal/v1/ledger/**").permitAll()
                 // NO /sim/v1/** MATCHER HERE (ADR-041). The provider simulator left this process in
                 // PR 6 -- it is a separate deployable now, with its own security filter
                 // (SimulatorApiKeyFilter) guarding its own routes. This application no longer serves

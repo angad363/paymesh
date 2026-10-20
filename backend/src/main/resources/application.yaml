@@ -426,6 +426,9 @@ paymesh:
     answer-timeout: 1h
 
   ledger:
+    # ADR-047: the shared key the settlement SERVICE presents (X-PayMesh-Ledger-Key) to read
+    # /internal/v1/ledger/**. Blank = the route 401s every call (fail closed).
+    read-key: ${PAYMESH_LEDGER_READ_KEY:}
     release:
       # OFF under dev, same reason as every other sweep: the suite runs on this
       # profile and a timer moving a merchant's balance between a test's setup

@@ -11,7 +11,9 @@ import com.paymesh.shared.outbox.infrastructure.persistence.jpa.JpaOutboxWriter;
 import com.paymesh.shared.outbox.infrastructure.persistence.jpa.JpaProcessedEventRepository;
 import com.paymesh.shared.outbox.infrastructure.persistence.jpa.SpringDataOutboxRepository;
 import com.paymesh.shared.outbox.infrastructure.health.OutboxBacklogHealthIndicator;
+import com.paymesh.shared.outbox.infrastructure.kafka.KafkaEventErrorHandler;
 import com.paymesh.shared.outbox.infrastructure.kafka.KafkaEventListener;
+import org.springframework.kafka.listener.DefaultErrorHandler;
 import com.paymesh.shared.outbox.infrastructure.kafka.KafkaEventPublisher;
 import com.paymesh.shared.outbox.infrastructure.persistence.jpa.SpringDataProcessedEventRepository;
 import com.paymesh.shared.outbox.infrastructure.schedule.OutboxRelay;
@@ -113,6 +115,18 @@ public class OutboxConfiguration {
     )
     KafkaEventListener kafkaEventListener(EventDispatcher eventDispatcher, ObjectMapper objectMapper) {
         return new KafkaEventListener(eventDispatcher, objectMapper);
+    }
+
+    /**
+     * Boot applies a {@code CommonErrorHandler} bean to its listener container factory.
+     * Unbounded retry for {@code settlement.batch_cut} only; see {@link KafkaEventErrorHandler}.
+     */
+    @Bean
+    @ConditionalOnProperty(
+        name = "paymesh.events.delivery.mode", havingValue = "both", matchIfMissing = true
+    )
+    DefaultErrorHandler kafkaEventErrorHandler(ObjectMapper objectMapper) {
+        return KafkaEventErrorHandler.create(objectMapper);
     }
 
     /**

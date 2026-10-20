@@ -1,0 +1,41 @@
+# Local development overrides for the settlement service. Every @SpringBootTest carries
+# @ActiveProfiles("dev"). The outbox relay is ON (the merchant service's dev fix): the cut's
+# settlement.batch_cut / payout.* events must reach the monolith's ledger when run by hand. Tests
+# drive the services directly and never assert on published_at.
+
+spring:
+  datasource:
+    # The fenced role ADR-038 created (NOLOGIN by default); a one-time
+    # `ALTER ROLE settlement_svc LOGIN PASSWORD '...'` is the README step.
+    username: settlement_svc
+    password: settlement_dev_password
+
+paymesh:
+  security:
+    jwt:
+      # Byte-for-byte every other deployable's dev value; these MUST agree.
+      secret: dev-only-insecure-jwt-signing-secret-change-me
+  settlement:
+    sweep:
+      # TRUE HERE, FALSE IN THE MONOLITH'S dev profile (ADR-047 section 2): exactly one sweeper.
+      # The first tick is 10m away, so no test is racing a timer; the services are plain beans.
+      enabled: true
+    payouts:
+      url: http://localhost:8082/sim/v1/payouts
+      # Byte-for-byte the simulator's and the monolith's dev values.
+      api-key: dev-only-insecure-simulator-api-key-change-me
+      callback-secret: dev-only-insecure-provider-callback-secret-change-me
+    ledger:
+      url: http://localhost:8080
+      # Byte-for-byte backend/application-dev.yaml's paymesh.ledger.read-key.
+      key: dev-only-insecure-ledger-read-key-change-me
+  events:
+    delivery:
+      mode: both
+    outbox-relay:
+      enabled: true
+
+management:
+  endpoint:
+    health:
+      show-details: always

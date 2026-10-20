@@ -2,12 +2,17 @@ package com.paymesh.ledger.application;
 
 import com.paymesh.ledger.domain.LedgerAccount;
 import com.paymesh.ledger.domain.LedgerTransaction;
+import com.paymesh.shared.outbox.application.OutboxWriter;
+import com.paymesh.shared.outbox.domain.EventId;
+import com.paymesh.shared.outbox.domain.OutboxEvent;
 import com.paymesh.shared.tenant.MerchantId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
 
@@ -41,19 +46,37 @@ public final class PostSettlementJournalsService {
 
     private final LedgerAccountRepository accounts;
     private final LedgerTransactionRepository transactions;
+    private final BalanceRepository balances;
+    private final OutboxWriter outbox;
     private final Clock clock;
 
     public PostSettlementJournalsService(
         LedgerAccountRepository accounts,
         LedgerTransactionRepository transactions,
+        BalanceRepository balances,
+        OutboxWriter outbox,
         Clock clock
     ) {
         this.accounts = accounts;
         this.transactions = transactions;
+        this.balances = balances;
+        this.outbox = outbox;
         this.clock = clock;
     }
 
-    /** Available becomes in-transit. */
+    /**
+     * Available becomes in-transit -- IF the batch still fits (ADR-047 section 4, option A).
+     * <p>
+     * Settlement cuts from a read of the ledger it cannot lock, so by the time this event arrives a
+     * release-reversal or a refund may have shrunk available below what the batch claims. Posting
+     * anyway would leave {@code MERCHANT_AVAILABLE} negative as the silent result of a race. So a
+     * batch that is not already posted is re-validated here, against the available balance as it
+     * stands now: if it does not fit, NOTHING is posted and {@code settlement.batch_rejected} is
+     * emitted in the same transaction, and Settlement reverts its own side. A redelivery of a batch
+     * already posted skips the check (its own debit is in the balance by then).
+     *
+     * @return the journal, or empty when the batch was rejected
+     */
     public Optional<LedgerTransaction> postBatchCut(
         MerchantId merchantId,
         String settlementBatchId,
@@ -61,8 +84,31 @@ public final class PostSettlementJournalsService {
         String currency,
         Instant occurredAt
     ) {
-        return post(
-            LedgerTransaction.settlementBatchCutIdempotencyKey(settlementBatchId),
+        String key = LedgerTransaction.settlementBatchCutIdempotencyKey(settlementBatchId);
+        // THE LOCK COMES BEFORE THE READ, and the idempotency decision is made UNDER the lock. Read
+        // first and two deliveries with distinct event ids can both see "not posted", and the second
+        // would then re-sum available (already reduced by the first) and emit a rejection for a batch
+        // the ledger had in fact posted. Writers of available take the same row lock.
+        boolean firstDelivery = false;
+        if (amountMinor > 0) {
+            accounts.openAndLock(LedgerAccount.merchantAvailable(merchantId, currency, Instant.now(clock)));
+            firstDelivery = transactions.findByIdempotencyKey(key).isEmpty();
+        }
+
+        if (firstDelivery) {
+            long available = balances.byMerchant(merchantId).stream()
+                .filter(balance -> balance.currency().equals(currency))
+                .mapToLong(MerchantBalance::availableMinor)
+                .sum();
+
+            if (available < amountMinor) {
+                reject(merchantId, settlementBatchId, amountMinor, currency, available);
+                return Optional.empty();
+            }
+        }
+
+        Optional<LedgerTransaction> posted = post(
+            key,
             merchantId,
             amountMinor,
             now -> LedgerTransaction.settlementBatchCut(
@@ -75,6 +121,59 @@ public final class PostSettlementJournalsService {
                 occurredAt,
                 now
             )
+        );
+
+        if (firstDelivery) {
+            // SETTLEMENT MAY SUBMIT THE PAYOUT ONLY AFTER THIS. Same transaction as the journal, so
+            // "posted" and "told Settlement it posted" commit or roll back together. A redelivery
+            // of an already-posted cut emits nothing: the first delivery's event is in the outbox.
+            emit("ledger.batch_posted", merchantId, settlementBatchId, amountMinor, currency);
+        }
+
+        return posted;
+    }
+
+    private void emit(
+        String eventType, MerchantId merchantId, String settlementBatchId, long amountMinor,
+        String currency
+    ) {
+        Instant now = Instant.now(clock);
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("settlementBatchId", settlementBatchId);
+        payload.put("merchantId", merchantId.value());
+        payload.put("amountMinor", amountMinor);
+        payload.put("currency", currency);
+        payload.put("occurredAt", now.toString());
+
+        outbox.append(new OutboxEvent(
+            EventId.generate(), merchantId, "SETTLEMENT_BATCH", settlementBatchId,
+            eventType, 1, payload, now
+        ));
+    }
+
+    private void reject(
+        MerchantId merchantId, String settlementBatchId, long amountMinor, String currency,
+        long availableMinor
+    ) {
+        Instant now = Instant.now(clock);
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("settlementBatchId", settlementBatchId);
+        payload.put("merchantId", merchantId.value());
+        payload.put("amountMinor", amountMinor);
+        payload.put("currency", currency);
+        payload.put("availableMinor", availableMinor);
+        payload.put("reason", "batch of " + amountMinor + " exceeds available " + availableMinor);
+        payload.put("occurredAt", now.toString());
+
+        outbox.append(new OutboxEvent(
+            EventId.generate(), merchantId, "SETTLEMENT_BATCH", settlementBatchId,
+            "settlement.batch_rejected", 1, payload, now
+        ));
+
+        log.warn(
+            "Rejected stale settlement batch, nothing posted settlementBatchId={} merchantId={}"
+                + " amount={} available={} {}",
+            settlementBatchId, merchantId.value(), amountMinor, availableMinor, currency
         );
     }
 

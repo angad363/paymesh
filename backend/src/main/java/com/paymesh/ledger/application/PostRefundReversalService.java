@@ -120,13 +120,16 @@ public final class PostRefundReversalService {
             .findByIdempotencyKey(LedgerTransaction.fundsReleasedIdempotencyKey(paymentIntentId))
             .isPresent();
 
-        LedgerAccount merchantSide = accounts.open(released
-            // AND IT MAY GO NEGATIVE. A merchant refunding after being paid out owes PayMesh the
-            // money, and a payment platform has to be able to say so. Clamping at zero would be a
-            // second copy of the truth that disagrees with the entries.
-            ? LedgerAccount.merchantAvailable(merchantId, currency, now)
-            : LedgerAccount.merchantPending(merchantId, currency, now)
-        );
+        // AND IT MAY GO NEGATIVE. A merchant refunding after being paid out owes PayMesh the
+        // money, and a payment platform has to be able to say so. Clamping at zero would be a
+        // second copy of the truth that disagrees with the entries.
+        //
+        // The available branch takes the available-account row lock (after the payment lock
+        // above): the batch-cut staleness check reads available under that same lock, so a debit
+        // cannot commit between its check and its post.
+        LedgerAccount merchantSide = released
+            ? accounts.openAndLock(LedgerAccount.merchantAvailable(merchantId, currency, now))
+            : accounts.open(LedgerAccount.merchantPending(merchantId, currency, now));
 
         // Not caught, for the same reason the capture posting is not: a concurrent duplicate rolls
         // back the dispatcher's transaction along with the inbox row, and redelivery finds the

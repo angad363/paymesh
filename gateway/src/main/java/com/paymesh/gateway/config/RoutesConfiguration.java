@@ -69,6 +69,22 @@ public class RoutesConfiguration {
             .build();
     }
 
+    /**
+     * {@code /internal/v1/ledger/**} is the monolith's service-to-service read for Settlement
+     * (ADR-047), authenticated by a shared key and never meant for the edge. {@link
+     * #internalCallbackRoutes} forwards every {@code /internal/**}, so without this it would be
+     * publicly reachable through the gateway. {@code @Order(0)} (a SUBSET of that route) answers 404
+     * and forwards nothing.
+     */
+    @Bean
+    @Order(0)
+    RouterFunction<ServerResponse> blockedLedgerReadRoutes() {
+        return org.springframework.web.servlet.function.RouterFunctions.route(
+            path("/internal/v1/ledger").or(path("/internal/v1/ledger/**")),
+            request -> ServerResponse.notFound().build()
+        );
+    }
+
     @Bean
     RouterFunction<ServerResponse> internalCallbackRoutes(
         @Value("${paymesh.gateway.backend-uri}") String backendUri
@@ -219,8 +235,8 @@ public class RoutesConfiguration {
      * {@code @Order(0)} for the same subset reason as {@link #identityRoutes}: {@code
      * /api/v1/merchants/**} is a SUBSET of {@link #apiRoutes}' {@code /api/**}. The bare
      * {@code /api/v1/merchants} (self-serve registration, public at the edge per ADR-040) is matched
-     * explicitly. {@code /api/v1/settlement-config} is deliberately NOT routed here: that table is
-     * in the {@code settlement} schema and moves with PR 12.
+     * explicitly. {@code /api/v1/settlement-config} is deliberately NOT routed here: it belongs to
+     * {@link #settlementRoutes} (PR 12).
      */
     @Bean
     @Order(0)
@@ -238,6 +254,53 @@ public class RoutesConfiguration {
                 .setStatusCode(HttpStatus.TOO_MANY_REQUESTS)
                 .setKeyResolver(RoutesConfiguration::clientKey))))
             .build();
+    }
+
+    /**
+     * THE SEVENTH RE-POINTED ROUTE (ADR-047, PR 12): payout callbacks, the settlement reads and the
+     * settlement config leave the monolith for the settlement deployable. Dual path by re-point:
+     * rollback is setting {@code settlement-uri} back to {@code backend-uri} (together with flipping
+     * {@code paymesh.settlement.sweep.enabled} between the two processes -- ADR-047 section 2/7).
+     * <p>
+     * {@code @Order(0)} is LOAD-BEARING for both halves, for the same reason as {@link #riskRoutes}
+     * and {@link #merchantRoutes}: {@code /internal/v1/payout-callbacks/**} is a SUBSET of {@link
+     * #internalCallbackRoutes}' {@code /internal/**} and {@code /api/v1/settlements/**} and
+     * {@code /api/v1/settlement-config/**} are SUBSETS of {@link #apiRoutes}' {@code /api/**}; without
+     * an explicit order a request could silently fall through to the monolith.
+     * <p>
+     * Two routes in one bean because they are treated differently. The callback is NOT rate limited
+     * and NOT JWT'd at the edge ({@code SecurityConfiguration} permits it; the HMAC filter at the
+     * deployable is the authentication): a provider retrying a payout outcome it is entitled to
+     * retry must not be throttled into a stranded payout. The client reads and the config are client
+     * traffic, rate limited like every other {@code /api} group.
+     */
+    @Bean
+    @Order(0)
+    RouterFunction<ServerResponse> settlementRoutes(
+        @Value("${paymesh.gateway.settlement-uri}") String settlementUri,
+        @Value("${paymesh.gateway.rate-limit.capacity:100}") long capacity,
+        @Value("${paymesh.gateway.rate-limit.period-seconds:60}") long periodSeconds
+    ) {
+        RouterFunction<ServerResponse> callbacks = route("paymesh-settlement-callbacks")
+            .route(path("/internal/v1/payout-callbacks").or(path("/internal/v1/payout-callbacks/**")), http())
+            .before(uri(settlementUri))
+            .build();
+
+        RouterFunction<ServerResponse> client = route("paymesh-settlement")
+            .route(
+                path("/api/v1/settlements").or(path("/api/v1/settlements/**"))
+                    .or(path("/api/v1/settlement-config")).or(path("/api/v1/settlement-config/**")),
+                http()
+            )
+            .before(uri(settlementUri))
+            .filter(rateLimitGuard(rateLimit(config -> config
+                .setCapacity(capacity)
+                .setPeriod(Duration.ofSeconds(periodSeconds))
+                .setStatusCode(HttpStatus.TOO_MANY_REQUESTS)
+                .setKeyResolver(RoutesConfiguration::clientKey))))
+            .build();
+
+        return callbacks.and(client);
     }
 
     /**

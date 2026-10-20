@@ -18,7 +18,11 @@ import com.paymesh.ledger.application.HoldingPeriodPolicy;
 import com.paymesh.ledger.application.ReleaseAvailableFundsService;
 import com.paymesh.ledger.infrastructure.settlement.SettlementModuleHoldingPeriod;
 import com.paymesh.settlement.application.GetSettlementConfigService;
+import com.paymesh.ledger.infrastructure.security.LedgerReadKeyFilter;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.ObjectMapper;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -127,10 +131,12 @@ public class LedgerConfiguration {
     com.paymesh.ledger.application.PostSettlementJournalsService postSettlementJournalsService(
         LedgerAccountRepository ledgerAccountRepository,
         LedgerTransactionRepository ledgerTransactionRepository,
+        BalanceRepository balanceRepository,
+        com.paymesh.shared.outbox.application.OutboxWriter outboxWriter,
         Clock clock
     ) {
         return new com.paymesh.ledger.application.PostSettlementJournalsService(
-            ledgerAccountRepository, ledgerTransactionRepository, clock
+            ledgerAccountRepository, ledgerTransactionRepository, balanceRepository, outboxWriter, clock
         );
     }
 
@@ -174,5 +180,16 @@ public class LedgerConfiguration {
             ledgerTransactions, ledgerAccounts, balances, holdingPeriodPolicy,
             transactionTemplate, clock, properties.batchSize()
         );
+    }
+
+    /**
+     * Authentication for Settlement's read of the ledger (ADR-047). Blank key = every call 401.
+     * Constructed inline so Boot cannot also auto-register it and run it twice.
+     */
+    @Bean
+    FilterRegistrationBean<LedgerReadKeyFilter> ledgerReadKeyFilterRegistration(
+        @Value("${paymesh.ledger.read-key:}") String readKey, ObjectMapper objectMapper
+    ) {
+        return new FilterRegistrationBean<>(new LedgerReadKeyFilter(readKey, objectMapper));
     }
 }

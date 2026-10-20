@@ -33,4 +33,16 @@ public interface LedgerAccountRepository {
      * a balance, with no constraint violated and nothing anywhere reading as an error.
      */
     LedgerAccount open(LedgerAccount candidate);
+
+    /**
+     * {@link #open}, then {@code SELECT ... FOR UPDATE} on the account row.
+     * <p>
+     * The lock that serialises every writer of one merchant's {@code MERCHANT_AVAILABLE} balance
+     * (the ledger has no balance projection to lock -- ADR-018 section 5 -- so the account row is
+     * the row). The batch-cut staleness check, the release job and a refund that debits available
+     * all take it BEFORE they read or post, so a check cannot pass on a world a concurrent debit is
+     * about to change. Always taken after any payment-journal lock, never before, so the order is
+     * one and cannot deadlock.
+     */
+    LedgerAccount openAndLock(LedgerAccount candidate);
 }

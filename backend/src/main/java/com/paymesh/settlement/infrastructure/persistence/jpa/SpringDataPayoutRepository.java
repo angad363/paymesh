@@ -21,12 +21,19 @@ public interface SpringDataPayoutRepository extends JpaRepository<PayoutJpaEntit
      * IDS rather than entities, and that is not a style choice: mapping a row inside the repository
      * call puts it outside the caller's per-item try, which is exactly how one unreadable row
      * disabled five sweeps in this codebase (open item 2).
+     * <p>
+     * ONLY PAYOUTS WHOSE BATCH THE LEDGER HAS POSTED ({@code POSTED}). Submitting earlier would let
+     * the provider pay a batch the Ledger may still reject (ADR-047 section 8).
      */
     @Query("""
         select p.payoutId
         from PayoutJpaEntity p
         where p.status in ('PENDING', 'SUBMITTED')
           and p.nextAttemptAt <= :now
+          and exists (
+              select 1 from SettlementBatchJpaEntity b
+              where b.settlementBatchId = p.settlementBatchId and b.status = 'POSTED'
+          )
         order by p.nextAttemptAt asc
         """)
     List<String> findDue(@Param("now") Instant now, Limit limit);
