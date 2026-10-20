@@ -1,0 +1,126 @@
+# ============================================================================
+#  PayMesh identity and access service (ADR-022/023/024/027, ADR-045)
+#
+#  A separate deployable beside the monolith, the gateway, provider-sim,
+#  webhook, engagement and risk (ADR-045, PR 10): register/login/refresh/
+#  logout, moved out. It listens on 8086. It shares the monolith's PostgreSQL
+#  cluster but owns exactly one schema (`identity`), connects as the fenced
+#  `identity_svc` role ADR-038 already created, and cannot see any other
+#  schema's tables even by accident.
+#
+#  TOKEN VALIDATION STAYS SHARED-HS256 (ADR-045 section 1). This deployable
+#  both mints and verifies with the SAME secret the gateway, webhook and
+#  engagement already reconstruct their own decoders from -- it is not a
+#  move to asymmetric keys.
+# ============================================================================
+
+spring:
+  application:
+    name: paymesh-identity
+
+  # --- Datasource: the fenced `identity_svc` role, one schema only -----------
+  datasource:
+    url: jdbc:postgresql://localhost:5432/paymesh
+    # Empty here for the same reason as every other deployable's: this file is
+    # committed. The dev profile supplies the throwaway `identity_svc`
+    # credential; every other environment supplies its own via
+    # SPRING_DATASOURCE_USERNAME/PASSWORD.
+    username:
+    password:
+    hikari:
+      # ONE SCHEMA, NOT TEN. `public` stays for `is_prefixed_id`, which every
+      # CHECK constraint in this schema calls.
+      connection-init-sql: SET search_path TO identity, public
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        jdbc:
+          # Same reason as every other deployable's: with entities carrying no
+          # explicit schema, ddl-auto=validate must look each mapped table up
+          # on its own rather than reading one schema's whole catalogue.
+          jdbc_metadata_extraction_strategy: individually
+
+  # --- Flyway: this module's OWN history, in its OWN schema (ADR-045) --------
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    schemas: identity
+    # ADOPTS THE EXISTING users/user_roles/refresh_tokens/security_events tables
+    # (V1) rather than re-running their DDL, and CREATES the platform tables
+    # this deployable needs its own copy of (V2) -- the ADR-041/042/043/044
+    # pattern unchanged.
+    baseline-on-migrate: true
+    baseline-version: "1"
+
+  # --- Kafka (ADR-036, ADR-037): platform parity only -- identity produces
+  #     identity.user_access.audited and consumes nothing today.
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      auto-offset-reset: earliest
+      properties:
+        metadata.max.age.ms: 5000
+
+# --- PayMesh security (Identity and Access) ----------------------------------
+paymesh:
+  security:
+    jwt:
+      # HS256 signing key, MINTED AND VERIFIED HERE (ADR-045 section 1) -- the
+      # SAME shared secret the gateway, webhook and engagement already
+      # reconstruct their own verify-only decoders from (ADR-040). Declared but
+      # deliberately EMPTY, and the application refuses to start without it.
+      # Supply it as PAYMESH_SECURITY_JWT_SECRET, or run the dev profile.
+      secret:
+      # Short by design (SDD 8.6). An access token cannot be revoked before it
+      # expires -- nothing checks a denylist -- so its lifetime IS the
+      # revocation window.
+      access-token-ttl: 15m
+      # Long-lived, because it is revocable: it is a row, and logout or
+      # detected reuse revokes it immediately.
+      refresh-token-ttl: 30d
+    password:
+      # BCrypt cost factor: 2^10 rounds, Spring Security's default and the
+      # usual ~100ms-per-verification target on current hardware.
+      bcrypt-strength: 10
+    # THE EMAIL OF THE FIRST PLATFORM ADMIN. Empty by default, and empty means
+    # the bootstrap does nothing at all. See the monolith's own copy of this
+    # comment (IdentityConfiguration.platformAdminBootstrap) for the full
+    # story (ADR-027).
+    bootstrap-platform-admin-email:
+
+  # --- Outbox relay (ADR-016, ADR-025, ADR-037) -------------------------------
+  # This module's own inbox/outbox. identity.user_access.audited is a real
+  # producer here (ADR-043 section 4, ADR-045 section 5), not platform parity
+  # alone: ManageUserAccessService appends it in the same transaction as every
+  # privileged user-management action, for engagement's
+  # RecordUserAccessAuditHandler to turn back into an audit_events row.
+  events:
+    delivery:
+      mode: both
+    outbox-relay:
+      enabled: true
+      interval: 2s
+      batch-size: 100
+      max-attempts: 25
+      backlog-alert-age: 5m
+
+# --- Web server --------------------------------------------------------------
+server:
+  port: 8086
+  shutdown: graceful
+
+# --- Actuator ------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        include:
+          - health
+          - info
+  endpoint:
+    health:
+      show-details: never

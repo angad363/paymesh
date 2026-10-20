@@ -169,6 +169,48 @@ public class RoutesConfiguration {
     }
 
     /**
+     * THE FIFTH RE-POINTED ROUTE (ADR-045, PR 10): register/login/refresh/logout and the
+     * user-admin surface leave the monolith for the identity deployable.
+     * <p>
+     * {@code @Order(0)} for the same subset reason {@link #webhookRoutes} and
+     * {@link #engagementRoutes} carry it: {@code /api/v1/auth/**} and {@code /api/v1/users/**} are
+     * SUBSETS of {@link #apiRoutes}' {@code /api/**}, so without an explicit order a login or a
+     * user-admin call could silently fall through to the monolith instead of the identity
+     * deployable -- exactly the regression a client would only discover in production, and on the
+     * login path specifically.
+     * <p>
+     * Rate limited, same as every other {@code /api/**} route: it is client traffic, and
+     * {@code /api/v1/auth/register}/{@code /login} are exactly the unauthenticated routes most
+     * worth throttling.
+     * <p>
+     * {@code /api/v1/auth/**} REACHES IDENTITY UNAUTHENTICATED, ON PURPOSE.
+     * {@code SecurityConfiguration} already {@code permitAll()}s this prefix at the edge (ADR-040)
+     * -- it must, or login could never mint the first token for a caller who by definition does
+     * not have one yet. {@code /api/v1/users/**} carries no matcher of its own there and stays
+     * behind {@code anyRequest().authenticated()}, so it is JWT-gated at the edge AND
+     * re-validated at the identity deployable itself (defense in depth, the same posture every
+     * other authenticated route gets). {@code GatewayIdentityRouteTest} proves both halves and the
+     * precedence over {@link #apiRoutes}.
+     */
+    @Bean
+    @Order(0)
+    RouterFunction<ServerResponse> identityRoutes(
+        @Value("${paymesh.gateway.identity-uri}") String identityUri,
+        @Value("${paymesh.gateway.rate-limit.capacity:100}") long capacity,
+        @Value("${paymesh.gateway.rate-limit.period-seconds:60}") long periodSeconds
+    ) {
+        return route("paymesh-identity")
+            .route(path("/api/v1/auth/**").or(path("/api/v1/users/**")), http())
+            .before(uri(identityUri))
+            .filter(rateLimitGuard(rateLimit(config -> config
+                .setCapacity(capacity)
+                .setPeriod(Duration.ofSeconds(periodSeconds))
+                .setStatusCode(HttpStatus.TOO_MANY_REQUESTS)
+                .setKeyResolver(RoutesConfiguration::clientKey))))
+            .build();
+    }
+
+    /**
      * THE FOURTH RE-POINTED ROUTE (ADR-044, PR 9), and the first one fronting a SYNCHRONOUS
      * extraction rather than an event consumer: Payment's confirm calls
      * {@code /internal/v1/risk-evaluations} over the network now (via the shared mesh URL
