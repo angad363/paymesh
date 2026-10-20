@@ -25,4 +25,14 @@ public final class GetBalancesService {
     public List<MerchantBalance> forMerchant(MerchantId merchantId) {
         return balances.byMerchant(merchantId);
     }
+
+    /** The per-payment available contributions Settlement cuts a batch from (ADR-047). */
+    public List<AvailableContribution> availableContributions(MerchantId merchantId) {
+        return balances.availableContributionsByMerchant(merchantId);
+    }
+
+    /** Settlement's candidate list for the sweep (ADR-047). */
+    public List<MerchantId> merchantsWithAnAvailableAccount() {
+        return balances.merchantsWithAnAvailableAccount();
+    }
 }

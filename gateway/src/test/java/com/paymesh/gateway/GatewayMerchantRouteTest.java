@@ -29,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * section 6). The prefix is a SUBSET of {@code apiRoutes}' {@code /api/**}, so without
  * {@code merchantRoutes}' {@code @Order(0)} it could silently fall through to {@code backend-uri}.
  * {@code POST /api/v1/merchants} stays public at the edge; {@code /api/v1/settlement-config} is NOT
- * routed to merchant (it moves with PR 12).
+ * routed to merchant (it is settlement's since PR 12).
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("dev")
@@ -46,6 +46,12 @@ class GatewayMerchantRouteTest extends GatewayIntegrationTestBase {
     @DynamicPropertySource
     static void wireMerchant(DynamicPropertyRegistry registry) {
         registry.add("paymesh.gateway.merchant-uri", () -> "http://localhost:" + MERCHANT.port());
+    }
+
+    /** settlement-config moved to the settlement route (ADR-047); here the monolith stands in for it. */
+    @DynamicPropertySource
+    static void settlementUriIsTheStandInBackend(DynamicPropertyRegistry registry) {
+        registry.add("paymesh.gateway.settlement-uri", () -> "http://localhost:" + BACKEND.port());
     }
 
     @BeforeEach
@@ -107,7 +113,7 @@ class GatewayMerchantRouteTest extends GatewayIntegrationTestBase {
         WireMock.verify(1, getRequestedFor(urlPathEqualTo("/api/v1/merchants/mrc_x/api-credentials")));
     }
 
-    /** Settlement config is NOT merchant's (ADR-046 section 1): it still reaches the monolith. */
+    /** Settlement config is NOT merchant's (ADR-046 section 1): it is settlement's (ADR-047), never merchant. */
     @Test
     void doesNotRouteSettlementConfigToMerchant() throws Exception {
         HttpResponse<String> response =

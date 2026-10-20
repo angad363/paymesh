@@ -124,7 +124,9 @@ public final class ReleaseAvailableFundsService {
             LedgerAccount pending = accounts.open(
                 LedgerAccount.merchantPending(merchantId, candidate.currency(), now)
             );
-            LedgerAccount available = accounts.open(
+            // Locked, so a batch-cut staleness check (which reads available under this same lock)
+            // never interleaves with the credit this posts. Taken after the payment lock above.
+            LedgerAccount available = accounts.openAndLock(
                 LedgerAccount.merchantAvailable(merchantId, candidate.currency(), now)
             );
 

@@ -133,6 +133,8 @@ paymesh:
   # ReleaseAvailableFundsService is a plain bean, so tests call release()
   # directly and never wait for a timer.
   ledger:
+    # Byte-for-byte settlement/application-dev.yaml's paymesh.settlement.ledger.key.
+    read-key: dev-only-insecure-ledger-read-key-change-me
     release:
       enabled: false
 
@@ -141,6 +143,10 @@ paymesh:
     # POSTs payouts at the simulator, so a tick landing mid-test rewrites the
     # balance under assertion AND queues callbacks nobody asked for. Both
     # services are plain beans, so tests call them directly.
+    #
+    # ADR-047 section 2: this flag is ALSO the single switch of exclusive ownership of the cut.
+    # Exactly one process (the settlement service, in its own dev profile) has it true; the
+    # monolith keeps it false here so two sweepers can never cut one merchant twice.
     sweep:
       enabled: false
     payouts:

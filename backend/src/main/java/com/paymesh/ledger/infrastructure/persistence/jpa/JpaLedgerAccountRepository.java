@@ -49,4 +49,13 @@ public final class JpaLedgerAccountRepository implements LedgerAccountRepository
             )
         );
     }
+
+    @Override
+    public LedgerAccount openAndLock(LedgerAccount candidate) {
+        LedgerAccount account = open(candidate);
+
+        accounts.lockById(account.ledgerAccountId().value());
+
+        return account;
+    }
 }

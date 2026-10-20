@@ -73,4 +73,11 @@ public interface SpringDataLedgerAccountRepository
         @Param("normalBalance") String normalBalance,
         @Param("createdAt") Instant createdAt
     );
+
+    /** Row lock only; ids back, never an entity (see {@code SpringDataLedgerTransactionRepository}). */
+    @Query(
+        value = "select a.ledger_account_id from ledger_accounts a where a.ledger_account_id = :id for update",
+        nativeQuery = true
+    )
+    java.util.List<String> lockById(@Param("id") String id);
 }

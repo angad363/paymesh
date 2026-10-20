@@ -103,21 +103,46 @@ public record SettlementBatch(
         );
     }
 
-    /** The provider confirmed. Intent-revealing, like every other transition in this codebase. */
-    public SettlementBatch markPaid(Instant now) {
-        return transitionTo(SettlementBatchStatus.PAID, now);
-    }
-
-    /** The payout failed terminally; the funds are going back to available. */
-    public SettlementBatch markReturned(Instant now) {
-        return transitionTo(SettlementBatchStatus.RETURNED, now);
-    }
-
-    private SettlementBatch transitionTo(SettlementBatchStatus target, Instant now) {
+    /** The Ledger confirmed it posted this cut. Idempotent: a batch already past PENDING_PAYOUT is returned unchanged. */
+    public SettlementBatch markPosted(Instant now) {
+        // A ledger "posted" for a batch already reverted is a real disagreement between the two
+        // sides, not a redelivery: refuse it loudly rather than swallowing it.
+        if (status == SettlementBatchStatus.RETURNED) {
+            throw new SettlementBatchNotPendingException(settlementBatchId, status);
+        }
         if (status != SettlementBatchStatus.PENDING_PAYOUT) {
+            return this;
+        }
+
+        return withStatus(SettlementBatchStatus.POSTED, now);
+    }
+
+    /** The provider confirmed. Only a posted batch can be paid: its payout is never submitted earlier. */
+    public SettlementBatch markPaid(Instant now) {
+        requireStatus(SettlementBatchStatus.POSTED);
+
+        return withStatus(SettlementBatchStatus.PAID, now);
+    }
+
+    /**
+     * The payout failed terminally, or the Ledger rejected the cut; the funds are (or never left)
+     * available. Allowed from PENDING_PAYOUT (rejected) and POSTED (payout failed).
+     */
+    public SettlementBatch markReturned(Instant now) {
+        if (status != SettlementBatchStatus.PENDING_PAYOUT && status != SettlementBatchStatus.POSTED) {
             throw new SettlementBatchNotPendingException(settlementBatchId, status);
         }
 
+        return withStatus(SettlementBatchStatus.RETURNED, now);
+    }
+
+    private void requireStatus(SettlementBatchStatus required) {
+        if (status != required) {
+            throw new SettlementBatchNotPendingException(settlementBatchId, status);
+        }
+    }
+
+    private SettlementBatch withStatus(SettlementBatchStatus target, Instant now) {
         return new SettlementBatch(
             settlementBatchId, merchantId, currency, netAmountMinor, target, items, cutAt,
             createdAt, now

@@ -151,9 +151,16 @@ public final class SubmitPayoutsService {
 
         Instant now = Instant.now(clock);
 
-        transactions.execute(status ->
-            payouts.save(claimed.submitted(providerReference, now, answerTimeout))
-        );
+        // RE-LOCK, do not save the stale claim. A callback can answer while the HTTP call is in
+        // flight; saving the in-memory claim would regress a PAID or FAILED payout back to SUBMITTED.
+        transactions.execute(status -> {
+            Payout current = payouts.findForUpdate(payoutId).orElse(null);
+            if (current == null || current.isTerminal()) {
+                log.info("Payout answered during submission, not regressing payoutId={}", payoutId.value());
+                return null;
+            }
+            return payouts.save(current.submitted(providerReference, now, answerTimeout));
+        });
 
         return Attempt.SUBMITTED;
     }

@@ -167,6 +167,11 @@ class PostPaymentCapturedServiceTest {
         }
 
         @Override
+        public LedgerAccount openAndLock(LedgerAccount candidate) {
+            return open(candidate);
+        }
+
+        @Override
         public LedgerAccount open(LedgerAccount candidate) {
             LedgerAccount existing = byReference.get(candidate.accountReference());
 

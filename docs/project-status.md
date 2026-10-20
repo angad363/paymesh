@@ -616,13 +616,21 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
   get no role. The identity dev profile also now runs the event relay, matching merchant. Tests:
   identity 121, backend 1201 (the register test is now a regression for the self-grant), all green.
 
-- **PR 12 — Settlement.** *(ADR-047, planned)* Goal: settlement runs standalone, reading the
-  (still-monolith) Ledger's available balance **across the wire** rather than in-process. Planned
-  shape: the batch-net-equals-items invariant stays a deferred trigger entirely inside the settlement
-  schema (it never crossed a service boundary, so extraction doesn't touch it); a forced final-payout
-  failure posts its reversal via a Ledger API call instead of a local method.
-
-### 3D — Extraction wave 3: the money path (planned)
+- **PR 12 — Settlement.** *(ADR-047)* Delivers: settlement as its own deployable (`settlement/`,
+  port 8088, the ninth), reached as the fenced `settlement_svc` role, owning `settlement_configs`,
+  batches, items, payouts and payout callbacks. It reads each merchant's available balance over HTTP from
+  a monolith endpoint, and the ledger re-validates every cut on consume. Payouts are submitted only after
+  the ledger has posted the batch (`ledger.batch_posted`), so a rejected batch's payout never leaves.
+  Decisions: the cut race is closed by a merchant-level check under the available-account row lock, and a
+  rejected batch is reverted in settlement without a ledger reversal, because the ledger posted nothing.
+  Dual path with exclusive sweeper ownership via `paymesh.settlement.sweep.enabled`, which the cutover
+  runbook flips in one step. Tradeoffs stated in ADR-047: the posting read is a snapshot that the lock
+  closes only for the ledger's own writers; in-flight batches must be drained before the V41/V3 backfill
+  marks them posted; the sweeper flip and the cutover order are a runbook, not code.
+  Known, not closed: the consume-time check and the release path are covered by one two-thread test
+  (refund side only through the foreign-key lock), the submit re-lock and the posted-after-returned
+  refusal have no regression test yet, and the duplicated revert and sweep code between `backend/` and
+  `settlement/` are a recipe cost to fold into PR 16.
 
 - **PR 13 — Payment (Order + Payment + Customer + Refund).** *(ADR-048, planned)* Goal: the
   synchronous money path leaves as **one** service, kept together because these four share the
@@ -658,14 +666,15 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
 
 ## Where we are now
 
-**On branch `service/merchant`.** Phase 1 and Phase 2 are complete. Phase 3 wave 3A (PR 1–5) is
+**On branch `service/settlement`.** Phase 1 and Phase 2 are complete. Phase 3 wave 3A (PR 1–5) is
 merged — Kafka backbone, dual-path relay, schema-per-service, merchant reference projection, API
 gateway. Phase 3B PR 6–9 are merged: the Provider Simulator (`provider-sim/`, port 8082, ADR-041),
 Webhook (`webhook/`, port 8083, ADR-042), Engagement (`engagement/`, port 8084, ADR-043) and **Risk**
 (`risk/`, port 8085, ADR-044 — the first *synchronous* extraction). PR 10 — **Identity** (`identity/`,
 port 8086, ADR-045) — is merged (PR #74). PR 11 — **Merchant** (`merchant/`, port 8087, ADR-046) — is
-complete on its branch and awaiting review and merge. **Eight** independently-built Maven modules exist
-(`backend/`, `gateway/`, `provider-sim/`, `webhook/`, `engagement/`, `risk/`, `identity/`, `merchant/`),
+complete on its branch and awaiting review and merge. PR 12 — **Settlement** (`settlement/`, port 8088, ADR-047) — is complete on its
+branch and awaiting merge. **Nine** independently-built Maven modules exist
+(`backend/`, `gateway/`, `provider-sim/`, `webhook/`, `engagement/`, `risk/`, `identity/`, `merchant/`, `settlement/`),
 each with its own `pom.xml` and its own `./mvnw`. 46 ADRs. The
 monolith's migrations are unchanged at V1–V40 — PR 9 adds **no** monolith migration, because its
 dual path keeps the in-process risk code and its `risk`-schema access alive in the monolith (rollback
@@ -675,7 +684,7 @@ schema's two existing tables (`risk_assessments`, `denylist_entries`) at V1, cre
 `payment_intent_ref` velocity read model at V3.
 
 1201 backend tests + 28 risk tests + 137 engagement tests + 122 webhook tests + 92 provider-sim tests
-+ 30 gateway tests + 121 identity tests + 92 merchant tests, all green. Backend rose from 1186 with 15 new payment-side tests
++ 36 gateway tests + 121 identity tests + 92 merchant tests + 25 settlement tests (backend 1209), all green. Backend rose from 1186 with 15 new payment-side tests
 (`RiskServiceHttpCheckTest` — clean decision, below/at-threshold unreachable, timeout-not-hang, 4xx/
 malformed-2xx fail-loud, and the breaker actually reaching OPEN; `RiskUnavailablePolicyTest`;
 `PaymentExceptionHandlerTest` for the 503). Risk's 28 are the moved module suite plus new coverage of
@@ -684,7 +693,5 @@ shared-key filter. Two gateway tests (`GatewayRiskRouteTest`) prove the risk rou
 the `/internal/**` catch-all. The `payment → risk` `ModuleBoundaryTest` allowance **stays** (unlike
 the earlier leaf extractions, which removed theirs) because the in-process dependency is still real.
 
-**Next up: PR 12 — Settlement** (ADR-047, planned). Settlement runs standalone and takes over
-`settlement_configs`, which PR 11 deliberately left in place. The public self-grant and the identity
-dev relay gap are closed (see the fix entry under Phase 3). Read
-`docs/phase-3-microservices-extraction-plan.md` §"PR 12 — Settlement" before starting it.
+**Next up: PR 13 — Payment** (ADR-048, planned). Before it starts, decide the ApiKey question for payment
+routes (ADR-046 §4) and close the two PR 12 gaps (submit re-lock and posted-after-returned tests).

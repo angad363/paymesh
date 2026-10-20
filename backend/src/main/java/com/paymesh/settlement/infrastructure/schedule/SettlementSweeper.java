@@ -1,6 +1,7 @@
 package com.paymesh.settlement.infrastructure.schedule;
 
 import com.paymesh.settlement.application.CutSettlementBatchesService;
+import com.paymesh.settlement.application.LedgerReadUnavailableException;
 import com.paymesh.settlement.application.SubmitPayoutsService;
 import com.paymesh.settlement.application.AvailableFunds;
 import com.paymesh.shared.tenant.MerchantId;
@@ -46,12 +47,30 @@ public class SettlementSweeper {
         initialDelayString = "${paymesh.settlement.sweep.initial-delay}"
     )
     public void cut() {
-        List<MerchantId> candidates = availableFunds.merchantsWithAnAvailableAccount();
+        List<MerchantId> candidates;
+
+        try {
+            candidates = availableFunds.merchantsWithAnAvailableAccount();
+        } catch (LedgerReadUnavailableException unavailable) {
+            // ADR-047 §5: no candidate list, no cut this tick. The next tick retries.
+            log.warn("Settlement sweep skipped: the ledger candidate read failed", unavailable);
+            return;
+        }
+
         int cut = 0;
+        int skipped = 0;
 
         for (MerchantId merchantId : candidates) {
             try {
                 cut += cutBatches.cutFor(merchantId).size();
+            } catch (LedgerReadUnavailableException unavailable) {
+                // ADR-047 §5: FAIL CLOSED PER MERCHANT. No contributions read, no batch -- a
+                // skip costs one interval of latency, never a mis-sized payout.
+                skipped++;
+                log.warn(
+                    "Skipped settlement cut for merchantId={}: ledger read unavailable",
+                    merchantId.value(), unavailable
+                );
             } catch (RuntimeException failure) {
                 // ONE MERCHANT'S BAD DATA MUST NOT STOP EVERY OTHER MERCHANT BEING PAID. The service
                 // is per-merchant precisely so this boundary can exist here.
@@ -59,8 +78,11 @@ public class SettlementSweeper {
             }
         }
 
-        if (cut > 0) {
-            log.info("Settlement sweep examined={} merchants cut={} batches", candidates.size(), cut);
+        if (cut > 0 || skipped > 0) {
+            log.info(
+                "Settlement sweep examined={} merchants cut={} batches skipped={} merchants (ledger read)",
+                candidates.size(), cut, skipped
+            );
         }
     }
 

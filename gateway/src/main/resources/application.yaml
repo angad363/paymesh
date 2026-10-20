@@ -44,8 +44,13 @@ paymesh:
     # deployable -- register/login/refresh/logout and user-admin, moved out of the monolith.
     identity-uri: ${PAYMESH_GATEWAY_IDENTITY_URI:http://localhost:8086}
     # Where /api/v1/merchants/** forwards (ADR-046, PR 11): the merchant deployable. Rollback is
-    # pointing this back at backend-uri. /api/v1/settlement-config is NOT routed here (PR 12).
+    # pointing this back at backend-uri.
     merchant-uri: ${PAYMESH_GATEWAY_MERCHANT_URI:http://localhost:8087}
+    # Where /internal/v1/payout-callbacks/**, /api/v1/settlements/** and /api/v1/settlement-config/**
+    # forward (ADR-047, PR 12): the settlement deployable. Rollback is pointing this back at
+    # backend-uri AND flipping paymesh.settlement.sweep.enabled between the two processes in the
+    # same step (exactly one sweeper, ADR-047 section 2).
+    settlement-uri: ${PAYMESH_GATEWAY_SETTLEMENT_URI:http://localhost:8088}
     # Redis backs the distributed rate limiter so N gateway instances share one
     # limit instead of admitting N times the traffic.
     redis-uri: ${PAYMESH_GATEWAY_REDIS_URI:redis://localhost:6379}

@@ -38,7 +38,8 @@ import tools.jackson.databind.ObjectMapper;
  * retry, then log and advance the offset). That is enough while in-process remains the authoritative
  * consumer under it (ADR-037 §4) — a record this listener gives up on was already applied in process.
  * A real dead-letter topic / infinite retry belongs to a capability once it is Kafka-ONLY, and is
- * built per service at extraction (PRs 6–14), not here.
+ * built per service at extraction (PRs 6–14), not here. EXCEPTION: {@code settlement.batch_cut} retries
+ * without a budget ({@link KafkaEventErrorHandler}, ADR-047), because dropping it strands a batch.
  */
 public final class KafkaEventListener {
 

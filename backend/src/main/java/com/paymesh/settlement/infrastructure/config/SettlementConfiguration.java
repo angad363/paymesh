@@ -11,6 +11,10 @@ import com.paymesh.settlement.application.PayoutCallbackRepository;
 import com.paymesh.settlement.application.PayoutGateway;
 import com.paymesh.settlement.application.PayoutRepository;
 import com.paymesh.settlement.application.RecordPayoutCallbackService;
+import com.paymesh.settlement.application.RevertRejectedBatchService;
+import com.paymesh.settlement.application.MarkBatchPostedService;
+import com.paymesh.settlement.infrastructure.events.BatchPostedHandler;
+import com.paymesh.settlement.infrastructure.events.BatchRejectedHandler;
 import com.paymesh.settlement.application.SettlementBatchRepository;
 import com.paymesh.settlement.application.SettlementConfigRepository;
 import com.paymesh.settlement.application.SubmitPayoutsService;
@@ -115,6 +119,30 @@ public class SettlementConfiguration {
         return new CutSettlementBatchesService(
             batches, payouts, configs, availableFunds, outboxWriter, transactionTemplate, clock
         );
+    }
+
+    /** ADR-047 §4 option A: the Ledger refused a stale cut, so Settlement undoes its own side. */
+    @Bean
+    RevertRejectedBatchService revertRejectedBatchService(
+        SettlementBatchRepository batches, PayoutRepository payouts, Clock clock
+    ) {
+        return new RevertRejectedBatchService(batches, payouts, clock);
+    }
+
+    @Bean
+    BatchRejectedHandler batchRejectedHandler(RevertRejectedBatchService revert) {
+        return new BatchRejectedHandler(revert);
+    }
+
+    /** ADR-047 section 8: the Ledger posted the cut, so its payout may be submitted. */
+    @Bean
+    MarkBatchPostedService markBatchPostedService(SettlementBatchRepository batches, Clock clock) {
+        return new MarkBatchPostedService(batches, clock);
+    }
+
+    @Bean
+    BatchPostedHandler batchPostedHandler(MarkBatchPostedService markPosted) {
+        return new BatchPostedHandler(markPosted);
     }
 
     @Bean
