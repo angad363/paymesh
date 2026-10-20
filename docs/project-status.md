@@ -602,11 +602,19 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
   re-point, with no monolith migration. Tradeoff: cutover has an operational gate, because the monolith's
   outbox must be drained before the gateway is re-pointed, or `merchant.*` events from the two producers
   can reach projections out of order. This is a runbook step, not enforced by code.
-  Known, not fixed here: public registration still grants `MERCHANT_ADMIN` at any `merchantId` (the
-  ADR-045 gap, now explicitly waived for this PR and still open); the merchant service's Kafka listener
-  subscribes to all topics with no handler, the same as identity, a cost to trim later; and the dev
-  profile's event relay is now enabled so gateway-routed merchant writes reach the monolith projection.
-  Identity's dev profile still has the relay off, a gap to close alongside it.
+  Known, not fixed here: the merchant service's Kafka listener subscribes to all topics with no handler,
+  the same as identity, a cost to trim later. The dev profile's event relay is enabled, so
+  gateway-routed merchant writes reach the monolith projection.
+
+- **Fix — public registration no longer self-grants; identity dev relay on.** *(follow-up to ADR-045)*
+  Delivers: `POST /api/v1/auth/register` no longer grants a role. Registration always creates a user
+  with no roles, and `merchantId` in the body is ignored. Merchant access is granted afterwards by an
+  admin through `POST /api/v1/users/{userId}/merchant-access`. Decision: the self-grant was a real
+  cross-tenant escalation (any caller could name any merchant and become its admin), so the field was
+  dropped rather than gated. Tradeoff: a client that relied on registering straight into a merchant
+  now needs a grant step; the field is ignored rather than rejected, so old clients still register and
+  get no role. The identity dev profile also now runs the event relay, matching merchant. Tests:
+  identity 121, backend 1201 (the register test is now a regression for the self-grant), all green.
 
 - **PR 12 — Settlement.** *(ADR-047, planned)* Goal: settlement runs standalone, reading the
   (still-monolith) Ledger's available balance **across the wire** rather than in-process. Planned
@@ -677,7 +685,6 @@ the `/internal/**` catch-all. The `payment → risk` `ModuleBoundaryTest` allowa
 the earlier leaf extractions, which removed theirs) because the in-process dependency is still real.
 
 **Next up: PR 12 — Settlement** (ADR-047, planned). Settlement runs standalone and takes over
-`settlement_configs`, which PR 11 deliberately left in place. Before it starts, the public
-self-grant of `MERCHANT_ADMIN` (ADR-045) is still open and needs its own decision, and the identity
-dev profile's relay gap (see PR 11) should be closed. Read
+`settlement_configs`, which PR 11 deliberately left in place. The public self-grant and the identity
+dev relay gap are closed (see the fix entry under Phase 3). Read
 `docs/phase-3-microservices-extraction-plan.md` §"PR 12 — Settlement" before starting it.

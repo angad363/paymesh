@@ -7,6 +7,7 @@ import com.paymesh.identity.application.LoginCommand;
 import com.paymesh.identity.application.ManageUserAccessService;
 import com.paymesh.identity.application.RegisterUserCommand;
 import com.paymesh.identity.application.RegisterUserService;
+import com.paymesh.identity.domain.Role;
 import com.paymesh.identity.domain.UserId;
 import com.paymesh.shared.tenant.MerchantId;
 import org.junit.jupiter.api.Test;
@@ -355,9 +356,11 @@ class PlatformAdminIntegrationTest {
     }
 
     private UserId registerUser(String email) {
-        return registerUser.register(
-            new RegisterUserCommand(email, PASSWORD, merchant().value(), "127.0.0.1")
+        UserId userId = registerUser.register(
+            new RegisterUserCommand(email, PASSWORD, "127.0.0.1")
         ).userId();
+        manageUserAccess.grantAccessAt(merchant(), userId, Role.MERCHANT_ADMIN, "test-operator");
+        return userId;
     }
 
     private UserId promoted() {

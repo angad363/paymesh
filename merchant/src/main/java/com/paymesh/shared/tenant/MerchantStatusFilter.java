@@ -146,7 +146,8 @@ public final class MerchantStatusFilter extends OncePerRequestFilter {
         // requirePlatformAdmin: platform roles moved out of that map and the copy went on reading
         // the empty half. One reader now (ADR-027).
         //
-        // This widens nothing a merchant can reach: registration only ever assigns MERCHANT_ADMIN,
+        // This widens nothing a merchant can reach: registration assigns no role (merchant access is
+        // granted afterwards),
         // ck_api_credentials_role refuses a PLATFORM_ADMIN key outright, and ck_user_roles_scope
         // refuses to store the role at a merchant at all. The only way to hold it is for platform
         // staff to have issued it.

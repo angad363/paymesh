@@ -52,8 +52,7 @@ class AuthControllerTest {
                     .content("""
                         {
                           "email": "Owner@FreshBrew.Example",
-                          "password": "%s",
-                          "merchantId": "mrc_550e8400-e29b-41d4-a716-446655440000"
+                          "password": "%s"
                         }
                         """.formatted(PASSWORD))
             )
@@ -61,15 +60,29 @@ class AuthControllerTest {
             .andExpect(jsonPath("$.id").value(matchesPattern("usr_[0-9a-fA-F-]{36}")))
             .andExpect(jsonPath("$.email").value("owner@freshbrew.example"))
             .andExpect(jsonPath("$.status").value("ACTIVE"))
-            .andExpect(jsonPath("$.roles[0].role").value("MERCHANT_ADMIN"))
-            .andExpect(
-                jsonPath("$.roles[0].merchantId")
-                    .value("mrc_550e8400-e29b-41d4-a716-446655440000")
-            )
+            .andExpect(jsonPath("$.roles").isEmpty())
             .andExpect(jsonPath("$.createdAt").exists())
             .andExpect(jsonPath("$.updatedAt").exists())
             // The one field that must never appear in a response.
             .andExpect(jsonPath("$.passwordHash").doesNotExist());
+    }
+
+    /** Registration is public: a merchantId in the body must never self-grant a role. */
+    @Test
+    void ignoresMerchantIdInRegisterBodyAndGrantsNoRole() throws Exception {
+        mockMvc.perform(
+                post("/api/v1/auth/register")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""
+                        {
+                          "email": "selfgrant@freshbrew.example",
+                          "password": "%s",
+                          "merchantId": "mrc_550e8400-e29b-41d4-a716-446655440000"
+                        }
+                        """.formatted(PASSWORD))
+            )
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.roles").isEmpty());
     }
 
     @Test

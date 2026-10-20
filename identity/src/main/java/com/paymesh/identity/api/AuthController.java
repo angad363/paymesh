@@ -48,7 +48,6 @@ public final class AuthController {
         RegisterUserCommand command = new RegisterUserCommand(
             request.email(),
             request.password(),
-            request.merchantId(),
             httpRequest.getRemoteAddr()
         );
 

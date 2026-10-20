@@ -109,8 +109,8 @@ Lifecycle-transition endpoints stay exempt from the gate, as ADR-021 requires, o
 
 Public self-registration is carried over unchanged. It is the same surface ADR-045 flagged: a
 `merchantId` supplied at `POST /api/v1/auth/register` grants `MERCHANT_ADMIN` there, and that is
-identity's flow, not this one. The register fix is its own PR, decided before or alongside identity
-hardening, and this PR neither depends on it nor changes it.
+identity's flow, not this one. That gap is now closed (ADR-045 addendum): registration grants no role,
+so this PR is no longer exposed to it.
 
 ## Consequences
 

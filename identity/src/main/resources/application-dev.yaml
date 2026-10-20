@@ -1,11 +1,9 @@
 # ============================================================================
 #  Local development overrides for the identity service.
 #
-#  Every @SpringBootTest here carries @ActiveProfiles("dev"); the outbox relay
-#  is OFF for the same reason the monolith's and every other extracted
-#  service's is: a relay ticking mid-test could mutate rows a test is
-#  asserting on. PublishOutboxEventsService is a plain bean either way, and
-#  every test that needs it drives publish() directly.
+#  Every @SpringBootTest here carries @ActiveProfiles("dev"). The outbox relay
+#  is ON with delivery mode "both" (as in merchant/), so identity's *.audited
+#  events actually leave the service when run locally.
 # ============================================================================
 
 spring:
@@ -25,9 +23,9 @@ paymesh:
       secret: dev-only-insecure-jwt-signing-secret-change-me
   events:
     delivery:
-      mode: in-process
+      mode: both
     outbox-relay:
-      enabled: false
+      enabled: true
 
 # --- Actuator (dev only) ------------------------------------------------------
 management:

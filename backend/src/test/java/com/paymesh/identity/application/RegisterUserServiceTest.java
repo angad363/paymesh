@@ -1,7 +1,5 @@
 package com.paymesh.identity.application;
 
-import com.paymesh.identity.domain.Role;
-import com.paymesh.identity.domain.RoleAssignment;
 import com.paymesh.identity.domain.SecurityEventType;
 import com.paymesh.identity.domain.User;
 import com.paymesh.identity.domain.UserStatus;
@@ -21,7 +19,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class RegisterUserServiceTest {
 
     private static final Instant REGISTERED_AT = Instant.parse("2026-07-18T10:15:30Z");
-    private static final String MERCHANT_ID = "mrc_550e8400-e29b-41d4-a716-446655440000";
     private static final String PASSWORD = "correct-horse-battery-staple";
 
     private final Fakes.UserRepositoryFake users = new Fakes.UserRepositoryFake();
@@ -40,7 +37,7 @@ class RegisterUserServiceTest {
 
     @Test
     void registersActiveUserWithNormalizedEmail() {
-        User user = service.register(command(" Owner@FreshBrew.EXAMPLE ", PASSWORD, null));
+        User user = service.register(command(" Owner@FreshBrew.EXAMPLE ", PASSWORD));
 
         assertEquals("owner@freshbrew.example", user.email());
         assertEquals(UserStatus.ACTIVE, user.status());
@@ -50,7 +47,7 @@ class RegisterUserServiceTest {
 
     @Test
     void neverStoresThePasswordItself() {
-        User user = service.register(command("owner@freshbrew.example", PASSWORD, null));
+        User user = service.register(command("owner@freshbrew.example", PASSWORD));
 
         assertNotEquals(PASSWORD, user.passwordHash());
         assertTrue(user.passwordHash().startsWith("$2"));
@@ -58,29 +55,19 @@ class RegisterUserServiceTest {
     }
 
     @Test
-    void grantsMerchantAdminWhenAMerchantIsSupplied() {
-        User user = service.register(command("owner@freshbrew.example", PASSWORD, MERCHANT_ID));
-
-        assertEquals(
-            List.of(new RoleAssignment(Role.MERCHANT_ADMIN, MERCHANT_ID)),
-            user.roles()
-        );
-    }
-
-    @Test
-    void grantsNoRolesWhenNoMerchantIsSupplied() {
-        User user = service.register(command("owner@freshbrew.example", PASSWORD, "  "));
+    void grantsNoRoles() {
+        User user = service.register(command("owner@freshbrew.example", PASSWORD));
 
         assertEquals(List.of(), user.roles());
     }
 
     @Test
     void rejectsRegistrationWhenEmailAlreadyExists() {
-        service.register(command("Owner@FreshBrew.Example", PASSWORD, null));
+        service.register(command("Owner@FreshBrew.Example", PASSWORD));
 
         assertThrows(
             UserEmailAlreadyExistsException.class,
-            () -> service.register(command(" owner@freshbrew.example ", PASSWORD, null))
+            () -> service.register(command(" owner@freshbrew.example ", PASSWORD))
         );
 
         assertEquals(1, users.saved().size());
@@ -90,7 +77,7 @@ class RegisterUserServiceTest {
     void rejectsPasswordShorterThanTheMinimum() {
         assertThrows(
             IllegalArgumentException.class,
-            () -> service.register(command("owner@freshbrew.example", "short", null))
+            () -> service.register(command("owner@freshbrew.example", "short"))
         );
     }
 
@@ -99,7 +86,7 @@ class RegisterUserServiceTest {
     void rejectsPasswordLongerThanBCryptCanHash() {
         assertThrows(
             IllegalArgumentException.class,
-            () -> service.register(command("owner@freshbrew.example", "a".repeat(73), null))
+            () -> service.register(command("owner@freshbrew.example", "a".repeat(73)))
         );
     }
 
@@ -110,7 +97,7 @@ class RegisterUserServiceTest {
 
     @Test
     void recordsARegistrationSecurityEvent() {
-        User user = service.register(command("owner@freshbrew.example", PASSWORD, null));
+        User user = service.register(command("owner@freshbrew.example", PASSWORD));
 
         assertEquals(List.of(SecurityEventType.USER_REGISTERED), securityEvents.types());
         assertEquals(user.userId().value(), securityEvents.events().getFirst().actor());
@@ -121,7 +108,7 @@ class RegisterUserServiceTest {
     @Test
     void hashesTheCallerAddressInTheAuditTrail() {
         service.register(
-            new RegisterUserCommand("owner@freshbrew.example", PASSWORD, null, "203.0.113.7")
+            new RegisterUserCommand("owner@freshbrew.example", PASSWORD, "203.0.113.7")
         );
 
         String ipHash = securityEvents.events().getFirst().ipHash();
@@ -130,7 +117,7 @@ class RegisterUserServiceTest {
         assertNotEquals("203.0.113.7", ipHash);
     }
 
-    private static RegisterUserCommand command(String email, String password, String merchantId) {
-        return new RegisterUserCommand(email, password, merchantId, "203.0.113.7");
+    private static RegisterUserCommand command(String email, String password) {
+        return new RegisterUserCommand(email, password, "203.0.113.7");
     }
 }
