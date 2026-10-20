@@ -1,7 +1,5 @@
 package com.paymesh.identity.application;
 
-import com.paymesh.identity.domain.Role;
-import com.paymesh.identity.domain.RoleAssignment;
 import com.paymesh.identity.domain.SecurityEvent;
 import com.paymesh.identity.domain.SecurityEventType;
 import com.paymesh.identity.domain.User;
@@ -14,7 +12,8 @@ import java.util.List;
 /**
  * Creates a user account.
  *
- * <p>Deliberately minimal: it exists so login has something to authenticate
+ * <p>The new user holds no roles; an admin grants merchant access afterwards.
+ * Deliberately minimal: it exists so login has something to authenticate
  * against. The real onboarding path is an invitation from the Merchant Service
  * (merchant.user.invited, SDD 8.5), which is not built yet.
  */
@@ -56,7 +55,7 @@ public final class RegisterUserService {
             UserId.generate(),
             command.email(),
             passwordHasher.hash(requirePassword(command.password())),
-            rolesFor(command.merchantId()),
+            List.of(),
             registeredAt
         );
 
@@ -104,13 +103,5 @@ public final class RegisterUserService {
         }
 
         return password;
-    }
-
-    private static List<RoleAssignment> rolesFor(String merchantId) {
-        if (merchantId == null || merchantId.isBlank()) {
-            return List.of();
-        }
-
-        return List.of(new RoleAssignment(Role.MERCHANT_ADMIN, merchantId));
     }
 }

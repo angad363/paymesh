@@ -5,8 +5,8 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
 /**
- * @param merchantId optional. When present, the new user is granted MERCHANT_ADMIN
- *                   scoped to that merchant.
+ * Registration never grants a role: a merchantId in the body is ignored. Merchant
+ * access is granted afterwards by an admin via POST /users/{userId}/merchant-access.
  */
 public record RegisterUserRequest(
     @NotBlank(message = "Email is required")
@@ -18,9 +18,6 @@ public record RegisterUserRequest(
     // silently ignores the rest, which would make two long passwords equivalent.
     @NotBlank(message = "Password is required")
     @Size(min = 12, max = 72, message = "Password must be between 12 and 72 characters")
-    String password,
-
-    @Size(max = 40, message = "Merchant identifier must not exceed 40 characters")
-    String merchantId
+    String password
 ) {
 }

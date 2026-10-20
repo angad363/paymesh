@@ -3,9 +3,11 @@ package com.paymesh.identity;
 import com.paymesh.TestcontainersConfiguration;
 import com.paymesh.identity.application.IssuedTokens;
 import com.paymesh.identity.application.LoginCommand;
+import com.paymesh.identity.application.ManageUserAccessService;
 import com.paymesh.identity.application.AuthenticationService;
 import com.paymesh.identity.application.RegisterUserCommand;
 import com.paymesh.identity.application.RegisterUserService;
+import com.paymesh.identity.domain.Role;
 import com.paymesh.identity.domain.UserId;
 import com.paymesh.merchant.application.ChangeMerchantStatusService;
 import com.paymesh.merchant.application.RegisterMerchantCommand;
@@ -66,6 +68,9 @@ class UserLifecycleIntegrationTest {
 
     @Autowired
     private RegisterUserService registerUser;
+
+    @Autowired
+    private ManageUserAccessService manageUserAccess;
 
     @Autowired
     private AuthenticationService authentication;
@@ -352,9 +357,12 @@ class UserLifecycleIntegrationTest {
     // --- helpers -------------------------------------------------------------------------------------
 
     private UserId register(MerchantId merchantId, String email) {
-        return registerUser.register(
-            new RegisterUserCommand(email, PASSWORD, merchantId.value(), "127.0.0.1")
+        // Registration grants no role; the admin path does (as in production).
+        UserId userId = registerUser.register(
+            new RegisterUserCommand(email, PASSWORD, "127.0.0.1")
         ).userId();
+        manageUserAccess.grantAccessAt(merchantId, userId, Role.MERCHANT_ADMIN, PLATFORM);
+        return userId;
     }
 
     /**

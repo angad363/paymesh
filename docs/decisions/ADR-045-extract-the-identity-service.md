@@ -156,3 +156,13 @@ would 401 before it could ever mint a token — while `/api/v1/users/**` falls u
   - The unknown-email timing equalizer is a fixed cost-10 hash, not the configured strength.
 
   These are the next identity hardening PR's scope, ahead of PR 11.
+
+## Addendum: the inherited register gap is closed
+
+The first inherited issue listed above, public `POST /api/v1/auth/register` granting `MERCHANT_ADMIN`
+at any caller-supplied `merchantId`, is resolved. The field is dropped from the register request and
+command; registration always creates a user with no roles. Merchant access is granted afterwards by an
+admin through `POST /api/v1/users/{userId}/merchant-access`. A regression test fails if the self-grant
+returns. Rejected: keeping the field behind a platform approval step, which adds an approval state for
+a route that never needed to grant anything at registration. The identity dev profile's outbox relay is
+also now on, the same fix merchant shipped with.
