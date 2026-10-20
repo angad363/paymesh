@@ -1,6 +1,6 @@
 # PayMesh — Project Status
 
-_Last updated: 8 October 2026._
+_Last updated: 20 October 2026._
 
 This is the pick-up-here document: what's built, what each PR decided and what it cost, phase by
 phase, ending with where to start next. Full ADRs live in `docs/decisions/`; this is the
@@ -568,13 +568,27 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
   accepted and stated; the monolith keeps risk's code and schema access until a later PR fences it —
   the price of property-flip rollback.
 
-### 3C — Extraction wave 2: supporting core (planned)
+### 3C — Extraction wave 2: supporting core (in progress)
 
-- **PR 10 — Identity.** *(ADR-045, planned)* Goal: authentication becomes its own service, since
-  every other service will depend on validating its tokens. Planned shape: token *issuance* moves
-  here; token *validation* stays distributed (the gateway and each service verify independently via
-  public key/introspection, never trusting a caller's say-so) — the same defense-in-depth principle
-  ADR-040 already applies at the edge.
+- **PR 10 — Identity.** *(ADR-045)* Delivers: identity as its own deployable (`identity/`, port 8086,
+  the seventh) — token *issuance* (register/login/refresh/logout, user administration) moves there;
+  token *validation* stays distributed exactly as before, the gateway and each service verifying
+  independently against the same key. Same package (`com.paymesh.identity`), own pom, own `identity`
+  schema reached as the fenced `identity_svc` role, own Flyway history: `V1` adopts `users`/
+  `user_roles`/`refresh_tokens`/`security_events` (`baseline-on-migrate`), `V2` creates the platform-table
+  copies. Decision: **the shared HS256 secret is kept; the plan's "public key" wording is deferred, not
+  adopted** — asymmetric keys would touch every validator and is its own PR. Dual path with no mode
+  flag: the monolith keeps identity's code and schema access, and rollback is re-pointing the gateway's
+  `identity-uri` at the monolith (the PR 6 shape, since identity has no in-process caller). No monolith
+  migration. Gateway: `identityRoutes` (`@Order(0)`) forwards `/api/v1/auth/**` and `/api/v1/users/**`
+  to `:8086`, auth routes unauthenticated at the edge. Tradeoff: identity sits outside the global
+  merchant-status gate, following engagement's precedent; and a review surfaced a **pre-existing**
+  authorization gap carried over verbatim — public registration accepts a `merchantId` and grants
+  `MERCHANT_ADMIN` there, with no check on the merchant. It needs its own decision before PR 11, along
+  with three smaller inherited issues recorded in ADR-045. The extraction itself also surfaced a real
+  bug fixed before merge: the outbox relay is `@Scheduled`, and identity had no `@EnableScheduling`, so
+  its audit events would never have been published. Pinned by a test that fails without it.
+  Tests: identity 121, gateway 25 (5 new route tests).
 
 - **PR 11 — Merchant.** *(ADR-046, planned)* Goal: close the loop ADR-039 opened — the service that
   actually owns merchant status becomes the sole emitter every `merchant_ref` projection consumes,
@@ -623,13 +637,14 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
 
 ## Where we are now
 
-**On branch `service/risk`.** Phase 1 and Phase 2 are complete. Phase 3 wave 3A (PR 1–5) is
+**On branch `service/identity`.** Phase 1 and Phase 2 are complete. Phase 3 wave 3A (PR 1–5) is
 merged — Kafka backbone, dual-path relay, schema-per-service, merchant reference projection, API
-gateway. Phase 3B PR 6–9 are complete: the Provider Simulator (`provider-sim/`, port 8082, ADR-041),
+gateway. Phase 3B PR 6–9 are merged: the Provider Simulator (`provider-sim/`, port 8082, ADR-041),
 Webhook (`webhook/`, port 8083, ADR-042), Engagement (`engagement/`, port 8084, ADR-043) and **Risk**
-(`risk/`, port 8085, ADR-044 — the first *synchronous* extraction) now run as their own deployables —
-**six** independently-built Maven modules now exist (`backend/`, `gateway/`, `provider-sim/`,
-`webhook/`, `engagement/`, `risk/`), each with its own `pom.xml` and its own `./mvnw`. 44 ADRs. The
+(`risk/`, port 8085, ADR-044 — the first *synchronous* extraction). PR 10 — **Identity** (`identity/`,
+port 8086, ADR-045) — is complete on its branch and awaiting merge. **Seven** independently-built Maven
+modules exist (`backend/`, `gateway/`, `provider-sim/`, `webhook/`, `engagement/`, `risk/`,
+`identity/`), each with its own `pom.xml` and its own `./mvnw`. 45 ADRs. The
 monolith's migrations are unchanged at V1–V40 — PR 9 adds **no** monolith migration, because its
 dual path keeps the in-process risk code and its `risk`-schema access alive in the monolith (rollback
 is `paymesh.risk.mode=in-process`, a property flip). `risk`'s own Flyway history adopts the `risk`
@@ -638,7 +653,7 @@ schema's two existing tables (`risk_assessments`, `denylist_entries`) at V1, cre
 `payment_intent_ref` velocity read model at V3.
 
 1201 backend tests + 28 risk tests + 137 engagement tests + 122 webhook tests + 92 provider-sim tests
-+ 20 gateway tests, all green. Backend rose from 1186 with 15 new payment-side tests
++ 25 gateway tests + 121 identity tests, all green. Backend rose from 1186 with 15 new payment-side tests
 (`RiskServiceHttpCheckTest` — clean decision, below/at-threshold unreachable, timeout-not-hang, 4xx/
 malformed-2xx fail-loud, and the breaker actually reaching OPEN; `RiskUnavailablePolicyTest`;
 `PaymentExceptionHandlerTest` for the 503). Risk's 28 are the moved module suite plus new coverage of
@@ -647,7 +662,8 @@ shared-key filter. Two gateway tests (`GatewayRiskRouteTest`) prove the risk rou
 the `/internal/**` catch-all. The `payment → risk` `ModuleBoundaryTest` allowance **stays** (unlike
 the earlier leaf extractions, which removed theirs) because the in-process dependency is still real.
 
-**Next up: PR 10 — Identity** (ADR-045, planned). Authentication becomes its own service, since every
-other service depends on validating its tokens: token *issuance* moves there, token *validation*
-stays distributed (gateway and each service verify independently). Read
-`docs/phase-3-microservices-extraction-plan.md` §"PR 10 — Identity" before starting it.
+**Next up: PR 11 — Merchant** (ADR-046, planned). It closes the loop ADR-039 opened: the service that
+owns merchant status becomes the sole emitter of `merchant.*` lifecycle events. Before it starts, the
+inherited identity issues in ADR-045 (chiefly public self-grant of `MERCHANT_ADMIN` at any
+`merchantId`) need a decision — they touch the same merchant-access surface. Read
+`docs/phase-3-microservices-extraction-plan.md` §"PR 11 — Merchant" before starting it.

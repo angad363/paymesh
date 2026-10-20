@@ -40,6 +40,9 @@ paymesh:
     # first *synchronous* capability to leave the monolith's process -- Payment's confirm calls it
     # over the network rather than in-process.
     risk-uri: ${PAYMESH_GATEWAY_RISK_URI:http://localhost:8085}
+    # Where /api/v1/auth/** and /api/v1/users/** forward (ADR-045, PR 10): the identity
+    # deployable -- register/login/refresh/logout and user-admin, moved out of the monolith.
+    identity-uri: ${PAYMESH_GATEWAY_IDENTITY_URI:http://localhost:8086}
     # Redis backs the distributed rate limiter so N gateway instances share one
     # limit instead of admitting N times the traffic.
     redis-uri: ${PAYMESH_GATEWAY_REDIS_URI:redis://localhost:6379}

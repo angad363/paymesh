@@ -1,0 +1,36 @@
+# ============================================================================
+#  Local development overrides for the identity service.
+#
+#  Every @SpringBootTest here carries @ActiveProfiles("dev"); the outbox relay
+#  is OFF for the same reason the monolith's and every other extracted
+#  service's is: a relay ticking mid-test could mutate rows a test is
+#  asserting on. PublishOutboxEventsService is a plain bean either way, and
+#  every test that needs it drives publish() directly.
+# ============================================================================
+
+spring:
+  datasource:
+    # The fenced role ADR-038 already created (NOLOGIN by default). A one-time
+    # `ALTER ROLE identity_svc LOGIN PASSWORD '...'` is a README step, same
+    # shape as every other deployable's own bootstrap (ADR-041/042/043/044).
+    username: identity_svc
+    password: identity_dev_password
+
+paymesh:
+  security:
+    jwt:
+      # Byte-for-byte the monolith's, the gateway's, webhook's, engagement's
+      # and risk's own dev value -- these MUST agree, or a token minted by one
+      # deployable stops validating at another.
+      secret: dev-only-insecure-jwt-signing-secret-change-me
+  events:
+    delivery:
+      mode: in-process
+    outbox-relay:
+      enabled: false
+
+# --- Actuator (dev only) ------------------------------------------------------
+management:
+  endpoint:
+    health:
+      show-details: always
