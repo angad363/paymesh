@@ -51,6 +51,16 @@ class GatewayWebhookRouteTest extends GatewayIntegrationTestBase {
         registry.add("paymesh.gateway.webhook-uri", () -> "http://localhost:" + WEBHOOK.port());
     }
 
+    /**
+     * The payment prefixes (ADR-048) have their own route and their own {@code payment-uri}. This test
+     * uses {@code /api/v1/orders} (or a callback prefix) only as "an authenticated route", so the
+     * stand-in backend answers for payment too. GatewayPaymentRouteTest pins the real destination.
+     */
+    @DynamicPropertySource
+    static void paymentUriIsTheStandInBackend(DynamicPropertyRegistry registry) {
+        registry.add("paymesh.gateway.payment-uri", () -> "http://localhost:" + BACKEND.port());
+    }
+
     @BeforeEach
     void resetBackends() {
         WireMock.configureFor("localhost", BACKEND.port());

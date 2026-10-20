@@ -110,9 +110,11 @@ public class MerchantConfiguration {
     @Bean
     IssueApiCredentialService issueApiCredentialService(
         ApiCredentialRepository apiCredentialRepository,
+        com.paymesh.shared.outbox.application.OutboxWriter outbox,
+        TransactionTemplate transactionTemplate,
         Clock clock
     ) {
-        return new IssueApiCredentialService(apiCredentialRepository, clock);
+        return new IssueApiCredentialService(apiCredentialRepository, outbox, transactionTemplate, clock);
     }
 
     /**

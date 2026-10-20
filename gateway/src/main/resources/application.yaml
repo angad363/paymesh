@@ -51,6 +51,12 @@ paymesh:
     # backend-uri AND flipping paymesh.settlement.sweep.enabled between the two processes in the
     # same step (exactly one sweeper, ADR-047 section 2).
     settlement-uri: ${PAYMESH_GATEWAY_SETTLEMENT_URI:http://localhost:8088}
+    # Where /api/v1/customers/**, /api/v1/orders/**, /api/v1/payment-intents/**, /api/v1/refunds/**
+    # and the provider / refund callbacks (/internal/v1/provider-callbacks/**,
+    # /internal/v1/refund-callbacks/**) forward (ADR-048, PR 13): the payment deployable. Rollback
+    # is pointing this back at backend-uri AND flipping the four sweeper flags between the two
+    # processes in the same step (exactly one owner per sweeper, ADR-048 section 7).
+    payment-uri: ${PAYMESH_GATEWAY_PAYMENT_URI:http://localhost:8089}
     # Redis backs the distributed rate limiter so N gateway instances share one
     # limit instead of admitting N times the traffic.
     redis-uri: ${PAYMESH_GATEWAY_REDIS_URI:redis://localhost:6379}

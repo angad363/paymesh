@@ -632,14 +632,17 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
   refusal have no regression test yet, and the duplicated revert and sweep code between `backend/` and
   `settlement/` are a recipe cost to fold into PR 16.
 
-- **PR 13 — Payment (Order + Payment + Customer + Refund).** *(ADR-048, planned)* Goal: the
-  synchronous money path leaves as **one** service, kept together because these four share the
-  tightest transactional coupling in the system and a network hop between order and payment would be
-  a real regression. Planned shape: confirm calls Risk (PR 9) synchronously and calls the Ledger API
-  to post money, consuming `ledger.transaction.posted` back; ADR-031's sharp already-released-balance
-  edge becomes a network call instead of a local debit. Explicitly the point of no easy return: ships
-  only after 3A–3C are stable under production-shaped load.
-
+- **PR 13 — Payment (customer, order, payment, refund).** *(ADR-048)* Delivers: the synchronous money path
+  as one deployable (`payment/`, port 8089, the tenth), owning the `payment` schema as the fenced
+  `payment_svc` role. Ledger posting stays event-driven, as ADR-018 requires; the plan's synchronous ledger
+  call was dropped because the code never needed it. ApiKey works through a local `api_credential_ref`
+  projection fed by `merchant.api_credential.issued/revoked`, so verification is local with no
+  synchronous merchant call. Tradeoffs stated: a second copy of credential hashes, and revocation that
+  lags the projection. Dual path with exclusive sweeper ownership; the four payment sweepers default off.
+  Tests: payment 800, merchant 96, provider-sim 93, gateway 40, backend 1213, all green.
+  Known, not fixed here (see ADR-048 review amendments): ApiKey is still refused at the gateway edge; an
+  idempotency retry that crosses the cutover can duplicate a write; an order cancelled mid-capture can keep
+  the customer's money; provider HMAC is not bound to the provider path.
 - **PR 14 — Ledger (last).** *(ADR-049, planned)* Goal: the financial source of truth becomes its
   own service **last and whole**, specifically because its invariants (the deferred debits=credits
   trigger, immutability) never leave its schema and extracting it after every caller is already
@@ -666,16 +669,17 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
 
 ## Where we are now
 
-**On branch `service/settlement`.** Phase 1 and Phase 2 are complete. Phase 3 wave 3A (PR 1–5) is
+**On branch `service/payment`.** Phase 1 and Phase 2 are complete. Phase 3 wave 3A (PR 1–5) is
 merged — Kafka backbone, dual-path relay, schema-per-service, merchant reference projection, API
 gateway. Phase 3B PR 6–9 are merged: the Provider Simulator (`provider-sim/`, port 8082, ADR-041),
 Webhook (`webhook/`, port 8083, ADR-042), Engagement (`engagement/`, port 8084, ADR-043) and **Risk**
 (`risk/`, port 8085, ADR-044 — the first *synchronous* extraction). PR 10 — **Identity** (`identity/`,
 port 8086, ADR-045) — is merged (PR #74). PR 11 — **Merchant** (`merchant/`, port 8087, ADR-046) — is
-complete on its branch and awaiting review and merge. PR 12 — **Settlement** (`settlement/`, port 8088, ADR-047) — is complete on its
-branch and awaiting merge. **Nine** independently-built Maven modules exist
-(`backend/`, `gateway/`, `provider-sim/`, `webhook/`, `engagement/`, `risk/`, `identity/`, `merchant/`, `settlement/`),
-each with its own `pom.xml` and its own `./mvnw`. 46 ADRs. The
+merged (PR #75). PR 12 — **Settlement** (`settlement/`, port 8088, ADR-047) — is merged (PR #77). PR 13 —
+**Payment** (`payment/`, port 8089, ADR-048) — is complete on its branch and awaiting merge. **Ten**
+independently-built Maven modules exist
+(`backend/`, `gateway/`, `provider-sim/`, `webhook/`, `engagement/`, `risk/`, `identity/`, `merchant/`, `settlement/`, `payment/`),
+each with its own `pom.xml` and its own `./mvnw`. 48 ADRs. The
 monolith's migrations are unchanged at V1–V40 — PR 9 adds **no** monolith migration, because its
 dual path keeps the in-process risk code and its `risk`-schema access alive in the monolith (rollback
 is `paymesh.risk.mode=in-process`, a property flip). `risk`'s own Flyway history adopts the `risk`
@@ -693,5 +697,7 @@ shared-key filter. Two gateway tests (`GatewayRiskRouteTest`) prove the risk rou
 the `/internal/**` catch-all. The `payment → risk` `ModuleBoundaryTest` allowance **stays** (unlike
 the earlier leaf extractions, which removed theirs) because the in-process dependency is still real.
 
-**Next up: PR 13 — Payment** (ADR-048, planned). Before it starts, decide the ApiKey question for payment
-routes (ADR-046 §4) and close the two PR 12 gaps (submit re-lock and posted-after-returned tests).
+**Next up: PR 14 — Ledger (ADR-049, planned).** The ledger becomes its own service last, with an idempotent
+posting API. Before it starts: the cross-cutting payment items above, especially the cancel-mid-capture money
+defect, need a decision, and the search_path and idempotency cutover rules should be exercised on a real
+shared database.

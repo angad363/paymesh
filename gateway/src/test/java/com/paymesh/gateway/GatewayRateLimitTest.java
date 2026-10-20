@@ -7,6 +7,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.DynamicPropertyRegistry;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -33,6 +35,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GatewayRateLimitTest extends GatewayIntegrationTestBase {
 
     private final HttpClient http = HttpClient.newHttpClient();
+
+    /**
+     * The payment prefixes (ADR-048) have their own route and their own {@code payment-uri}. This test
+     * uses {@code /api/v1/orders} (or a callback prefix) only as "an authenticated route", so the
+     * stand-in backend answers for payment too. GatewayPaymentRouteTest pins the real destination.
+     */
+    @DynamicPropertySource
+    static void paymentUriIsTheStandInBackend(DynamicPropertyRegistry registry) {
+        registry.add("paymesh.gateway.payment-uri", () -> "http://localhost:" + BACKEND.port());
+    }
 
     @BeforeEach
     void resetBackend() {
