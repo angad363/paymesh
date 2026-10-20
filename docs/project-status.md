@@ -590,10 +590,23 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
   its audit events would never have been published. Pinned by a test that fails without it.
   Tests: identity 121, gateway 25 (5 new route tests).
 
-- **PR 11 — Merchant.** *(ADR-046, planned)* Goal: close the loop ADR-039 opened — the service that
-  actually owns merchant status becomes the sole emitter every `merchant_ref` projection consumes,
-  instead of the monolith emitting on its behalf. Its privileged actions (freeze/activate/close) emit
-  the `*.audited` event PR 8 defined.
+- **PR 11 — Merchant.** *(ADR-046)* Delivers: merchant status becomes a standalone service
+  (`merchant/`, port 8087, the eighth deployable) that is now the sole emitter of the `merchant.*`
+  lifecycle events every `merchant_ref` projection consumes, closing the loop ADR-039 opened. Its
+  `merchant` schema owns `merchants`, `merchant_status_history`, `api_credentials` and `kyc_submissions`,
+  reached as the fenced `merchant_svc` role. The ApiKey authenticator moves with `api_credentials`, so
+  merchant routes verify keys locally. Event contract is unchanged, and the `*.audited` event for
+  freeze/activate/close is emitted by the service. Decision: **settlement config does not move here**.
+  The plan said "merchant + settlement-config", but `settlement_configs` lives in the `settlement`
+  schema and is served at `/api/v1/settlement-config`, so it moves with PR 12. Dual path by gateway
+  re-point, with no monolith migration. Tradeoff: cutover has an operational gate, because the monolith's
+  outbox must be drained before the gateway is re-pointed, or `merchant.*` events from the two producers
+  can reach projections out of order. This is a runbook step, not enforced by code.
+  Known, not fixed here: public registration still grants `MERCHANT_ADMIN` at any `merchantId` (the
+  ADR-045 gap, now explicitly waived for this PR and still open); the merchant service's Kafka listener
+  subscribes to all topics with no handler, the same as identity, a cost to trim later; and the dev
+  profile's event relay is now enabled so gateway-routed merchant writes reach the monolith projection.
+  Identity's dev profile still has the relay off, a gap to close alongside it.
 
 - **PR 12 — Settlement.** *(ADR-047, planned)* Goal: settlement runs standalone, reading the
   (still-monolith) Ledger's available balance **across the wire** rather than in-process. Planned
@@ -637,14 +650,15 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
 
 ## Where we are now
 
-**On branch `service/identity`.** Phase 1 and Phase 2 are complete. Phase 3 wave 3A (PR 1–5) is
+**On branch `service/merchant`.** Phase 1 and Phase 2 are complete. Phase 3 wave 3A (PR 1–5) is
 merged — Kafka backbone, dual-path relay, schema-per-service, merchant reference projection, API
 gateway. Phase 3B PR 6–9 are merged: the Provider Simulator (`provider-sim/`, port 8082, ADR-041),
 Webhook (`webhook/`, port 8083, ADR-042), Engagement (`engagement/`, port 8084, ADR-043) and **Risk**
 (`risk/`, port 8085, ADR-044 — the first *synchronous* extraction). PR 10 — **Identity** (`identity/`,
-port 8086, ADR-045) — is complete on its branch and awaiting merge. **Seven** independently-built Maven
-modules exist (`backend/`, `gateway/`, `provider-sim/`, `webhook/`, `engagement/`, `risk/`,
-`identity/`), each with its own `pom.xml` and its own `./mvnw`. 45 ADRs. The
+port 8086, ADR-045) — is merged (PR #74). PR 11 — **Merchant** (`merchant/`, port 8087, ADR-046) — is
+complete on its branch and awaiting review and merge. **Eight** independently-built Maven modules exist
+(`backend/`, `gateway/`, `provider-sim/`, `webhook/`, `engagement/`, `risk/`, `identity/`, `merchant/`),
+each with its own `pom.xml` and its own `./mvnw`. 46 ADRs. The
 monolith's migrations are unchanged at V1–V40 — PR 9 adds **no** monolith migration, because its
 dual path keeps the in-process risk code and its `risk`-schema access alive in the monolith (rollback
 is `paymesh.risk.mode=in-process`, a property flip). `risk`'s own Flyway history adopts the `risk`
@@ -653,7 +667,7 @@ schema's two existing tables (`risk_assessments`, `denylist_entries`) at V1, cre
 `payment_intent_ref` velocity read model at V3.
 
 1201 backend tests + 28 risk tests + 137 engagement tests + 122 webhook tests + 92 provider-sim tests
-+ 25 gateway tests + 121 identity tests, all green. Backend rose from 1186 with 15 new payment-side tests
++ 30 gateway tests + 121 identity tests + 92 merchant tests, all green. Backend rose from 1186 with 15 new payment-side tests
 (`RiskServiceHttpCheckTest` — clean decision, below/at-threshold unreachable, timeout-not-hang, 4xx/
 malformed-2xx fail-loud, and the breaker actually reaching OPEN; `RiskUnavailablePolicyTest`;
 `PaymentExceptionHandlerTest` for the 503). Risk's 28 are the moved module suite plus new coverage of
@@ -662,8 +676,8 @@ shared-key filter. Two gateway tests (`GatewayRiskRouteTest`) prove the risk rou
 the `/internal/**` catch-all. The `payment → risk` `ModuleBoundaryTest` allowance **stays** (unlike
 the earlier leaf extractions, which removed theirs) because the in-process dependency is still real.
 
-**Next up: PR 11 — Merchant** (ADR-046, planned). It closes the loop ADR-039 opened: the service that
-owns merchant status becomes the sole emitter of `merchant.*` lifecycle events. Before it starts, the
-inherited identity issues in ADR-045 (chiefly public self-grant of `MERCHANT_ADMIN` at any
-`merchantId`) need a decision — they touch the same merchant-access surface. Read
-`docs/phase-3-microservices-extraction-plan.md` §"PR 11 — Merchant" before starting it.
+**Next up: PR 12 — Settlement** (ADR-047, planned). Settlement runs standalone and takes over
+`settlement_configs`, which PR 11 deliberately left in place. Before it starts, the public
+self-grant of `MERCHANT_ADMIN` (ADR-045) is still open and needs its own decision, and the identity
+dev profile's relay gap (see PR 11) should be closed. Read
+`docs/phase-3-microservices-extraction-plan.md` §"PR 12 — Settlement" before starting it.

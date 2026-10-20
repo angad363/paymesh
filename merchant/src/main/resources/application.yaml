@@ -1,0 +1,86 @@
+# ============================================================================
+#  PayMesh merchant service (ADR-046)
+#
+#  A separate deployable beside the monolith, the gateway, provider-sim,
+#  webhook, engagement, risk and identity: merchant registration, lifecycle,
+#  KYC and API credentials, moved out. Listens on 8087. Shares the monolith's
+#  PostgreSQL cluster but owns exactly one schema (`merchant`) and connects as
+#  the fenced `merchant_svc` role ADR-038 already created.
+#
+#  It is the sole producer of the merchant.* lifecycle events every
+#  merchant_ref projection consumes (ADR-039 loop closed). The monolith keeps
+#  its copy; the gateway's merchant-uri decides which one clients reach.
+# ============================================================================
+
+spring:
+  application:
+    name: paymesh-merchant
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/paymesh
+    # Empty: this file is committed. The dev profile supplies the throwaway
+    # `merchant_svc` credential; other environments use
+    # SPRING_DATASOURCE_USERNAME/PASSWORD.
+    username:
+    password:
+    hikari:
+      # `public` stays for `is_prefixed_id`, which every CHECK here calls.
+      connection-init-sql: SET search_path TO merchant, public
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        jdbc:
+          jdbc_metadata_extraction_strategy: individually
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    schemas: merchant
+    # ADOPTS the existing merchants/merchant_status_history/kyc_submissions/
+    # api_credentials tables (V1); V2 creates the platform tables.
+    baseline-on-migrate: true
+    baseline-version: "1"
+
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      auto-offset-reset: earliest
+      properties:
+        metadata.max.age.ms: 5000
+
+paymesh:
+  security:
+    jwt:
+      # Verify-only here (identity mints). The SAME shared HS256 secret the
+      # gateway and every other deployable verifies with (ADR-040). Empty by
+      # default; supply PAYMESH_SECURITY_JWT_SECRET or run the dev profile.
+      secret: ${PAYMESH_SECURITY_JWT_SECRET:}
+
+  events:
+    delivery:
+      mode: both
+    outbox-relay:
+      enabled: true
+      interval: 2s
+      batch-size: 100
+      max-attempts: 25
+      backlog-alert-age: 5m
+
+server:
+  port: 8087
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include:
+          - health
+          - info
+  endpoint:
+    health:
+      show-details: never

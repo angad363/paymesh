@@ -211,6 +211,36 @@ public class RoutesConfiguration {
     }
 
     /**
+     * THE SIXTH RE-POINTED ROUTE (ADR-046, PR 11): merchant registration, lifecycle, KYC and API
+     * credentials leave the monolith for the merchant deployable. Dual path by re-point: rollback is
+     * setting {@code merchant-uri} back to {@code backend-uri}, and the gateway alone decides which
+     * process receives merchant writes.
+     * <p>
+     * {@code @Order(0)} for the same subset reason as {@link #identityRoutes}: {@code
+     * /api/v1/merchants/**} is a SUBSET of {@link #apiRoutes}' {@code /api/**}. The bare
+     * {@code /api/v1/merchants} (self-serve registration, public at the edge per ADR-040) is matched
+     * explicitly. {@code /api/v1/settlement-config} is deliberately NOT routed here: that table is
+     * in the {@code settlement} schema and moves with PR 12.
+     */
+    @Bean
+    @Order(0)
+    RouterFunction<ServerResponse> merchantRoutes(
+        @Value("${paymesh.gateway.merchant-uri}") String merchantUri,
+        @Value("${paymesh.gateway.rate-limit.capacity:100}") long capacity,
+        @Value("${paymesh.gateway.rate-limit.period-seconds:60}") long periodSeconds
+    ) {
+        return route("paymesh-merchant")
+            .route(path("/api/v1/merchants").or(path("/api/v1/merchants/**")), http())
+            .before(uri(merchantUri))
+            .filter(rateLimitGuard(rateLimit(config -> config
+                .setCapacity(capacity)
+                .setPeriod(Duration.ofSeconds(periodSeconds))
+                .setStatusCode(HttpStatus.TOO_MANY_REQUESTS)
+                .setKeyResolver(RoutesConfiguration::clientKey))))
+            .build();
+    }
+
+    /**
      * THE FOURTH RE-POINTED ROUTE (ADR-044, PR 9), and the first one fronting a SYNCHRONOUS
      * extraction rather than an event consumer: Payment's confirm calls
      * {@code /internal/v1/risk-evaluations} over the network now (via the shared mesh URL

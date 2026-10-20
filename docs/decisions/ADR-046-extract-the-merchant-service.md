@@ -102,9 +102,10 @@ the prefix falls under `anyRequest().authenticated()`. `/api/v1/settlement-confi
 
 ### 7. The merchant gate and the public registration gap
 
-The merchant service enforces the merchant-status rules on its **own** table, with no projection and no
-`MerchantStatusGate` (it owns the status). Lifecycle-transition endpoints stay exempt from the gate, as
-ADR-021 requires, or suspension is irreversible.
+The merchant service enforces the merchant-status rules on its **own** table: no `merchant_ref` projection,
+and no projection-backed `MerchantStatusGate` (it owns the status). It keeps the monolith's write refusal
+for non-`ACTIVE` merchants, through an `OwnTableMerchantStatusGate` that reads the local `merchants` row.
+Lifecycle-transition endpoints stay exempt from the gate, as ADR-021 requires, or suspension is irreversible.
 
 Public self-registration is carried over unchanged. It is the same surface ADR-045 flagged: a
 `merchantId` supplied at `POST /api/v1/auth/register` grants `MERCHANT_ADMIN` there, and that is

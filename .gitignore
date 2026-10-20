@@ -64,4 +64,4 @@ docker-compose.override.yml
 # BMad install (local tooling, not project source)
 _bmad/
 _bmad-output/
-.claude/skills/
+.claude/skills/bmad-*

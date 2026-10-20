@@ -8,6 +8,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -31,6 +33,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("dev")
 class GatewayEdgeAuthTest extends GatewayIntegrationTestBase {
+
+    /** Merchant routes re-pointed in ADR-046; this test only asserts the EDGE passes signup, so the stand-in backend serves it. */
+    @DynamicPropertySource
+    static void merchantUriIsTheStandInBackend(DynamicPropertyRegistry registry) {
+        registry.add("paymesh.gateway.merchant-uri", () -> "http://localhost:" + BACKEND.port());
+    }
 
     private final HttpClient http = HttpClient.newHttpClient();
 
