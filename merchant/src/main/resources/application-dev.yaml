@@ -1,0 +1,26 @@
+# Local development overrides for the merchant service. Every @SpringBootTest
+# carries @ActiveProfiles("dev"); the outbox relay is OFF so it cannot mutate
+# rows mid-assertion (tests drive PublishOutboxEventsService.publish()).
+
+spring:
+  datasource:
+    # The fenced role ADR-038 created (NOLOGIN by default); a one-time
+    # `ALTER ROLE merchant_svc LOGIN PASSWORD '...'` is the README step.
+    username: merchant_svc
+    password: merchant_dev_password
+
+paymesh:
+  security:
+    jwt:
+      # Byte-for-byte every other deployable's dev value; these MUST agree.
+      secret: dev-only-insecure-jwt-signing-secret-change-me
+  events:
+    delivery:
+      mode: both
+    outbox-relay:
+      enabled: true
+
+management:
+  endpoint:
+    health:
+      show-details: always

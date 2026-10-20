@@ -1,0 +1,331 @@
+package com.paymesh.merchant.api;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
+import org.springframework.test.context.ActiveProfiles;
+import com.paymesh.TestcontainersConfiguration;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.databind.ObjectMapper;
+
+import static org.hamcrest.Matchers.matchesPattern;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+@SpringBootTest
+@Import(TestcontainersConfiguration.class)
+@ActiveProfiles("dev")
+@AutoConfigureMockMvc
+// Registration now writes to PostgreSQL. Each test runs in a transaction that is rolled back
+// afterwards, so the fixed emails below cannot collide with a previous run.
+@Transactional
+class MerchantControllerTest {
+
+    private final MockMvc mockMvc;
+
+    @Autowired
+    MerchantControllerTest(MockMvc mockMvc) {
+        this.mockMvc = mockMvc;
+    }
+
+    @Test
+    void registersMerchant() throws Exception {
+        mockMvc.perform(
+                post("/api/v1/merchants")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""
+                                        {
+                                          "businessName": " FreshBrew Cafe ",
+                                          "email": " Owner@FreshBrew.Example ",
+                                          "country": "in",
+                                          "defaultCurrency": "inr"
+                                        }
+                                        """)
+            )
+            .andExpect(status().isCreated())
+            .andExpect(
+                jsonPath("$.id")
+                    .value(matchesPattern(
+                        "mrc_[0-9a-fA-F-]{36}"
+                    ))
+            )
+            .andExpect(
+                jsonPath("$.businessName")
+                    .value("FreshBrew Cafe")
+            )
+            .andExpect(
+                jsonPath("$.email")
+                    .value("owner@freshbrew.example")
+            )
+            .andExpect(
+                jsonPath("$.country")
+                    .value("IN")
+            )
+            .andExpect(
+                jsonPath("$.defaultCurrency")
+                    .value("INR")
+            )
+            .andExpect(
+                jsonPath("$.status")
+                    .value("PENDING_VERIFICATION")
+            )
+            .andExpect(jsonPath("$.createdAt").exists())
+            .andExpect(jsonPath("$.updatedAt").exists());
+    }
+
+    @Test
+    void returnsConflictWhenEmailAlreadyExists() throws Exception {
+        String requestBody = """
+            {
+              "businessName": "Duplicate Merchant",
+              "email": "owner@duplicate.example",
+              "country": "IN",
+              "defaultCurrency": "INR"
+            }
+            """;
+
+        mockMvc.perform(
+                post("/api/v1/merchants")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(requestBody)
+            )
+            .andExpect(status().isCreated());
+
+        mockMvc.perform(
+                post("/api/v1/merchants")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(requestBody)
+            )
+            .andExpect(status().isConflict())
+            .andExpect(
+                jsonPath("$.code")
+                    .value("MERCHANT_EMAIL_ALREADY_EXISTS")
+            )
+            .andExpect(
+                jsonPath("$.message")
+                    .value(
+                        "A merchant already exists with email "
+                            + "owner@duplicate.example"
+                    )
+            );
+    }
+
+    @Test
+    void returnsBadRequestWhenRequestIsInvalid() throws Exception {
+        mockMvc.perform(
+                post("/api/v1/merchants")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""
+                        {
+                          "businessName": "   ",
+                          "email": "owner@invalid.example",
+                          "country": "IN",
+                          "defaultCurrency": "INR"
+                        }
+                        """)
+            )
+            .andExpect(status().isBadRequest())
+            .andExpect(
+                jsonPath("$.code")
+                    .value("VALIDATION_FAILED")
+            )
+            .andExpect(
+                jsonPath("$.message")
+                    .value("Request validation failed.")
+            )
+            .andExpect(
+                jsonPath("$.fieldErrors.businessName")
+                    .value("Business name is required.")
+            );
+    }
+
+    @Test
+    void returnsMerchantById() throws Exception {
+        String responseBody = mockMvc.perform(
+                post("/api/v1/merchants")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""
+                        {
+                          "businessName": "FreshBrew Cafe",
+                          "email": "lookup@freshbrew.example",
+                          "country": "IN",
+                          "defaultCurrency": "INR"
+                        }
+                        """)
+            )
+            .andExpect(status().isCreated())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+
+        String merchantId = new ObjectMapper()
+            .readTree(responseBody)
+            .get("id")
+            .asText();
+
+        mockMvc.perform(
+                get("/api/v1/merchants/{merchantId}", merchantId).with(callerFor(merchantId))
+            )
+            .andExpect(status().isOk())
+            .andExpect(
+                jsonPath("$.id")
+                    .value(merchantId)
+            )
+            .andExpect(
+                jsonPath("$.businessName")
+                    .value("FreshBrew Cafe")
+            )
+            .andExpect(
+                jsonPath("$.email")
+                    .value("lookup@freshbrew.example")
+            );
+    }
+
+    @Test
+    void returnsBadRequestWhenCountryIsNotTwoLetters() throws Exception {
+        mockMvc.perform(
+                post("/api/v1/merchants")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""
+                        {
+                          "businessName": "Bad Country Co",
+                          "email": "owner@badcountry.example",
+                          "country": "USA",
+                          "defaultCurrency": "USD"
+                        }
+                        """)
+            )
+            .andExpect(status().isBadRequest())
+            .andExpect(
+                jsonPath("$.code")
+                    .value("INVALID_REQUEST")
+            )
+            .andExpect(
+                jsonPath("$.message")
+                    .value("Country must be of length 2")
+            );
+    }
+
+    @Test
+    void returnsBadRequestWhenMerchantIdIsMalformed() throws Exception {
+        mockMvc.perform(
+                get("/api/v1/merchants/{merchantId}", "not_a_merchant_id")
+                    .with(callerFor("mrc_550e8400-e29b-41d4-a716-446655440000"))
+            )
+            .andExpect(status().isBadRequest())
+            .andExpect(
+                jsonPath("$.code")
+                    .value("INVALID_REQUEST")
+            )
+            .andExpect(
+                jsonPath("$.message")
+                    .value("Merchant Identifier must start with mrc_")
+            );
+    }
+
+    @Test
+    void returnsNotFoundWhenMerchantDoesNotExist() throws Exception {
+        String unknownId =
+            "mrc_550e8400-e29b-41d4-a716-446655440000";
+
+        mockMvc.perform(
+                get("/api/v1/merchants/{merchantId}", unknownId).with(callerFor(unknownId))
+            )
+            .andExpect(status().isNotFound())
+            .andExpect(
+                jsonPath("$.code")
+                    .value("MERCHANT_NOT_FOUND")
+            )
+            .andExpect(
+                jsonPath("$.message")
+                    .value("Merchant not found: " + unknownId)
+            );
+    }
+
+    // --- authorization --------------------------------------------------------
+
+    /** Reading a merchant is not public, even though creating one is. */
+    @Test
+    void rejectsMerchantLookupWithoutAToken() throws Exception {
+        mockMvc.perform(
+                get("/api/v1/merchants/{merchantId}", "mrc_550e8400-e29b-41d4-a716-446655440000")
+            )
+            .andExpect(status().isUnauthorized())
+            .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"));
+    }
+
+    /**
+     * The heart of tenant isolation: another merchant's id is reported as not found, not as
+     * forbidden. A 403 would confirm the id is real and turn this endpoint into an oracle for
+     * enumerating tenants.
+     */
+    @Test
+    void hidesAMerchantFromACallerScopedToADifferentMerchant() throws Exception {
+        String victimId = registerMerchantAndReturnId("victim@tenant.example");
+        String attackerId = registerMerchantAndReturnId("attacker@tenant.example");
+
+        mockMvc.perform(
+                get("/api/v1/merchants/{merchantId}", victimId).with(callerFor(attackerId))
+            )
+            .andExpect(status().isNotFound())
+            .andExpect(jsonPath("$.code").value("MERCHANT_NOT_FOUND"));
+    }
+
+    /** Registration is the signup step, so it precedes holding any credential. */
+    @Test
+    void allowsMerchantRegistrationWithoutAToken() throws Exception {
+        mockMvc.perform(
+                post("/api/v1/merchants")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""
+                        {
+                          "businessName": "Anonymous Signup Co",
+                          "email": "signup@anonymous.example",
+                          "country": "IN",
+                          "defaultCurrency": "INR"
+                        }
+                        """)
+            )
+            .andExpect(status().isCreated());
+    }
+
+    // --- helpers --------------------------------------------------------------
+
+    /** A verified token whose only merchant scope is the one given. */
+    private static org.springframework.test.web.servlet.request.RequestPostProcessor callerFor(
+        String merchantId
+    ) {
+        return jwt().jwt(builder -> builder
+            .subject("usr_11111111-1111-4111-8111-111111111111")
+            .claim("roles", java.util.List.of("MERCHANT_ADMIN:" + merchantId)));
+    }
+
+    private String registerMerchantAndReturnId(String email) throws Exception {
+        String body = mockMvc.perform(
+                post("/api/v1/merchants")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""
+                        {
+                          "businessName": "Tenant Co",
+                          "email": "%s",
+                          "country": "IN",
+                          "defaultCurrency": "INR"
+                        }
+                        """.formatted(email))
+            )
+            .andExpect(status().isCreated())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+
+        return new ObjectMapper().readTree(body).get("id").asText();
+    }
+}

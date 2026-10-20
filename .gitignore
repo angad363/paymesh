@@ -60,3 +60,8 @@ docker-compose.override.yml
 .terraform.lock.hcl
 # Agent worktrees: transient, and each is its own checkout of this repo
 .claude/worktrees/
+
+# BMad install (local tooling, not project source)
+_bmad/
+_bmad-output/
+.claude/skills/bmad-*

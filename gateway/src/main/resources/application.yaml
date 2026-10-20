@@ -43,6 +43,9 @@ paymesh:
     # Where /api/v1/auth/** and /api/v1/users/** forward (ADR-045, PR 10): the identity
     # deployable -- register/login/refresh/logout and user-admin, moved out of the monolith.
     identity-uri: ${PAYMESH_GATEWAY_IDENTITY_URI:http://localhost:8086}
+    # Where /api/v1/merchants/** forwards (ADR-046, PR 11): the merchant deployable. Rollback is
+    # pointing this back at backend-uri. /api/v1/settlement-config is NOT routed here (PR 12).
+    merchant-uri: ${PAYMESH_GATEWAY_MERCHANT_URI:http://localhost:8087}
     # Redis backs the distributed rate limiter so N gateway instances share one
     # limit instead of admitting N times the traffic.
     redis-uri: ${PAYMESH_GATEWAY_REDIS_URI:redis://localhost:6379}
