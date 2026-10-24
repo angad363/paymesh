@@ -85,4 +85,9 @@ public final class JpaRefundRepository implements RefundRepository {
     public long activeTotalMinor(String paymentIntentId) {
         return refunds.activeTotalMinor(paymentIntentId);
     }
+
+    @Override
+    public boolean existsByMerchantReference(MerchantId merchantId, String merchantReference) {
+        return refunds.existsByMerchantIdAndMerchantReference(merchantId.value(), merchantReference);
+    }
 }

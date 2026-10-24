@@ -48,6 +48,7 @@ public final class ApplyPaymentSucceededService {
 
     /** SDD 22.1. Bump only when a payload below stops being readable by an existing consumer. */
     private static final int ORDER_PAID_VERSION = 1;
+    private static final int CAPTURED_AFTER_CLOSE_VERSION = 1;
 
     /** Stored on the timeline row. There is no principal behind a consumer, hence no actor id. */
     private static final String REASON = "A payment against this order succeeded";
@@ -75,6 +76,8 @@ public final class ApplyPaymentSucceededService {
      * @param capturedAmountMinor how much the payment actually took. Compared against the ORDER'S
      *                            amount to decide PAID versus PARTIALLY_PAID -- see
      *                            {@link Order#markPaid}
+     * @param paymentIntentId     the capturing payment's identifier, echoed OPAQUE (a plain String,
+     *                            never a Payment type) so the closed-order event can name it
      * @param occurredAt          when the collecting authority says it happened
      * @return true if the order moved, false if it was in no state to
      */
@@ -82,6 +85,7 @@ public final class ApplyPaymentSucceededService {
         MerchantId merchantId,
         OrderId orderId,
         long capturedAmountMinor,
+        String paymentIntentId,
         Instant occurredAt
     ) {
         // LOCKED, for the reason the expiry sweep locks (ADR-014 section 3): a merchant cancelling
@@ -93,6 +97,30 @@ public final class ApplyPaymentSucceededService {
         // THE AGGREGATE-LEVEL IDEMPOTENCY GUARD, and it is a QUERY rather than a caught exception so
         // an ordinary re-delivery is not logged as a failure. Order.markPaid enforces the same rule
         // for every caller; a predicate the aggregate does not itself honour is a comment, not a rule.
+        if (order.status() == OrderStatus.CANCELLED || order.status() == OrderStatus.EXPIRED) {
+            // ADR-049. The provider captured real money against an order that was closed while the
+            // payment was still PROCESSING. Dropping it would leave the customer charged, the ledger
+            // crediting the merchant, and nothing trying to give it back. Order cannot refund (it
+            // imports nothing from Payment); it records the fact and emits an event, in the
+            // dispatcher's transaction, for the refund side to resolve.
+            log.warn(
+                "Payment captured against a closed order status={} orderId={} merchantId={}",
+                order.status(), orderId.value(), merchantId.value()
+            );
+
+            history.append(new OrderStateChange(
+                order.merchantId(), order.orderId(), order.status(), order.status(),
+                OrderStateChange.ActorType.SYSTEM, null,
+                "Payment of " + capturedAmountMinor + " " + order.currency()
+                    + " captured after the order was " + order.status(),
+                occurredAt
+            ));
+
+            outbox.append(capturedAfterClose(order, paymentIntentId, capturedAmountMinor, occurredAt));
+
+            return false;
+        }
+
         if (order.status() != OrderStatus.PENDING) {
             log.info(
                 "Payment succeeded against an order that is already {} orderId={} merchantId={}",
@@ -157,6 +185,31 @@ public final class ApplyPaymentSucceededService {
             order.orderId().value(),
             order.status() == OrderStatus.PAID ? "order.paid" : "order.partially_paid",
             ORDER_PAID_VERSION,
+            payload,
+            occurredAt
+        );
+    }
+
+    /** ADR-049. Says what happened, not what to do about it -- the same stance as order.paid. */
+    private static OutboxEvent capturedAfterClose(
+        Order order, String paymentIntentId, long capturedAmountMinor, Instant occurredAt
+    ) {
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("orderId", order.orderId().value());
+        payload.put("merchantId", order.merchantId().value());
+        payload.put("paymentIntentId", paymentIntentId);
+        payload.put("capturedAmountMinor", capturedAmountMinor);
+        payload.put("currency", order.currency());
+        payload.put("orderStatus", order.status().name());
+        payload.put("occurredAt", occurredAt.toString());
+
+        return new OutboxEvent(
+            EventId.generate(),
+            order.merchantId(),
+            "ORDER",
+            order.orderId().value(),
+            "order.payment_captured_after_close",
+            CAPTURED_AFTER_CLOSE_VERSION,
             payload,
             occurredAt
         );

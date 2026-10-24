@@ -74,6 +74,7 @@ public final class PaymentSucceededHandler implements EventHandler {
             event.merchantId(),
             OrderId.from(requireText(payload, "orderId")),
             requireAmount(payload),
+            requireText(payload, "paymentIntentId"),
             occurredAt(payload, event)
         );
     }

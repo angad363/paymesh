@@ -641,9 +641,25 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
   lags the projection. Dual path with exclusive sweeper ownership; the four payment sweepers default off.
   Tests: payment 800, merchant 96, provider-sim 93, gateway 40, backend 1213, all green.
   Known, not fixed here (see ADR-048 review amendments): ApiKey is still refused at the gateway edge; an
-  idempotency retry that crosses the cutover can duplicate a write; an order cancelled mid-capture can keep
-  the customer's money; provider HMAC is not bound to the provider path.
-- **PR 14 — Ledger (last).** *(ADR-049, planned)* Goal: the financial source of truth becomes its
+  idempotency retry that crosses the cutover can duplicate a write; provider HMAC is not bound to the
+  provider path. (The cancel-mid-capture money defect is now **fixed** — see the defect-fix entry below.)
+
+- **Defect fix — money captured against a closed order.** *(ADR-049)* Fixes the pre-existing defect
+  recorded in ADR-048: `ApplyPaymentSucceededService` dropped `payment.succeeded` for every non-PENDING
+  order, so a provider capture that landed on a CANCELLED/EXPIRED order left the customer charged, the
+  ledger crediting the merchant, and no refund. The guard is split: PAID/PARTIALLY_PAID stays the
+  idempotent no-op; CANCELLED/EXPIRED writes a SYSTEM audit row and emits a new
+  `order.payment_captured_after_close` event in the dispatcher's transaction (Order imports nothing from
+  Payment — the `paymentIntentId` is echoed as an opaque String). A new Payment/Refund consumer
+  (`refund.order-captured-after-close`) auto-refunds the capture in full (ADR-049 §5, Option 1),
+  idempotent three deep: the inbox, a `existsByMerchantReference` pre-check for the `auto-close-<intent>`
+  reference, and the `activeTotalMinor`/`tr_refunds_within_captured` head-room guard — each a read under
+  the payment row lock so `create` never throws into the shared transaction (review finding; see ADR-049
+  review amendments). Fixed in **both** `backend/` and `payment/`. Tests: backend 1222, payment 809, all
+  green (+1 each: a FAILED-first-attempt reference-collision regression test). Not acted on: reconciling
+  the PAID/PARTIALLY_PAID branch (unsafe — would refund legitimately-paid orders on a duplicate; recorded
+  in ADR-049).
+- **PR 14 — Ledger (last).** *(ADR-050, planned)* Goal: the financial source of truth becomes its
   own service **last and whole**, specifically because its invariants (the deferred debits=credits
   trigger, immutability) never leave its schema and extracting it after every caller is already
   stable is the only ordering that protects the governing invariant. Planned shape: posting becomes
@@ -654,12 +670,12 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
 
 ### 3E — Close-out (planned)
 
-- **PR 15 — Observability across the hops.** *(ADR-050, planned)* Goal: one trace follows a request
+- **PR 15 — Observability across the hops.** *(ADR-051, planned)* Goal: one trace follows a request
   across every service it touches, once the money path spans nine deployables instead of one.
   Planned shape: OpenTelemetry auto-instrumentation, trace/span propagation through the gateway,
   synchronous calls and Kafka headers; Prometheus + Grafana.
 
-- **PR 16 — Decommission the monolith.** *(ADR-051, planned)* Goal: delete the scaffolding once
+- **PR 16 — Decommission the monolith.** *(ADR-052, planned)* Goal: delete the scaffolding once
   every capability runs as its own service — the dual-path flag, the in-process `EventDispatcher`,
   the shared in-process lookup adapters, the now-empty monolith module itself. `shared/` survives
   only as versioned libraries (the envelope, id value objects, security primitives) each service
@@ -669,17 +685,18 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
 
 ## Where we are now
 
-**On branch `service/payment`.** Phase 1 and Phase 2 are complete. Phase 3 wave 3A (PR 1–5) is
+**On branch `fix/refund-captured-after-close`.** Phase 1 and Phase 2 are complete. Phase 3 wave 3A (PR 1–5) is
 merged — Kafka backbone, dual-path relay, schema-per-service, merchant reference projection, API
 gateway. Phase 3B PR 6–9 are merged: the Provider Simulator (`provider-sim/`, port 8082, ADR-041),
 Webhook (`webhook/`, port 8083, ADR-042), Engagement (`engagement/`, port 8084, ADR-043) and **Risk**
 (`risk/`, port 8085, ADR-044 — the first *synchronous* extraction). PR 10 — **Identity** (`identity/`,
 port 8086, ADR-045) — is merged (PR #74). PR 11 — **Merchant** (`merchant/`, port 8087, ADR-046) — is
 merged (PR #75). PR 12 — **Settlement** (`settlement/`, port 8088, ADR-047) — is merged (PR #77). PR 13 —
-**Payment** (`payment/`, port 8089, ADR-048) — is complete on its branch and awaiting merge. **Ten**
+**Payment** (`payment/`, port 8089, ADR-048) — is merged (PR #78). The ADR-049 **defect fix** (money
+captured against a closed order) is on branch `fix/refund-captured-after-close`, awaiting merge. **Ten**
 independently-built Maven modules exist
 (`backend/`, `gateway/`, `provider-sim/`, `webhook/`, `engagement/`, `risk/`, `identity/`, `merchant/`, `settlement/`, `payment/`),
-each with its own `pom.xml` and its own `./mvnw`. 48 ADRs. The
+each with its own `pom.xml` and its own `./mvnw`. 49 ADRs. The
 monolith's migrations are unchanged at V1–V40 — PR 9 adds **no** monolith migration, because its
 dual path keeps the in-process risk code and its `risk`-schema access alive in the monolith (rollback
 is `paymesh.risk.mode=in-process`, a property flip). `risk`'s own Flyway history adopts the `risk`
@@ -697,7 +714,8 @@ shared-key filter. Two gateway tests (`GatewayRiskRouteTest`) prove the risk rou
 the `/internal/**` catch-all. The `payment → risk` `ModuleBoundaryTest` allowance **stays** (unlike
 the earlier leaf extractions, which removed theirs) because the in-process dependency is still real.
 
-**Next up: PR 14 — Ledger (ADR-049, planned).** The ledger becomes its own service last, with an idempotent
-posting API. Before it starts: the cross-cutting payment items above, especially the cancel-mid-capture money
-defect, need a decision, and the search_path and idempotency cutover rules should be exercised on a real
-shared database.
+**Next up: PR 14 — Ledger (ADR-050, planned).** The ledger becomes its own service last, with an idempotent
+posting API. The cancel-mid-capture money defect is now closed (ADR-049). Still open before PR 14: the
+remaining ADR-048 payment items (ApiKey at the gateway edge, the idempotency cutover, provider HMAC not
+bound to the provider path), and the search_path and idempotency cutover rules should be exercised on a
+real shared database.

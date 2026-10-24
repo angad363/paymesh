@@ -593,6 +593,11 @@ class RefundIntegrationTest {
         public long activeTotalMinor(String paymentIntentId) {
             return delegate.activeTotalMinor(paymentIntentId);
         }
+
+        @Override
+        public boolean existsByMerchantReference(MerchantId merchantId, String merchantReference) {
+            return delegate.existsByMerchantReference(merchantId, merchantReference);
+        }
     }
 
     /** It announces the timeout, so a consumer sees the same shape a decline produces. */

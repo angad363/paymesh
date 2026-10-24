@@ -53,7 +53,7 @@ class ApplyPaymentSucceededServiceTest {
         MerchantId merchantId = MerchantId.generate();
         Order order = repository.save(pendingOrder(merchantId, 1999));
 
-        assertTrue(service.apply(merchantId, order.orderId(), 1999, PAID_AT));
+        assertTrue(service.apply(merchantId, order.orderId(), 1999, "pi_test", PAID_AT));
 
         Order applied = repository.findByOrderId(merchantId, order.orderId()).orElseThrow();
 
@@ -74,7 +74,7 @@ class ApplyPaymentSucceededServiceTest {
         MerchantId merchantId = MerchantId.generate();
         Order order = repository.save(pendingOrder(merchantId, 4000));
 
-        assertTrue(service.apply(merchantId, order.orderId(), 3000, PAID_AT));
+        assertTrue(service.apply(merchantId, order.orderId(), 3000, "pi_test", PAID_AT));
 
         Order applied = repository.findByOrderId(merchantId, order.orderId()).orElseThrow();
 
@@ -99,8 +99,8 @@ class ApplyPaymentSucceededServiceTest {
         MerchantId merchantId = MerchantId.generate();
         Order order = repository.save(pendingOrder(merchantId, 1999));
 
-        assertTrue(service.apply(merchantId, order.orderId(), 1999, PAID_AT));
-        assertFalse(service.apply(merchantId, order.orderId(), 1999, PAID_AT.plusSeconds(5)));
+        assertTrue(service.apply(merchantId, order.orderId(), 1999, "pi_test", PAID_AT));
+        assertFalse(service.apply(merchantId, order.orderId(), 1999, "pi_test", PAID_AT.plusSeconds(5)));
 
         assertEquals(1, history.changes().size());
         assertEquals(1, outbox.events().size());
@@ -111,25 +111,83 @@ class ApplyPaymentSucceededServiceTest {
     }
 
     /**
-     * A CANCELLED ORDER IS NOT RESURRECTED. The merchant said they did not want it, and a late or
-     * replayed payment event must not overturn that on its own -- the money is the payment
-     * capability's problem to release, not a reason to revive the obligation.
+     * A CLOSED ORDER IS NOT RESURRECTED, AND THE CAPTURE IS NOT DROPPED (ADR-049). The order stays
+     * CANCELLED, but the money the provider took must surface: one audited SYSTEM row and one
+     * {@code order.payment_captured_after_close} event for the refund side.
+     * <p>
+     * <b>Sabotage that must turn this red:</b> return to {@code return false} for every non-PENDING
+     * status -- the event count drops to zero.
      */
     @Test
-    void leavesACancelledOrderAlone() {
+    void emitsCapturedAfterCloseForACancelledOrderWithoutResurrectingIt() {
         MerchantId merchantId = MerchantId.generate();
         Order order = repository.save(
             pendingOrder(merchantId, 1999).cancel("changed my mind", CREATED_AT.plusSeconds(60))
         );
 
-        assertFalse(service.apply(merchantId, order.orderId(), 1999, PAID_AT));
+        assertFalse(service.apply(merchantId, order.orderId(), 1999, "pi_late", PAID_AT));
 
         assertEquals(
             OrderStatus.CANCELLED,
             repository.findByOrderId(merchantId, order.orderId()).orElseThrow().status()
         );
+        assertCapturedAfterClose(merchantId, order, "CANCELLED");
+    }
+
+    @Test
+    void emitsCapturedAfterCloseForAnExpiredOrder() {
+        MerchantId merchantId = MerchantId.generate();
+        Order order = repository.save(
+            Order.create(
+                OrderId.generate(), merchantId, null, null, 1999, "INR", null, Map.of(),
+                CREATED_AT.plusSeconds(30), CREATED_AT
+            ).expire(CREATED_AT.plusSeconds(60))
+        );
+
+        assertFalse(service.apply(merchantId, order.orderId(), 1999, "pi_late", PAID_AT));
+
+        assertEquals(
+            OrderStatus.EXPIRED,
+            repository.findByOrderId(merchantId, order.orderId()).orElseThrow().status()
+        );
+        assertCapturedAfterClose(merchantId, order, "EXPIRED");
+    }
+
+    /** The idempotent no-op is preserved: a redelivery against a PAID order emits nothing. */
+    @Test
+    void emitsNothingForAnOrderThatIsAlreadyPaid() {
+        MerchantId merchantId = MerchantId.generate();
+        Order order = repository.save(
+            pendingOrder(merchantId, 1999).markPaid(1999, CREATED_AT.plusSeconds(60))
+        );
+
+        assertFalse(service.apply(merchantId, order.orderId(), 1999, "pi_test", PAID_AT));
+
         assertEquals(0, history.changes().size());
         assertEquals(0, outbox.events().size());
+    }
+
+    private void assertCapturedAfterClose(MerchantId merchantId, Order order, String status) {
+        assertEquals(1, history.changes().size());
+        OrderStateChange change = history.changes().get(0);
+        assertEquals(OrderStateChange.ActorType.SYSTEM, change.actorType());
+        assertNull(change.actorId());
+        assertTrue(change.reason().contains("1999") && change.reason().contains(status));
+
+        assertEquals(1, outbox.events().size());
+        OutboxEvent event = outbox.events().get(0);
+        assertEquals("order.payment_captured_after_close", event.eventType());
+        assertEquals("ORDER", event.aggregateType());
+        assertEquals(1, event.eventVersion());
+        assertEquals(merchantId, event.merchantId());
+        assertEquals(order.orderId().value(), event.payload().get("orderId"));
+        assertEquals(merchantId.value(), event.payload().get("merchantId"));
+        assertEquals("pi_late", event.payload().get("paymentIntentId"));
+        assertEquals(1999L, event.payload().get("capturedAmountMinor"));
+        assertEquals("INR", event.payload().get("currency"));
+        assertEquals(status, event.payload().get("orderStatus"));
+        assertEquals(PAID_AT.toString(), event.payload().get("occurredAt"));
+        assertEquals(0, transactions.executions());
     }
 
     // --- the timeline and the event ---------------------------------------------------------------
@@ -145,7 +203,7 @@ class ApplyPaymentSucceededServiceTest {
         MerchantId merchantId = MerchantId.generate();
         Order order = repository.save(pendingOrder(merchantId, 1999));
 
-        service.apply(merchantId, order.orderId(), 1999, PAID_AT);
+        service.apply(merchantId, order.orderId(), 1999, "pi_test", PAID_AT);
 
         assertEquals(1, history.changes().size());
 
@@ -170,8 +228,8 @@ class ApplyPaymentSucceededServiceTest {
         Order full = repository.save(pendingOrder(merchantId, 1999));
         Order partial = repository.save(pendingOrder(merchantId, 4000));
 
-        service.apply(merchantId, full.orderId(), 1999, PAID_AT);
-        service.apply(merchantId, partial.orderId(), 3000, PAID_AT);
+        service.apply(merchantId, full.orderId(), 1999, "pi_test", PAID_AT);
+        service.apply(merchantId, partial.orderId(), 3000, "pi_test", PAID_AT);
 
         assertEquals("order.paid", outbox.events().get(0).eventType());
         assertEquals("order.partially_paid", outbox.events().get(1).eventType());
@@ -182,7 +240,7 @@ class ApplyPaymentSucceededServiceTest {
         MerchantId merchantId = MerchantId.generate();
         Order order = repository.save(pendingOrder(merchantId, 4000));
 
-        service.apply(merchantId, order.orderId(), 3000, PAID_AT);
+        service.apply(merchantId, order.orderId(), 3000, "pi_test", PAID_AT);
 
         OutboxEvent event = outbox.events().get(0);
 
@@ -216,7 +274,7 @@ class ApplyPaymentSucceededServiceTest {
         MerchantId merchantId = MerchantId.generate();
         Order order = repository.save(pendingOrder(merchantId, 1999));
 
-        service.apply(merchantId, order.orderId(), 1999, PAID_AT);
+        service.apply(merchantId, order.orderId(), 1999, "pi_test", PAID_AT);
 
         assertEquals(0, transactions.executions());
     }
@@ -237,7 +295,7 @@ class ApplyPaymentSucceededServiceTest {
 
         org.junit.jupiter.api.Assertions.assertThrows(
             OrderNotFoundException.class,
-            () -> service.apply(stranger, order.orderId(), 1999, PAID_AT)
+            () -> service.apply(stranger, order.orderId(), 1999, "pi_test", PAID_AT)
         );
 
         assertEquals(
@@ -251,7 +309,7 @@ class ApplyPaymentSucceededServiceTest {
     void refusesToApplyAPaymentToAnOrderThatDoesNotExist() {
         org.junit.jupiter.api.Assertions.assertThrows(
             OrderNotFoundException.class,
-            () -> service.apply(MerchantId.generate(), OrderId.generate(), 1999, PAID_AT)
+            () -> service.apply(MerchantId.generate(), OrderId.generate(), 1999, "pi_test", PAID_AT)
         );
     }
 

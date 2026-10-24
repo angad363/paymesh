@@ -29,6 +29,17 @@ public interface RefundRepository {
     long activeTotalMinor(String paymentIntentId);
 
     /**
+     * True when this merchant already has a refund under {@code merchantReference}, in ANY state
+     * (including FAILED and CANCELLED, which {@link #activeTotalMinor} excludes).
+     * <p>
+     * A read so a caller can SKIP rather than attempt a create that would collide on
+     * {@code uq_refunds_merchant_reference}: {@link #save}'s {@code saveAndFlush} marks the shared
+     * transaction rollback-only on that collision, which a caught exception cannot undo. The merchant
+     * reference is unique per merchant, so this answers "has this exact refund been requested before".
+     */
+    boolean existsByMerchantReference(MerchantId merchantId, String merchantReference);
+
+    /**
      * Refunds stuck in PROCESSING since before {@code threshold}, oldest first.
      * <p>
      * Oldest first so a backlog drains in the order it accumulated, and bounded so one pass cannot
