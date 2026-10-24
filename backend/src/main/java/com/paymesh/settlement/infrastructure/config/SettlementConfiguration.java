@@ -57,9 +57,12 @@ public class SettlementConfiguration {
 
     @Bean
     GetSettlementConfigService getSettlementConfigService(
-        SettlementConfigRepository configs, SettlementProperties properties, Clock clock
+        SettlementConfigRepository configs, SettlementProperties properties,
+        OutboxWriter outboxWriter, TransactionTemplate transactionTemplate, Clock clock
     ) {
-        return new GetSettlementConfigService(configs, properties.defaultHoldingPeriod(), clock);
+        return new GetSettlementConfigService(
+            configs, properties.defaultHoldingPeriod(), outboxWriter, transactionTemplate, clock
+        );
     }
 
     @Bean

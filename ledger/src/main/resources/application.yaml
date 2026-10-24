@@ -70,8 +70,8 @@ paymesh:
       interval: 1h
       initial-delay: 5m
       batch-size: 100
-      # ponytail: one holding period for every merchant (settlement owns the per-merchant
-      # override, which ledger_svc cannot read). Same default as settlement's.
+      # Fallback for a merchant with no projected settlement_config_ref row (ADR-051).
+      # MUST equal settlement's paymesh.settlement.default-holding-period (pinned by a test).
       default-holding-period: 7d
 
   security:

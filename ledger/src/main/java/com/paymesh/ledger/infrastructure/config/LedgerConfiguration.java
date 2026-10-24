@@ -164,9 +164,30 @@ public class LedgerConfiguration {
     }
 
     @Bean
-    HoldingPeriodPolicy holdingPeriodPolicy(LedgerReleaseProperties properties) {
-        // ponytail: one period for every merchant; see LedgerReleaseProperties.defaultHoldingPeriod.
-        return merchantId -> properties.defaultHoldingPeriod();
+    com.paymesh.ledger.infrastructure.events.SettlementConfigRefStore settlementConfigRefStore(
+        org.springframework.jdbc.core.JdbcTemplate jdbc
+    ) {
+        return new com.paymesh.ledger.infrastructure.events.SettlementConfigRefStore(jdbc);
+    }
+
+    /** The ledger's sixth subscription: settlement's per-merchant holding period (ADR-051). */
+    @Bean
+    com.paymesh.ledger.infrastructure.events.SettlementConfigRefProjector settlementConfigRefProjector(
+        com.paymesh.ledger.infrastructure.events.SettlementConfigRefStore store
+    ) {
+        return new com.paymesh.ledger.infrastructure.events.SettlementConfigRefProjector(store);
+    }
+
+    /**
+     * The projected period, or the platform default AS A VALUE for a merchant with no row (ADR-051):
+     * a default row is never written, so changing the default still reaches every defaulted merchant.
+     */
+    @Bean
+    HoldingPeriodPolicy holdingPeriodPolicy(
+        com.paymesh.ledger.infrastructure.events.SettlementConfigRefStore store,
+        LedgerReleaseProperties properties
+    ) {
+        return merchantId -> store.find(merchantId).orElse(properties.defaultHoldingPeriod());
     }
 
     @Bean

@@ -38,6 +38,14 @@ public final class LedgerTestEvents {
         return paymentSucceeded(EventId.generate(), merchantId, paymentIntentId, amountMinor);
     }
 
+    public static OutboxEvent settlementConfigUpdated(EventId eventId, MerchantId merchantId, long seconds, Instant at) {
+        return new OutboxEvent(
+            eventId, merchantId, "SETTLEMENT_CONFIG", merchantId.value(), "settlement.config.updated", 1,
+            Map.of("merchantId", merchantId.value(), "holdingPeriodSeconds", seconds, "occurredAt", at.toString()),
+            at
+        );
+    }
+
     public static String newPaymentIntentId() {
         return "pi_" + UUID.randomUUID();
     }
