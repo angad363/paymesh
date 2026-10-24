@@ -91,6 +91,12 @@
 			<artifactId>spring-boot-starter-actuator</artifactId>
 		</dependency>
 
+		<!-- ADR-052: Micrometer Tracing + OTel bridge + OTLP trace/metric export -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-opentelemetry</artifactId>
+		</dependency>
+
 		<!-- Tests: a WireMock stub stands in for the monolith backend, Testcontainers
 		     Redis backs the real rate limiter, and jose mints HS256 tokens at the edge. -->
 		<dependency>

@@ -1,0 +1,7 @@
+# ADR-052: Prometheus scrapes ONLY the collector's metrics endpoint, not the host JVMs.
+global:
+  scrape_interval: 15s
+scrape_configs:
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8889"]

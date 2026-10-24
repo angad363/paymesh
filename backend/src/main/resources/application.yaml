@@ -124,6 +124,12 @@ spring:
   # until one is up (ADR-037 section 3). `docker compose up -d kafka` starts one.
   # The dev profile sets the mode to in-process, so the test suite needs none.
   kafka:
+    # ADR-052: Micrometer Observation puts/reads W3C traceparent in Kafka record HEADERS
+    # (body and EventEnvelope untouched). Code in KafkaEventPublisher/Listener is unchanged.
+    template:
+      observation-enabled: true
+    listener:
+      observation-enabled: true
     # Where the broker is. One broker in dev (docker-compose.yml), three in the
     # target -- which is a comma-separated list here and no code change anywhere.
     bootstrap-servers: localhost:9092
@@ -676,3 +682,25 @@ management:
       # never: /actuator/health returns just UP/DOWN, no component internals
       # (DB host, disk paths) to unauthenticated callers.
       show-details: never
+  # ADR-052: tracing + metrics, OTLP -> one OpenTelemetry Collector. Non-authoritative
+  # (invariant 9): spans go through the SDK's async BatchSpanProcessor and metrics through
+  # a background publisher thread, so a down collector only logs a warning -- it never
+  # blocks, slows or fails a request, and the service starts normally without it.
+  tracing:
+    sampling:
+      probability: 1.0 # dev: sample everything; lower for a real environment
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}/v1/traces
+          timeout: 2s
+          connect-timeout: 1s
+  otlp:
+    metrics:
+      export:
+        url: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}/v1/metrics
+        step: 15s
+        base-time-unit: seconds # match the _seconds_ Prometheus convention the dashboard queries
+        connect-timeout: 1s
+        read-timeout: 2s

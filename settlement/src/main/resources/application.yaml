@@ -50,6 +50,12 @@ spring:
     baseline-version: "1"
 
   kafka:
+    # ADR-052: Micrometer Observation puts/reads W3C traceparent in Kafka record HEADERS
+    # (body and EventEnvelope untouched). Code in KafkaEventPublisher/Listener is unchanged.
+    template:
+      observation-enabled: true
+    listener:
+      observation-enabled: true
     bootstrap-servers: localhost:9092
     consumer:
       auto-offset-reset: earliest
@@ -115,3 +121,25 @@ management:
   endpoint:
     health:
       show-details: never
+  # ADR-052: tracing + metrics, OTLP -> one OpenTelemetry Collector. Non-authoritative
+  # (invariant 9): spans go through the SDK's async BatchSpanProcessor and metrics through
+  # a background publisher thread, so a down collector only logs a warning -- it never
+  # blocks, slows or fails a request, and the service starts normally without it.
+  tracing:
+    sampling:
+      probability: 1.0 # dev: sample everything; lower for a real environment
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}/v1/traces
+          timeout: 2s
+          connect-timeout: 1s
+  otlp:
+    metrics:
+      export:
+        url: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}/v1/metrics
+        step: 15s
+        base-time-unit: seconds # match the _seconds_ Prometheus convention the dashboard queries
+        connect-timeout: 1s
+        read-timeout: 2s

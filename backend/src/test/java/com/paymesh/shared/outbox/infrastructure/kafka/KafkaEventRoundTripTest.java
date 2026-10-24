@@ -4,6 +4,8 @@ import com.paymesh.TestcontainersConfiguration;
 import com.paymesh.shared.outbox.domain.EventId;
 import com.paymesh.shared.outbox.domain.OutboxEvent;
 import com.paymesh.shared.tenant.MerchantId;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -19,6 +21,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.testcontainers.kafka.KafkaContainer;
 import tools.jackson.databind.ObjectMapper;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -74,6 +77,9 @@ class KafkaEventRoundTripTest {
     @Autowired
     private ObjectMapper json;
 
+    @Autowired
+    private Tracer tracer;
+
     @Test
     void publishedEventComesBackOffTheBrokerUnchanged() {
         OutboxEvent event = new OutboxEvent(
@@ -100,6 +106,58 @@ class KafkaEventRoundTripTest {
         assertThat(received.eventVersion()).isEqualTo(3);
         assertThat(received.payload()).containsEntry("amountMinor", 1250);
         assertThat(received.toEvent()).isEqualTo(event);
+    }
+
+    /**
+     * ADR-052's acceptance core for the asynchronous hop, asserted rather than demonstrated live:
+     * a request's trace follows its event across Kafka. With {@code spring.kafka.template.observation-enabled}
+     * on, the observation-wrapped {@code KafkaTemplate} injects the W3C {@code traceparent} into the
+     * record's HEADERS (the body / {@link EventEnvelope} is untouched, ADR-036). So an event published
+     * inside a span carries that span's trace id out, and the consumer that reads it links to the same
+     * trace -- which is what "one connected trace across services" means on the leg the outbox adds.
+     * <p>
+     * The proof is the trace id, not merely a header's presence: a {@code traceparent} rooted at the
+     * send instead of the originating span would still be a header but a different trace. This starts a
+     * span, publishes within its scope, and asserts the header carries THAT span's 32-hex trace id.
+     * If the observation flag were removed, no header is injected and this fails -- the test the
+     * invariant is worth.
+     */
+    @Test
+    void aTraceFollowsItsEventAcrossKafkaInTheTraceparentHeader() {
+        // Its own aggregate type -> its own topic, so this test shares the suite's single broker with
+        // the round-trip test above but not its topic (whose consumer demands exactly one record).
+        OutboxEvent event = new OutboxEvent(
+            EventId.generate(),
+            MerchantId.generate(),
+            "TRACE_PROBE",
+            "tp_" + UUID.randomUUID(),
+            "payment.succeeded",
+            3,
+            Map.of("amountMinor", 4200, "currency", "GBP"),
+            Instant.parse("2026-08-24T10:15:30Z")
+        );
+
+        Span request = tracer.nextSpan().name("authorize");
+        String expectedTraceId;
+        try (Tracer.SpanInScope scope = tracer.withSpan(request.start())) {
+            expectedTraceId = request.context().traceId();
+            // publish() blocks on the broker ack on THIS thread, inside the span's scope, so the
+            // KafkaTemplate's observation sees `request` as its parent and stamps its trace id.
+            publisher.publish(event);
+        } finally {
+            request.end();
+        }
+
+        ConsumerRecord<String, String> record = consumeOne("trace-probe-events");
+
+        var traceparent = record.headers().lastHeader("traceparent");
+        assertThat(traceparent)
+            .as("traceparent header must be injected when template observation is on")
+            .isNotNull();
+        // W3C format: 00-<32 hex traceId>-<16 hex spanId>-<flags>. The trace id is the linkage.
+        assertThat(new String(traceparent.value(), StandardCharsets.UTF_8))
+            .as("the relayed event must carry the publishing request's trace id")
+            .contains(expectedTraceId);
     }
 
     /**
