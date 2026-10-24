@@ -314,6 +314,12 @@ class CreateRefundServiceTest {
         public long activeTotalMinor(String paymentIntentId) {
             return existingActiveTotal;
         }
+
+        @Override
+        public boolean existsByMerchantReference(MerchantId merchantId, String merchantReference) {
+            return saved.values().stream()
+                .anyMatch(refund -> merchantReference.equals(refund.merchantReference()));
+        }
     }
 
     private static final class FakeHistory implements RefundStateHistoryRepository {

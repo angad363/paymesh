@@ -14,6 +14,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import com.paymesh.refund.application.RefundCallbackRepository;
 import com.paymesh.refund.application.RefundRepository;
 import com.paymesh.refund.application.RefundStateHistoryRepository;
+import com.paymesh.refund.infrastructure.events.OrderCapturedAfterCloseHandler;
 import com.paymesh.refund.infrastructure.payment.PaymentModuleLookup;
 import com.paymesh.refund.infrastructure.persistence.jpa.JpaRefundCallbackRepository;
 import com.paymesh.refund.infrastructure.persistence.jpa.JpaRefundRepository;
@@ -86,6 +87,16 @@ public class RefundConfiguration {
             refundRepository, refundStateHistoryRepository, paymentLookup, outboxWriter,
             transactionTemplate, clock
         );
+    }
+
+    /** ADR-049: auto-refund money captured against a closed order. */
+    @Bean
+    OrderCapturedAfterCloseHandler orderCapturedAfterCloseHandler(
+        PaymentLookup paymentLookup,
+        RefundRepository refundRepository,
+        CreateRefundService createRefundService
+    ) {
+        return new OrderCapturedAfterCloseHandler(paymentLookup, refundRepository, createRefundService);
     }
 
     @Bean

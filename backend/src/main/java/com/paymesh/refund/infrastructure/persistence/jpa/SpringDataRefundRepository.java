@@ -15,6 +15,8 @@ public interface SpringDataRefundRepository extends JpaRepository<RefundJpaEntit
 
     Optional<RefundJpaEntity> findByMerchantIdAndRefundId(String merchantId, String refundId);
 
+    boolean existsByMerchantIdAndMerchantReference(String merchantId, String merchantReference);
+
     /**
      * Row-locked, and NOT merchant-scoped -- deliberately.
      * <p>
