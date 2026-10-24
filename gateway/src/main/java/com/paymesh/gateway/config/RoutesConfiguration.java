@@ -69,22 +69,6 @@ public class RoutesConfiguration {
             .build();
     }
 
-    /**
-     * {@code /internal/v1/ledger/**} is the monolith's service-to-service read for Settlement
-     * (ADR-047), authenticated by a shared key and never meant for the edge. {@link
-     * #internalCallbackRoutes} forwards every {@code /internal/**}, so without this it would be
-     * publicly reachable through the gateway. {@code @Order(0)} (a SUBSET of that route) answers 404
-     * and forwards nothing.
-     */
-    @Bean
-    @Order(0)
-    RouterFunction<ServerResponse> blockedLedgerReadRoutes() {
-        return org.springframework.web.servlet.function.RouterFunctions.route(
-            path("/internal/v1/ledger").or(path("/internal/v1/ledger/**")),
-            request -> ServerResponse.notFound().build()
-        );
-    }
-
     @Bean
     RouterFunction<ServerResponse> internalCallbackRoutes(
         @Value("${paymesh.gateway.backend-uri}") String backendUri
@@ -389,6 +373,49 @@ public class RoutesConfiguration {
             .route(path("/internal/v1/risk-evaluations").or(path("/internal/v1/risk-evaluations/**")), http())
             .before(uri(riskUri))
             .build();
+    }
+
+    /**
+     * THE NINTH RE-POINTED ROUTE (ADR-050, PR 14), and the last: the ledger's balance read and its
+     * service-to-service read leave the monolith for the ledger deployable. Dual path by re-point:
+     * rollback is setting {@code ledger-uri} back to {@code backend-uri} (together with flipping
+     * {@code paymesh.ledger.release.enabled} between the two processes -- ADR-050 section 5).
+     * <p>
+     * {@code @Order(0)} is LOAD-BEARING for both halves, for the same subset reason as {@link
+     * #settlementRoutes}: {@code /api/v1/balances/**} is a SUBSET of {@link #apiRoutes}' {@code /api/**}
+     * and {@code /internal/v1/ledger/**} a SUBSET of {@link #internalCallbackRoutes}' {@code /internal/**}.
+     * <p>
+     * Two routes in one bean because they are treated differently. The balance read is client traffic,
+     * rate limited like every other {@code /api} group. {@code /internal/v1/ledger/**} is Settlement's
+     * machine-to-machine read (ADR-047 1a): NOT rate limited, and NOT JWT'd at the edge
+     * ({@code SecurityConfiguration} permits GET) because the caller holds a shared read key, not a
+     * token -- {@code LedgerReadKeyFilter} at the ledger is the authentication and fails closed on a
+     * blank key. (Until PR 14 this prefix was answered 404 here; it is now the one place that decides
+     * which process serves it, ADR-041.)
+     */
+    @Bean
+    @Order(0)
+    RouterFunction<ServerResponse> ledgerRoutes(
+        @Value("${paymesh.gateway.ledger-uri}") String ledgerUri,
+        @Value("${paymesh.gateway.rate-limit.capacity:100}") long capacity,
+        @Value("${paymesh.gateway.rate-limit.period-seconds:60}") long periodSeconds
+    ) {
+        RouterFunction<ServerResponse> internal = route("paymesh-ledger-internal")
+            .route(path("/internal/v1/ledger").or(path("/internal/v1/ledger/**")), http())
+            .before(uri(ledgerUri))
+            .build();
+
+        RouterFunction<ServerResponse> client = route("paymesh-ledger")
+            .route(path("/api/v1/balances").or(path("/api/v1/balances/**")), http())
+            .before(uri(ledgerUri))
+            .filter(rateLimitGuard(rateLimit(config -> config
+                .setCapacity(capacity)
+                .setPeriod(Duration.ofSeconds(periodSeconds))
+                .setStatusCode(HttpStatus.TOO_MANY_REQUESTS)
+                .setKeyResolver(RoutesConfiguration::clientKey))))
+            .build();
+
+        return internal.and(client);
     }
 
     /**

@@ -659,14 +659,24 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
   green (+1 each: a FAILED-first-attempt reference-collision regression test). Not acted on: reconciling
   the PAID/PARTIALLY_PAID branch (unsafe — would refund legitimately-paid orders on a duplicate; recorded
   in ADR-049).
-- **PR 14 — Ledger (last).** *(ADR-050, planned)* Goal: the financial source of truth becomes its
-  own service **last and whole**, specifically because its invariants (the deferred debits=credits
-  trigger, immutability) never leave its schema and extracting it after every caller is already
-  stable is the only ordering that protects the governing invariant. Planned shape: posting becomes
-  an idempotent API (`Idempotency-Key` per caller+action) plus a `ledger.transaction.posted` event;
-  the release job keeps running here on its own timer. Why last, stated plainly in the plan: every
-  earlier service can tolerate eventual consistency or a brief outage — the Ledger cannot tolerate a
-  distributed transaction, and its invariants cannot be distributed.
+- **PR 14 — Ledger (last).** *(ADR-050)* Delivers: the financial source of truth as its own deployable
+  (`ledger/`, port 8090, the eleventh), owning the `ledger` schema as the fenced `ledger_svc` role,
+  extracted **structurally unchanged** — the V15/V18 deferred `debits=credits` and entry/transaction
+  immutability triggers stay inside the schema and still refuse unbalanced, single-entry, cross-merchant
+  and mutating journals *across the service* (`LedgerServiceIntegrationTest`). Posting stays
+  **event-driven** (ADR-050 §2/§7, Option 1): the ledger consumes `payment.succeeded`,
+  `refund.succeeded` and the settlement events; no synchronous posting API is built (nothing calls one,
+  and ADR-048 forbade a synchronous ledger call on the money path), and `ledger.transaction.posted` is
+  not emitted (no consumer). The synchronous surface is the balance read it already serves
+  (`GET /api/v1/balances`, internal `/internal/v1/ledger/**`), now routed through the gateway; settlement
+  re-points its ledger read there. Dual path, no monolith migration: both consumer groups land the same
+  events on the shared schema and the per-transaction idempotency key dedupes a double-post; the
+  pending→available release job is **not** safe in two processes, so it is gated on
+  `paymesh.ledger.release.enabled`, default off in the ledger service. Tests: ledger 62, gateway 43,
+  settlement 25, backend 1222, all green. Known, not closed (ADR-050 review amendments): the **per-merchant
+  holding period** cannot be read by `ledger_svc` (the ledger module uses a flat default) — inert while
+  the release flag is off and the monolith stays authoritative, but it **gates the release-flag cutover**
+  and needs a settlement-owned read first.
 
 ### 3E — Close-out (planned)
 
@@ -685,7 +695,7 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
 
 ## Where we are now
 
-**On branch `fix/refund-captured-after-close`.** Phase 1 and Phase 2 are complete. Phase 3 wave 3A (PR 1–5) is
+**On branch `service/ledger`.** Phase 1 and Phase 2 are complete. Phase 3 wave 3A (PR 1–5) is
 merged — Kafka backbone, dual-path relay, schema-per-service, merchant reference projection, API
 gateway. Phase 3B PR 6–9 are merged: the Provider Simulator (`provider-sim/`, port 8082, ADR-041),
 Webhook (`webhook/`, port 8083, ADR-042), Engagement (`engagement/`, port 8084, ADR-043) and **Risk**
@@ -693,10 +703,11 @@ Webhook (`webhook/`, port 8083, ADR-042), Engagement (`engagement/`, port 8084, 
 port 8086, ADR-045) — is merged (PR #74). PR 11 — **Merchant** (`merchant/`, port 8087, ADR-046) — is
 merged (PR #75). PR 12 — **Settlement** (`settlement/`, port 8088, ADR-047) — is merged (PR #77). PR 13 —
 **Payment** (`payment/`, port 8089, ADR-048) — is merged (PR #78). The ADR-049 **defect fix** (money
-captured against a closed order) is on branch `fix/refund-captured-after-close`, awaiting merge. **Ten**
+captured against a closed order) is merged (PR #79). PR 14 — **Ledger** (`ledger/`, port 8090, ADR-050) —
+the last and gravest extraction — is on branch `service/ledger`, awaiting merge. **Eleven**
 independently-built Maven modules exist
-(`backend/`, `gateway/`, `provider-sim/`, `webhook/`, `engagement/`, `risk/`, `identity/`, `merchant/`, `settlement/`, `payment/`),
-each with its own `pom.xml` and its own `./mvnw`. 49 ADRs. The
+(`backend/`, `gateway/`, `provider-sim/`, `webhook/`, `engagement/`, `risk/`, `identity/`, `merchant/`, `settlement/`, `payment/`, `ledger/`),
+each with its own `pom.xml` and its own `./mvnw`. 50 ADRs. The
 monolith's migrations are unchanged at V1–V40 — PR 9 adds **no** monolith migration, because its
 dual path keeps the in-process risk code and its `risk`-schema access alive in the monolith (rollback
 is `paymesh.risk.mode=in-process`, a property flip). `risk`'s own Flyway history adopts the `risk`
@@ -714,8 +725,10 @@ shared-key filter. Two gateway tests (`GatewayRiskRouteTest`) prove the risk rou
 the `/internal/**` catch-all. The `payment → risk` `ModuleBoundaryTest` allowance **stays** (unlike
 the earlier leaf extractions, which removed theirs) because the in-process dependency is still real.
 
-**Next up: PR 14 — Ledger (ADR-050, planned).** The ledger becomes its own service last, with an idempotent
-posting API. The cancel-mid-capture money defect is now closed (ADR-049). Still open before PR 14: the
-remaining ADR-048 payment items (ApiKey at the gateway edge, the idempotency cutover, provider HMAC not
-bound to the provider path), and the search_path and idempotency cutover rules should be exercised on a
-real shared database.
+**Next up: PR 15 — Observability across the hops (ADR-051, planned).** With PR 14 the money path is
+eleven deployables; PR 15 makes one trace follow a request across all of them. Before the ledger cutover
+(flipping `paymesh.ledger.release.enabled`): close the per-merchant holding-period gap (ADR-050 review
+amendments) with a settlement-owned read, and run the money path clean against the separate ledger under
+load (dual path is held open deliberately long here). Still open from earlier PRs: the ADR-048 payment
+items (ApiKey at the gateway edge, the idempotency cutover, provider HMAC not bound to the provider
+path), and the search_path / idempotency cutover rules exercised on a real shared database.

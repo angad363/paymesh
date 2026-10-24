@@ -132,27 +132,6 @@ class GatewaySettlementRouteTest extends GatewayIntegrationTestBase {
         assertThat(internal.body()).isEqualTo("backend-ok");
     }
 
-    /** The ledger read is service-to-service only: the edge answers 404 and the monolith sees nothing. */
-    @Test
-    void doesNotExposeTheInternalLedgerReadThroughTheGateway() throws Exception {
-        // An unauthenticated call never gets past edge auth (401); the hole was for any VALID token.
-        assertThat(send("GET", "/internal/v1/ledger/available-merchants", null).statusCode()).isEqualTo(401);
-
-        HttpResponse<String> response = send(
-            "GET", "/internal/v1/ledger/available-merchants", "Bearer " + validToken());
-        HttpResponse<String> nested = send(
-            "GET", "/internal/v1/ledger/merchants/mrc_x/available-contributions", "Bearer " + validToken());
-
-        assertThat(response.statusCode()).isEqualTo(404);
-        assertThat(nested.statusCode()).isEqualTo(404);
-
-        WireMock.configureFor("localhost", BACKEND.port());
-        WireMock.verify(0, getRequestedFor(urlPathEqualTo("/internal/v1/ledger/available-merchants")));
-        WireMock.verify(0, getRequestedFor(anyUrl()));
-        WireMock.configureFor("localhost", SETTLEMENT.port());
-        WireMock.verify(0, getRequestedFor(anyUrl()));
-    }
-
     private HttpResponse<String> send(String method, String path, String auth) throws Exception {
         HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(gatewayUrl(path)));
         if (auth != null) {
