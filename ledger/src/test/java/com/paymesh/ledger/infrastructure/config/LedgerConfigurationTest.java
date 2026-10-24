@@ -74,7 +74,7 @@ class LedgerConfigurationTest {
      * no longer here -- it left with the payment deployable (ADR-048).
      */
     @Test
-    void registersExactlyTheLedgersThreeEventConsumers() {
+    void registersExactlyTheLedgersEventConsumers() {
         assertThat(context.getBeansOfType(EventHandler.class).values().stream()
             .map(h -> h.eventType() + "/" + h.consumerName())
             .toList())
@@ -83,7 +83,8 @@ class LedgerConfigurationTest {
                 "refund.succeeded/ledger.refund-succeeded",
                 "settlement.batch_cut/ledger.settlement-batch-cut",
                 "payout.paid/ledger.payout-paid",
-                "payout.returned/ledger.payout-returned"
+                "payout.returned/ledger.payout-returned",
+                "settlement.config.updated/ledger.settlement-config"
             );
     }
 

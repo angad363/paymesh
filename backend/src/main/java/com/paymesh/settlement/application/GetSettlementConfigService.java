@@ -1,11 +1,17 @@
 package com.paymesh.settlement.application;
 
 import com.paymesh.settlement.domain.SettlementConfig;
+import com.paymesh.shared.outbox.application.OutboxWriter;
+import com.paymesh.shared.outbox.domain.EventId;
+import com.paymesh.shared.outbox.domain.OutboxEvent;
 import com.paymesh.shared.tenant.MerchantId;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * A merchant's holding period, or the platform default when they have not set one.
@@ -16,15 +22,23 @@ import java.time.Instant;
  * one would make "never configured" and "configured to exactly the default" indistinguishable, so a
  * later change to the platform default would silently skip every merchant who had been defaulted
  * into a row -- the opposite of what changing a default means.
+ *
+ * <h2>EVERY WRITE EMITS {@code settlement.config.updated} (ADR-051)</h2>
+ *
+ * The ledger service cannot read this schema, so it projects the holding period from the event. The
+ * append shares the save's transaction (ADR-010): a rolled-back append rolls the change back too.
  */
 public final class GetSettlementConfigService {
 
     private final SettlementConfigRepository configs;
     private final Duration defaultHoldingPeriod;
+    private final OutboxWriter outbox;
+    private final TransactionTemplate transactions;
     private final Clock clock;
 
     public GetSettlementConfigService(
-        SettlementConfigRepository configs, Duration defaultHoldingPeriod, Clock clock
+        SettlementConfigRepository configs, Duration defaultHoldingPeriod,
+        OutboxWriter outbox, TransactionTemplate transactions, Clock clock
     ) {
         if (defaultHoldingPeriod == null || defaultHoldingPeriod.isNegative()) {
             throw new IllegalArgumentException(
@@ -34,6 +48,8 @@ public final class GetSettlementConfigService {
 
         this.configs = configs;
         this.defaultHoldingPeriod = defaultHoldingPeriod;
+        this.outbox = outbox;
+        this.transactions = transactions;
         this.clock = clock;
     }
 
@@ -58,18 +74,20 @@ public final class GetSettlementConfigService {
      * period alone, so this is what it calls; the full setter is the API's.
      */
     public SettlementConfig set(MerchantId merchantId, Duration holdingPeriod) {
-        return configs.find(merchantId)
-            .map(existing -> configs.save(existing.with(
-                holdingPeriod, existing.payoutDestination(), existing.minimumPayoutMinor(),
-                Instant.now(clock)
-            )))
-            .orElseGet(() -> {
-                Instant now = Instant.now(clock);
+        // READ-MERGE-SAVE-EMIT IN ONE TRANSACTION, reading existing INSIDE it. Pre-reading the row to
+        // carry its payoutDestination/minimum into the full setter would re-read inside the
+        // transaction and overwrite with the stale outer values, silently reverting a concurrent full
+        // PUT. Here the holding-period-only merge keeps the other fields from the in-transaction read.
+        Instant now = Instant.now(clock);
 
-                return configs.save(new SettlementConfig(
-                    merchantId, holdingPeriod, null, 1L, now, now
-                ));
-            });
+        return transactions.execute(status -> saveAndEmit(
+            configs.find(merchantId)
+                .map(existing -> existing.with(
+                    holdingPeriod, existing.payoutDestination(), existing.minimumPayoutMinor(), now
+                ))
+                .orElseGet(() -> new SettlementConfig(merchantId, holdingPeriod, null, 1L, now, now)),
+            now
+        ));
     }
 
     public SettlementConfig set(
@@ -80,12 +98,34 @@ public final class GetSettlementConfigService {
     ) {
         Instant now = Instant.now(clock);
 
-        return configs.save(configs.find(merchantId)
-            .map(existing -> existing.with(
-                holdingPeriod, payoutDestination, minimumPayoutMinor, now
-            ))
-            .orElseGet(() -> new SettlementConfig(
-                merchantId, holdingPeriod, payoutDestination, minimumPayoutMinor, now, now
-            )));
+        return transactions.execute(status -> saveAndEmit(
+            configs.find(merchantId)
+                .map(existing -> existing.with(
+                    holdingPeriod, payoutDestination, minimumPayoutMinor, now
+                ))
+                .orElseGet(() -> new SettlementConfig(
+                    merchantId, holdingPeriod, payoutDestination, minimumPayoutMinor, now, now
+                )),
+            now
+        ));
+    }
+
+    /** Save the computed config and emit settlement.config.updated in the same transaction (ADR-051). */
+    private SettlementConfig saveAndEmit(SettlementConfig toSave, Instant now) {
+        SettlementConfig saved = configs.save(toSave);
+        outbox.append(configUpdated(saved, now));
+        return saved;
+    }
+
+    private static OutboxEvent configUpdated(SettlementConfig config, Instant occurredAt) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("merchantId", config.merchantId().value());
+        payload.put("holdingPeriodSeconds", config.holdingPeriod().toSeconds());
+        payload.put("occurredAt", occurredAt.toString());
+
+        return new OutboxEvent(
+            EventId.generate(), config.merchantId(), "SETTLEMENT_CONFIG",
+            config.merchantId().value(), "settlement.config.updated", 1, payload, occurredAt
+        );
     }
 }

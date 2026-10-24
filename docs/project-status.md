@@ -678,14 +678,24 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
   the release flag is off and the monolith stays authoritative, but it **gates the release-flag cutover**
   and needs a settlement-owned read first.
 
-### 3E — Close-out (planned)
+### 3E — Close-out (in progress)
 
-- **PR 15 — Observability across the hops.** *(ADR-051, planned)* Goal: one trace follows a request
-  across every service it touches, once the money path spans nine deployables instead of one.
+- **Fix — the ledger learns the holding period.** *(ADR-051)* Closes the ADR-050 release-flag cutover
+  gate: the extracted ledger could not read settlement's per-merchant holding period (`ledger_svc` has no
+  grant on the `settlement` schema) and used a flat default. Event-fed projection (ADR-039/048 pattern):
+  settlement emits `settlement.config.updated` in the same transaction as a config change (both trees); a
+  one-time monolith backfill (`V42`) emits it for existing `settlement_configs` rows; the `ledger/`
+  service projects into `settlement_config_ref` and reads it from `HoldingPeriodPolicy`, falling back to
+  the platform default **as a value** for an unconfigured merchant. The monolith ledger is unchanged (it
+  keeps its in-process read). Tests: settlement 28, ledger 66, backend 1224, all green. **Cutover step:**
+  V42 must be relayed to the ledger before `paymesh.ledger.release.enabled` is flipped.
+
+- **PR 15 — Observability across the hops.** *(ADR-052, planned)* Goal: one trace follows a request
+  across every service it touches, once the money path spans eleven deployables instead of one.
   Planned shape: OpenTelemetry auto-instrumentation, trace/span propagation through the gateway,
   synchronous calls and Kafka headers; Prometheus + Grafana.
 
-- **PR 16 — Decommission the monolith.** *(ADR-052, planned)* Goal: delete the scaffolding once
+- **PR 16 — Decommission the monolith.** *(ADR-053, planned)* Goal: delete the scaffolding once
   every capability runs as its own service — the dual-path flag, the in-process `EventDispatcher`,
   the shared in-process lookup adapters, the now-empty monolith module itself. `shared/` survives
   only as versioned libraries (the envelope, id value objects, security primitives) each service
@@ -695,7 +705,7 @@ out one at a time in order of coupling (leaves first, the money path last); **3E
 
 ## Where we are now
 
-**On branch `service/ledger`.** Phase 1 and Phase 2 are complete. Phase 3 wave 3A (PR 1–5) is
+**On branch `fix/ledger-holding-period`.** Phase 1 and Phase 2 are complete. Phase 3 wave 3A (PR 1–5) is
 merged — Kafka backbone, dual-path relay, schema-per-service, merchant reference projection, API
 gateway. Phase 3B PR 6–9 are merged: the Provider Simulator (`provider-sim/`, port 8082, ADR-041),
 Webhook (`webhook/`, port 8083, ADR-042), Engagement (`engagement/`, port 8084, ADR-043) and **Risk**
@@ -704,10 +714,11 @@ port 8086, ADR-045) — is merged (PR #74). PR 11 — **Merchant** (`merchant/`,
 merged (PR #75). PR 12 — **Settlement** (`settlement/`, port 8088, ADR-047) — is merged (PR #77). PR 13 —
 **Payment** (`payment/`, port 8089, ADR-048) — is merged (PR #78). The ADR-049 **defect fix** (money
 captured against a closed order) is merged (PR #79). PR 14 — **Ledger** (`ledger/`, port 8090, ADR-050) —
-the last and gravest extraction — is on branch `service/ledger`, awaiting merge. **Eleven**
+the last and gravest extraction — is merged (PR #80). The ADR-051 **holding-period projection** (closing
+the ledger release-flag cutover gate) is on branch `fix/ledger-holding-period`, awaiting merge. **Eleven**
 independently-built Maven modules exist
 (`backend/`, `gateway/`, `provider-sim/`, `webhook/`, `engagement/`, `risk/`, `identity/`, `merchant/`, `settlement/`, `payment/`, `ledger/`),
-each with its own `pom.xml` and its own `./mvnw`. 50 ADRs. The
+each with its own `pom.xml` and its own `./mvnw`. 51 ADRs. The
 monolith's migrations are unchanged at V1–V40 — PR 9 adds **no** monolith migration, because its
 dual path keeps the in-process risk code and its `risk`-schema access alive in the monolith (rollback
 is `paymesh.risk.mode=in-process`, a property flip). `risk`'s own Flyway history adopts the `risk`
@@ -725,10 +736,11 @@ shared-key filter. Two gateway tests (`GatewayRiskRouteTest`) prove the risk rou
 the `/internal/**` catch-all. The `payment → risk` `ModuleBoundaryTest` allowance **stays** (unlike
 the earlier leaf extractions, which removed theirs) because the in-process dependency is still real.
 
-**Next up: PR 15 — Observability across the hops (ADR-051, planned).** With PR 14 the money path is
-eleven deployables; PR 15 makes one trace follow a request across all of them. Before the ledger cutover
-(flipping `paymesh.ledger.release.enabled`): close the per-merchant holding-period gap (ADR-050 review
-amendments) with a settlement-owned read, and run the money path clean against the separate ledger under
-load (dual path is held open deliberately long here). Still open from earlier PRs: the ADR-048 payment
-items (ApiKey at the gateway edge, the idempotency cutover, provider HMAC not bound to the provider
-path), and the search_path / idempotency cutover rules exercised on a real shared database.
+**Next up: PR 15 — Observability across the hops (ADR-052, planned).** With PR 14 the money path is
+eleven deployables; PR 15 makes one trace follow a request across all of them. The per-merchant
+holding-period gap is now closed (ADR-051) — the remaining ledger-cutover prerequisites are operational:
+relay the V42 backfill to the ledger, then run the money path clean against the separate ledger under
+load before flipping `paymesh.ledger.release.enabled` (dual path is held open deliberately long here).
+Still open from earlier PRs: the ADR-048 payment items (ApiKey at the gateway edge, the idempotency
+cutover, provider HMAC not bound to the provider path), and the search_path / idempotency cutover rules
+exercised on a real shared database.

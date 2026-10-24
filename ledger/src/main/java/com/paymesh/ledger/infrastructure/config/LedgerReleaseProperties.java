@@ -12,9 +12,9 @@ import java.time.Duration;
  *     true in exactly one process. DEFAULT FALSE in the ledger service so a stock start cannot run
  *     it beside the monolith -- two releases would credit available twice. The service is an
  *     ordinary bean regardless, so tests call it directly.
- * @param defaultHoldingPeriod ponytail: every merchant's holding period in this service. The
- *     per-merchant override lives in settlement's schema, which ledger_svc cannot read; honoring
- *     it needs a settlement-owned read, so the flag stays off until that exists (ADR-050 risk).
+ * @param defaultHoldingPeriod the FALLBACK for a merchant with no projected {@code
+ *     settlement_config_ref} row, returned as a value (ADR-051). Must equal settlement's platform
+ *     default (pinned by a test).
  * @param batchSize how many unreleased captures one pass may take. Each is its own transaction.
  */
 @Validated
