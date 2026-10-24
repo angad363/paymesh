@@ -431,6 +431,18 @@ docker compose up -d kafka      # from the repository root
 docker compose down -v          # stop it and discard its log
 ```
 
+### Observability
+
+PR 15 ([ADR-052](docs/decisions/ADR-052-observability-across-the-hops.md)) adds distributed tracing so
+one trace follows a request across every deployable. Each service exports OTLP to an OpenTelemetry
+Collector, which fans out to Tempo (traces) and Prometheus (metrics), viewed in Grafana — all in
+`docker-compose.yml`, configured under `observability/`. It is non-authoritative (invariant 9): services
+run normally with the stack down, logging an export warning instead of failing a request.
+
+```bash
+docker compose up -d otel-collector tempo prometheus grafana   # Grafana at http://localhost:3000
+```
+
 **From PR 2 the relay uses it — the dual path
 ([ADR-037](docs/decisions/ADR-037-dual-path-relay-kafka-alongside-the-in-process-dispatcher.md)).**
 In `both` mode (the default) domain events go to the in-process dispatcher *and* to Kafka,
