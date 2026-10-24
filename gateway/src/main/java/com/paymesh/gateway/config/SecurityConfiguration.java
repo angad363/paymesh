@@ -16,6 +16,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 
+import static org.springframework.http.HttpMethod.GET;
 import static org.springframework.http.HttpMethod.POST;
 
 /**
@@ -83,6 +84,10 @@ public class SecurityConfiguration {
                 // this route ever holds a merchant or platform token; RiskEvaluationKeyFilter is the
                 // authentication, at the risk deployable itself.
                 .requestMatchers(POST, "/internal/v1/risk-evaluations/**").permitAll()
+                // Settlement's read of the ledger (ADR-047 1a, ADR-050 section 6) is machine to
+                // machine with a shared read key, not a token; LedgerReadKeyFilter at the ledger
+                // deployable is the authentication and fails closed on a blank key.
+                .requestMatchers(GET, "/internal/v1/ledger/**").permitAll()
                 // Everything else under the API needs a valid token, proven here at the edge.
                 .anyRequest().authenticated()
             )

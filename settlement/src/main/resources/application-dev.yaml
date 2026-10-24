@@ -26,7 +26,8 @@ paymesh:
       api-key: dev-only-insecure-simulator-api-key-change-me
       callback-secret: dev-only-insecure-provider-callback-secret-change-me
     ledger:
-      url: http://localhost:8080
+      # The gateway (ADR-050 section 6): the one place that decides which process serves the ledger read.
+      url: http://localhost:8081
       # Byte-for-byte backend/application-dev.yaml's paymesh.ledger.read-key.
       key: dev-only-insecure-ledger-read-key-change-me
   events:

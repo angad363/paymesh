@@ -1,0 +1,107 @@
+# ============================================================================
+#  PayMesh ledger service (ADR-050)
+#
+#  A separate deployable beside the monolith, the gateway, provider-sim,
+#  webhook, engagement, risk, identity, merchant, settlement and payment: the
+#  double-entry ledger, the balance read and the pending->available release
+#  job, moved out. Listens on 8090. Shares the monolith's PostgreSQL cluster
+#  but owns exactly one schema (`ledger`) and connects as the fenced
+#  `ledger_svc` role ADR-038 already created.
+#
+#  POSTING STAYS EVENT-DRIVEN (ADR-050 section 2): the ledger consumes
+#  payment.succeeded, refund.succeeded and settlement.* and posts from them.
+#  There is NO synchronous posting API and ledger.transaction.posted is NOT
+#  emitted (no consumer yet, section 4).
+#
+#  EXCLUSIVE OWNERSHIP OF THE RELEASE JOB (ADR-050 section 5): exactly ONE
+#  process has paymesh.ledger.release.enabled=true. It DEFAULTS FALSE here so a
+#  stock start cannot run it beside the monolith (which still runs it); the
+#  cutover flips it in one step. Two release jobs would credit available twice.
+# ============================================================================
+
+spring:
+  application:
+    name: paymesh-ledger
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/paymesh
+    # Empty: this file is committed. The dev profile supplies the throwaway
+    # `ledger_svc` credential; other environments use
+    # SPRING_DATASOURCE_USERNAME/PASSWORD.
+    username:
+    password:
+    hikari:
+      # `public` stays for `is_prefixed_id`, which every CHECK here calls.
+      connection-init-sql: SET search_path TO ledger, public
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        jdbc:
+          jdbc_metadata_extraction_strategy: individually
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    schemas: ledger
+    # ADOPTS the existing ledger_accounts/ledger_transactions/ledger_entries tables and their
+    # triggers (V1); V2 creates the platform tables.
+    baseline-on-migrate: true
+    baseline-version: "1"
+
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      auto-offset-reset: earliest
+      properties:
+        metadata.max.age.ms: 5000
+
+paymesh:
+  ledger:
+    # Shared key the settlement SERVICE presents (X-PayMesh-Ledger-Key) to read
+    # /internal/v1/ledger/**. Blank = the route 401s every call (fail closed).
+    read-key: ${PAYMESH_LEDGER_READ_KEY:}
+    release:
+      # THE SINGLE SWITCH of exclusive ownership of the release job (ADR-050 section 5).
+      enabled: false
+      interval: 1h
+      initial-delay: 5m
+      batch-size: 100
+      # ponytail: one holding period for every merchant (settlement owns the per-merchant
+      # override, which ledger_svc cannot read). Same default as settlement's.
+      default-holding-period: 7d
+
+  security:
+    jwt:
+      # Verify-only here (identity mints). The SAME shared HS256 secret the
+      # gateway and every other deployable verifies with (ADR-040). Empty by
+      # default; supply PAYMESH_SECURITY_JWT_SECRET or run the dev profile.
+      secret: ${PAYMESH_SECURITY_JWT_SECRET:}
+
+  events:
+    delivery:
+      mode: both
+    outbox-relay:
+      enabled: true
+      interval: 2s
+      batch-size: 100
+      max-attempts: 25
+      backlog-alert-age: 5m
+
+server:
+  port: 8090
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include:
+          - health
+          - info
+  endpoint:
+    health:
+      show-details: never

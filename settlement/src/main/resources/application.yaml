@@ -78,7 +78,8 @@ paymesh:
     ledger:
       # Only `http` exists here (the in-process adapter needs the monolith's ledger classes).
       mode: http
-      url: http://localhost:8080
+      # The gateway (ADR-050 section 6): the one place that decides which process serves the ledger read.
+      url: http://localhost:8081
       key: ${PAYMESH_LEDGER_READ_KEY:}
       connect-timeout: 2s
       read-timeout: 3s

@@ -1,0 +1,35 @@
+# Local development overrides for the ledger service. Every @SpringBootTest carries
+# @ActiveProfiles("dev"). The outbox relay is ON: the batch-posted events must reach settlement
+# when run by hand. Tests drive the services directly and never assert on published_at.
+
+spring:
+  datasource:
+    # The fenced role ADR-038 created (NOLOGIN by default); a one-time
+    # `ALTER ROLE ledger_svc LOGIN PASSWORD '...'` is the README step.
+    username: ledger_svc
+    password: ledger_dev_password
+
+paymesh:
+  security:
+    jwt:
+      # Byte-for-byte every other deployable's dev value; these MUST agree.
+      secret: dev-only-insecure-jwt-signing-secret-change-me
+  ledger:
+    # Byte-for-byte settlement/application-dev.yaml's paymesh.settlement.ledger.key.
+    read-key: dev-only-insecure-ledger-read-key-change-me
+    release:
+      # FALSE in dev, as it is in the monolith's dev profile too: no release sweeper runs on a
+      # timer in dev at all, so tests call release() directly. In PRODUCTION the flag is the single
+      # switch of exclusive ownership (ADR-050 section 5) -- true in exactly one process, flipped in
+      # one cutover step, default false here so a stock start cannot double-release beside the monolith.
+      enabled: false
+  events:
+    delivery:
+      mode: both
+    outbox-relay:
+      enabled: true
+
+management:
+  endpoint:
+    health:
+      show-details: always
